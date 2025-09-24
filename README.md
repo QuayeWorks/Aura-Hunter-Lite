@@ -5,7 +5,7 @@ Create a custom humanoid rig, allocate **Power / Agility / Focus**, and battle A
 
 ## Play
 Available at:
-https://QuayeWorks.github.io/aura-hunter-lite/
+https://QuayeWorks.github.io/Aura-Hunter-Lite/
 
 ## Controls
 - **WASD** move, **Space** jump (hold to charge), **Shift** dash  
