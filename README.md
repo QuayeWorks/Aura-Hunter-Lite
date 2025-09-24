@@ -4,17 +4,8 @@ A browser-based Hunter × Hunter–inspired 3D action sandbox built with **Babyl
 Create a custom humanoid rig, allocate **Power / Agility / Focus**, and battle AI on floating platforms.
 
 ## Play
-Once deployed with GitHub Pages, your game will be available at:
+Available at:
 https://QuayeWorks.github.io/aura-hunter-lite/
-
-## Features
-- Custom character creation (name, clan, Nen type, theme color)
-- 3 consolidated stats: **Power**, **Agility**, **Focus**
-- Charged jumping, dash, melee, Nen blasts, and a Nen-special per type
-- Time distortion (Specialist), shields (Conjurer), electrified strikes (Transmuter), etc.
-- Segmented humanoid with walk/jump/attack animation
-- **Rig Editor** (offset/rotation/size per limb) with XML import/export
-- Waves of humanoid enemies with simple AI
 
 ## Controls
 - **WASD** move, **Space** jump (hold to charge), **Shift** dash  
