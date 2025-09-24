@@ -112,9 +112,19 @@ legend {
 }
 
 .grid-3 {
-	display: grid;
-	grid-template-columns: 1fr 1fr 1fr;
-	gap: .8rem
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        gap: .8rem
+}
+
+.settings-form {
+        display: flex;
+        flex-direction: column;
+        gap: .6rem
+}
+
+.settings-form .row-right {
+        margin-top: .6rem
 }
 
 .row-right {

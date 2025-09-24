@@ -96,6 +96,54 @@
       ground: null,
       platforms: []
    };
+
+   const TERRAIN_LAYER_DEFS = [
+      { key: "bedrock", color: [0.42, 0.42, 0.46], emissive: [0.08, 0.08, 0.09], destructible: false },
+      { key: "dirt", color: [0.43, 0.29, 0.15], emissive: [0.06, 0.04, 0.02], destructible: true },
+      { key: "grass", color: [0.2, 0.45, 0.2], emissive: [0.04, 0.14, 0.04], destructible: true }
+   ];
+
+   const defaultTerrainSettings = {
+      length: 32,
+      width: 32,
+      cubeSize: 1.2,
+      activeRadius: 48,
+      streamingPadding: 6,
+      layers: TERRAIN_LAYER_DEFS.length
+   };
+
+   const TERRAIN_SETTINGS_KEY = "hxh-terrain-settings";
+
+   function clampSetting(value, min, max, fallback) {
+      if (!Number.isFinite(value)) return fallback;
+      return clamp(value, min, max);
+   }
+
+   function normalizeTerrainSettings(next = {}) {
+      const out = { ...defaultTerrainSettings };
+      if (typeof next.length === "number") out.length = Math.round(clampSetting(next.length, 8, 256, defaultTerrainSettings.length));
+      if (typeof next.width === "number") out.width = Math.round(clampSetting(next.width, 8, 256, defaultTerrainSettings.width));
+      if (typeof next.cubeSize === "number") out.cubeSize = clampSetting(next.cubeSize, 0.5, 4, defaultTerrainSettings.cubeSize);
+      if (typeof next.activeRadius === "number") out.activeRadius = clampSetting(next.activeRadius, 6, 300, defaultTerrainSettings.activeRadius);
+      if (typeof next.streamingPadding === "number") out.streamingPadding = clampSetting(next.streamingPadding, 2, 60, defaultTerrainSettings.streamingPadding);
+      out.layers = TERRAIN_LAYER_DEFS.length;
+      return out;
+   }
+
+   function loadTerrainSettings() {
+      if (typeof localStorage === "undefined") return { ...defaultTerrainSettings };
+      try {
+         const raw = localStorage.getItem(TERRAIN_SETTINGS_KEY);
+         if (!raw) return { ...defaultTerrainSettings };
+         const parsed = JSON.parse(raw);
+         return normalizeTerrainSettings(parsed);
+      } catch (err) {
+         return { ...defaultTerrainSettings };
+      }
+   }
+
+   const savedTerrainSettings = normalizeTerrainSettings(loadTerrainSettings());
+
    const environment = {
       seed: 1,
       time: 0,
@@ -109,13 +157,37 @@
       hemi: null,
       clouds: [],
       terrain: null,
+      terrainSettings: { ...savedTerrainSettings },
       updateAccumulator: 0,
       updateInterval: 1 / 24
+   };
+
+   const GameSettings = {
+      getTerrainSettings() {
+         return { ...environment.terrainSettings };
+      },
+      setTerrainSettings(update) {
+         const merged = normalizeTerrainSettings({ ...environment.terrainSettings, ...update });
+         environment.terrainSettings = merged;
+         saveTerrainSettings(merged);
+         if (environment.terrain) {
+            environment.terrain.settings = { ...merged };
+         }
+         return merged;
+      },
+      resetTerrainSettings() {
+         const merged = normalizeTerrainSettings(defaultTerrainSettings);
+         environment.terrainSettings = merged;
+         saveTerrainSettings(merged);
+         if (environment.terrain) {
+            environment.terrain.settings = { ...merged };
+         }
+         return merged;
+      }
    };
    const SKY_RADIUS = 420;
    const VEC3_UP = new BABYLON.Vector3(0, 1, 0);
    const VEC3_DOWN = new BABYLON.Vector3(0, -1, 0);
-   const GROUND_RAY_EXTRA = 0.8;
    const GROUND_STICK_THRESHOLD = 0.35;
    const FOOT_CLEARANCE = 0.012;
    const IK_POS_EPS = 1e-4;
@@ -139,7 +211,10 @@
    const BLOODLUST_WEAK_HP = 55;
 
    function isGroundMesh(mesh) {
-      return !!mesh && (mesh === world.ground || world.platforms.includes(mesh));
+      if (!mesh) return false;
+      const meta = mesh.metadata;
+      if (meta && meta.terrainBlock && !meta.terrainBlock.destroyed && mesh.isEnabled && mesh.isEnabled()) return true;
+      return world.platforms.includes(mesh);
    }
 
    function resolveGrounding(mesh, velY) {
@@ -155,11 +230,8 @@
       mesh.computeWorldMatrix(true);
       const boundingInfo = mesh.getBoundingInfo();
       boundingInfo.update(mesh.getWorldMatrix());
-      const halfHeight = boundingInfo.boundingBox.extendSize.y;
-      const origin = new BABYLON.Vector3(mesh.position.x, mesh.position.y + halfHeight + GROUND_RAY_EXTRA, mesh.position.z);
-      const rayLen = halfHeight + GROUND_RAY_EXTRA + 1.5;
-      const pick = scene.pickWithRay(new BABYLON.Ray(origin, VEC3_DOWN, rayLen), isGroundMesh);
-      if (!pick || !pick.hit) {
+      const groundY = getTerrainHeight(mesh.position.x, mesh.position.z);
+      if (groundY === null) {
          return {
             grounded: false,
             correction: 0,
@@ -169,17 +241,16 @@
          };
       }
       const bottom = boundingInfo.boundingBox.minimumWorld.y;
-      const distToGround = bottom - pick.pickedPoint.y;
+      const distToGround = bottom - groundY;
       const grounded = velY <= 0.4 && distToGround <= GROUND_STICK_THRESHOLD;
-      const desiredMin = pick.pickedPoint.y + FOOT_CLEARANCE;
+      const desiredMin = groundY + FOOT_CLEARANCE;
       const correction = grounded ? Math.max(0, desiredMin - bottom) : 0;
-      const normal = pick.getNormal(true) || VEC3_UP;
       return {
          grounded,
          correction,
-         normal,
+         normal: VEC3_UP,
          distance: distToGround,
-         hitPointY: pick.pickedPoint.y
+         hitPointY: groundY
       };
    }
 
@@ -282,146 +353,230 @@
       environment.time = environment.dayLength * getCurrentDayPhase();
    }
 
-   function noiseHash(x, z) {
-      const s = Math.sin(x * 127.1 + z * 311.7 + environment.seed * 17.7) * 43758.5453;
-      return s - Math.floor(s);
+   function saveTerrainSettings(settings) {
+      if (typeof localStorage === "undefined") return;
+      try {
+         localStorage.setItem(TERRAIN_SETTINGS_KEY, JSON.stringify(settings));
+      } catch (err) {}
    }
 
-   function smoothNoise(x, z) {
-      const xi = Math.floor(x);
-      const zi = Math.floor(z);
-      const xf = x - xi;
-      const zf = z - zi;
-      const h00 = noiseHash(xi, zi);
-      const h10 = noiseHash(xi + 1, zi);
-      const h01 = noiseHash(xi, zi + 1);
-      const h11 = noiseHash(xi + 1, zi + 1);
-      const sx = xf * xf * (3 - 2 * xf);
-      const sz = zf * zf * (3 - 2 * zf);
-      const x0 = lerp(h00, h10, sx);
-      const x1 = lerp(h01, h11, sx);
-      return lerp(x0, x1, sz);
-   }
-
-   function terrainHeightBase(x, z) {
-      const n1 = smoothNoise(x * 0.045, z * 0.045);
-      const n2 = smoothNoise(x * 0.09 + 100, z * 0.09 - 75);
-      const n3 = smoothNoise(x * 0.015 - 230, z * 0.015 + 110);
-      let h = (n1 - 0.5) * 6.5 + (n2 - 0.5) * 2.4 + (n3 - 0.5) * 3.2;
-      const ridgeBase = Math.abs(smoothNoise(x * 0.03 + 250, z * 0.03 - 180) - 0.5);
-      const ridge = Math.max(0, 1 - Math.min(1, ridgeBase * 2));
-      h += Math.pow(ridge, 4) * 2.2;
-      const dist = Math.sqrt(x * x + z * z);
-      if (dist < 12) {
-         const fall = 1 - dist / 12;
-         h = lerp(h, 0, fall * 0.85);
+   function disposeTerrain() {
+      const terrain = environment.terrain;
+      if (!terrain) return;
+      if (terrain.columns) {
+         terrain.columns.forEach(column => {
+            if (!column) return;
+            column.forEach(block => {
+               if (block) block.dispose();
+            });
+         });
       }
-      return h;
+      terrain.root?.dispose();
+      environment.terrain = null;
+      world.ground = null;
    }
 
    function createTerrain(scene) {
-      if (environment.terrain && environment.terrain.mesh) {
-         environment.terrain.mesh.dispose();
+      disposeTerrain();
+      const settings = environment.terrainSettings = normalizeTerrainSettings(environment.terrainSettings);
+      saveTerrainSettings(settings);
+      const { length, width, cubeSize, layers } = settings;
+      const totalWidth = length * cubeSize;
+      const totalDepth = width * cubeSize;
+      world.size = Math.max(totalWidth, totalDepth);
+      const halfX = totalWidth * 0.5;
+      const halfZ = totalDepth * 0.5;
+      const baseY = -layers * cubeSize;
+      const root = new BABYLON.TransformNode("terrainRoot", scene);
+      const columns = new Array(length * width);
+      const heights = new Uint16Array(length * width);
+      const columnStates = new Array(length * width).fill(false);
+      const centers = new Array(length * width);
+      const layerMaterials = TERRAIN_LAYER_DEFS.map(def => {
+         const mat = new BABYLON.StandardMaterial(`terrain_${def.key}`, scene);
+         mat.diffuseColor = new BABYLON.Color3(def.color[0], def.color[1], def.color[2]);
+         mat.emissiveColor = new BABYLON.Color3(def.emissive[0], def.emissive[1], def.emissive[2]);
+         mat.specularColor = BABYLON.Color3.Black();
+         return mat;
+      });
+      const template = BABYLON.MeshBuilder.CreateBox("terrainCubeTemplate", { size: cubeSize }, scene);
+      template.isVisible = false;
+      template.isPickable = false;
+      template.checkCollisions = true;
+      for (let z = 0; z < width; z++) {
+         for (let x = 0; x < length; x++) {
+            const idx = z * length + x;
+            const column = new Array(layers);
+            columns[idx] = column;
+            heights[idx] = layers;
+            const worldX = -halfX + (x + 0.5) * cubeSize;
+            const worldZ = -halfZ + (z + 0.5) * cubeSize;
+            centers[idx] = { x: worldX, z: worldZ };
+            for (let layer = 0; layer < layers; layer++) {
+               const block = template.createInstance(`terrainCube_${x}_${z}_${layer}`);
+               block.parent = root;
+               block.position.set(worldX, baseY + (layer + 0.5) * cubeSize, worldZ);
+               block.material = layerMaterials[Math.min(layer, layerMaterials.length - 1)];
+               block.metadata = {
+                  terrainBlock: {
+                     columnIndex: idx,
+                     layer,
+                     destructible: TERRAIN_LAYER_DEFS[layer]?.destructible ?? true,
+                     destroyed: false
+                  }
+               };
+               block.isPickable = true;
+               block.checkCollisions = true;
+               block.setEnabled(false);
+               column[layer] = block;
+            }
+         }
       }
-      const subdivisions = 128;
-      const ground = BABYLON.MeshBuilder.CreateGround("ground", {
-         width: world.size,
-         height: world.size,
-         subdivisions,
-         updatable: true
-      }, scene);
-      const positions = ground.getVerticesData(BABYLON.VertexBuffer.PositionKind);
-      const normals = ground.getVerticesData(BABYLON.VertexBuffer.NormalKind);
-      const indices = ground.getIndices();
-      const size = subdivisions + 1;
-      const heights = new Float32Array(size * size);
-      for (let i = 0; i < size * size; i++) {
-         const x = positions[i * 3];
-         const z = positions[i * 3 + 2];
-         const h = terrainHeightBase(x, z);
-         positions[i * 3 + 1] = h;
-         heights[i] = h;
-      }
-      BABYLON.VertexData.ComputeNormals(positions, indices, normals);
-      ground.updateVerticesData(BABYLON.VertexBuffer.PositionKind, positions, true);
-      ground.updateVerticesData(BABYLON.VertexBuffer.NormalKind, normals, true);
-      ground.refreshBoundingInfo();
-      const terrainMat = new BABYLON.StandardMaterial("terrainMat", scene);
-      terrainMat.diffuseColor = new BABYLON.Color3(0.18, 0.32, 0.18);
-      terrainMat.emissiveColor = new BABYLON.Color3(0.02, 0.08, 0.02);
-      terrainMat.specularColor = BABYLON.Color3.Black();
-      ground.material = terrainMat;
-      ground.checkCollisions = true;
-      world.ground = ground;
+      template.dispose();
       environment.terrain = {
-         mesh: ground,
-         positions,
-         normals,
-         indices,
+         root,
+         columns,
          heights,
-         subdivisions,
-         step: world.size / subdivisions,
-         half: world.size / 2,
-         minHeight: -14
+         centers,
+         columnStates,
+         baseY,
+         cubeSize,
+         colsX: length,
+         colsZ: width,
+         halfX,
+         halfZ,
+         settings: { ...settings },
+         streamAccumulator: 0,
+         streamInterval: 0.25
       };
+   }
+
+   function terrainColumnIndexFromWorld(x, z) {
+      const terrain = environment.terrain;
+      if (!terrain) return -1;
+      const { cubeSize, colsX, colsZ, halfX, halfZ } = terrain;
+      const fx = (x + halfX) / cubeSize;
+      const fz = (z + halfZ) / cubeSize;
+      if (fx < 0 || fz < 0 || fx >= colsX || fz >= colsZ) return -1;
+      const ix = Math.floor(fx);
+      const iz = Math.floor(fz);
+      return iz * colsX + ix;
    }
 
    function getTerrainHeight(x, z) {
       const terrain = environment.terrain;
       if (!terrain) return null;
-      const { step, half, subdivisions, heights } = terrain;
-      const fx = (x + half) / step;
-      const fz = (z + half) / step;
-      if (fx < 0 || fz < 0 || fx > subdivisions || fz > subdivisions) return null;
-      const ix0 = Math.floor(fx);
-      const iz0 = Math.floor(fz);
-      const ix1 = Math.min(ix0 + 1, subdivisions);
-      const iz1 = Math.min(iz0 + 1, subdivisions);
-      const sx = fx - ix0;
-      const sz = fz - iz0;
-      const stride = subdivisions + 1;
-      const h00 = heights[iz0 * stride + ix0];
-      const h10 = heights[iz0 * stride + ix1];
-      const h01 = heights[iz1 * stride + ix0];
-      const h11 = heights[iz1 * stride + ix1];
-      const hx0 = lerp(h00, h10, sx);
-      const hx1 = lerp(h01, h11, sx);
-      return lerp(hx0, hx1, sz);
+      const idx = terrainColumnIndexFromWorld(x, z);
+      if (idx < 0) return null;
+      const layers = terrain.heights[idx];
+      if (!layers) return terrain.baseY;
+      return terrain.baseY + layers * terrain.cubeSize;
    }
 
-   function deformTerrainAt(point, radius, depth) {
+   function enableTerrainColumn(column) {
+      for (const block of column) {
+         if (!block) continue;
+         const meta = block.metadata?.terrainBlock;
+         if (meta && meta.destroyed) continue;
+         block.setEnabled(true);
+         block.isPickable = true;
+         block.checkCollisions = true;
+      }
+   }
+
+   function disableTerrainColumn(column) {
+      for (const block of column) {
+         if (!block) continue;
+         block.setEnabled(false);
+         block.isPickable = false;
+         block.checkCollisions = false;
+      }
+   }
+
+   function updateTerrainStreaming(center, dt = 0, force = false) {
       const terrain = environment.terrain;
       if (!terrain) return;
-      const { step, half, subdivisions, heights, positions, normals, indices, mesh, minHeight } = terrain;
-      const stride = subdivisions + 1;
-      const minX = Math.max(0, Math.floor((point.x + half - radius) / step));
-      const maxX = Math.min(subdivisions, Math.ceil((point.x + half + radius) / step));
-      const minZ = Math.max(0, Math.floor((point.z + half - radius) / step));
-      const maxZ = Math.min(subdivisions, Math.ceil((point.z + half + radius) / step));
-      let changed = false;
-      for (let iz = minZ; iz <= maxZ; iz++) {
-         const vz = -half + iz * step;
-         for (let ix = minX; ix <= maxX; ix++) {
-            const vx = -half + ix * step;
-            const dx = vx - point.x;
-            const dz = vz - point.z;
-            const dist = Math.sqrt(dx * dx + dz * dz);
-            if (dist > radius) continue;
-            const falloff = Math.cos((dist / radius) * Math.PI) * 0.5 + 0.5;
-            const idx = iz * stride + ix;
-            const current = heights[idx];
-            const next = Math.max(minHeight, current - depth * falloff);
-            if (next === current) continue;
-            heights[idx] = next;
-            positions[idx * 3 + 1] = next;
-            changed = true;
+      const target = center || BABYLON.Vector3.Zero();
+      terrain.streamAccumulator += dt;
+      if (!force && terrain.streamAccumulator < terrain.streamInterval) return;
+      terrain.streamAccumulator = 0;
+      const { columnStates, columns, centers } = terrain;
+      const activeRadius = terrain.settings.activeRadius;
+      const padding = terrain.settings.streamingPadding;
+      const activeSq = activeRadius * activeRadius;
+      const inactiveSq = (activeRadius + padding) * (activeRadius + padding);
+      const px = target.x;
+      const pz = target.z;
+      for (let i = 0; i < columns.length; i++) {
+         const column = columns[i];
+         if (!column) continue;
+         const pos = centers[i];
+         const dx = pos.x - px;
+         const dz = pos.z - pz;
+         const distSq = dx * dx + dz * dz;
+         if (distSq <= activeSq) {
+            if (!columnStates[i]) {
+               enableTerrainColumn(column);
+               columnStates[i] = true;
+            }
+         } else if (distSq >= inactiveSq) {
+            if (columnStates[i]) {
+               disableTerrainColumn(column);
+               columnStates[i] = false;
+            }
          }
       }
-      if (!changed) return;
-      BABYLON.VertexData.ComputeNormals(positions, indices, normals);
-      mesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind, positions, true);
-      mesh.updateVerticesData(BABYLON.VertexBuffer.NormalKind, normals, true);
-      mesh.refreshBoundingInfo();
+   }
+
+   function recomputeColumnHeight(column) {
+      let height = 0;
+      for (let layer = 0; layer < column.length; layer++) {
+         const block = column[layer];
+         if (!block) continue;
+         const meta = block.metadata?.terrainBlock;
+         if (meta && !meta.destroyed) {
+            height = layer + 1;
+         }
+      }
+      return height;
+   }
+
+   function removeTopBlock(columnIndex) {
+      const terrain = environment.terrain;
+      if (!terrain) return false;
+      const column = terrain.columns[columnIndex];
+      if (!column) return false;
+      for (let layer = column.length - 1; layer >= 0; layer--) {
+         const block = column[layer];
+         if (!block) continue;
+         const meta = block.metadata?.terrainBlock;
+         if (!meta || meta.destroyed) continue;
+         if (!meta.destructible) return false;
+         meta.destroyed = true;
+         block.isPickable = false;
+         block.checkCollisions = false;
+         block.isVisible = false;
+         block.setEnabled(false);
+         terrain.heights[columnIndex] = recomputeColumnHeight(column);
+         if (terrain.columnStates[columnIndex]) {
+            enableTerrainColumn(column);
+         }
+         return true;
+      }
+      return false;
+   }
+
+   function removeTerrainBlockFromMesh(mesh) {
+      if (!mesh) return false;
+      const meta = mesh.metadata?.terrainBlock;
+      if (!meta) return false;
+      return removeTopBlock(meta.columnIndex);
+   }
+
+   function removeTerrainCubeAtPoint(point) {
+      const idx = terrainColumnIndexFromWorld(point.x, point.z);
+      if (idx < 0) return false;
+      return removeTopBlock(idx);
    }
 
    function scatterVegetation(scene) {
@@ -455,28 +610,32 @@
       leavesTemplate.isVisible = false;
       leavesTemplate.isPickable = false;
 
-      for (let i = 0; i < treeCount; i++) {
-         const x = rand(-world.size / 2 + 6, world.size / 2 - 6);
-         const z = rand(-world.size / 2 + 6, world.size / 2 - 6);
-         if (Math.sqrt(x * x + z * z) < 6) continue;
-         const h = getTerrainHeight(x, z);
-         if (h === null) continue;
-         const hX = getTerrainHeight(x + 1.2, z);
-         const hZ = getTerrainHeight(x, z + 1.2);
-         if (hX === null || hZ === null) continue;
-         if (Math.abs(h - hX) > 1.6 || Math.abs(h - hZ) > 1.6) continue;
-         const parent = new BABYLON.TransformNode("tree" + i, scene);
-         parent.position.set(x, h, z);
-         parent.rotation.y = rand(0, Math.PI * 2);
-         const scale = 0.8 + Math.random() * 1.2;
-         parent.scaling.set(scale, scale, scale);
-         const trunk = trunkTemplate.createInstance("treeTrunkInst" + i);
-         trunk.parent = parent;
-         trunk.position.y = trunkHeight / 2;
-         trunk.checkCollisions = true;
-         const leaves = leavesTemplate.createInstance("treeLeavesInst" + i);
-         leaves.parent = parent;
-         leaves.position.y = trunkHeight - 0.3;
+      const halfX = terrain.halfX;
+      const halfZ = terrain.halfZ;
+      if (halfX > 6 && halfZ > 6) {
+         for (let i = 0; i < treeCount; i++) {
+            const x = rand(-halfX + 6, halfX - 6);
+            const z = rand(-halfZ + 6, halfZ - 6);
+            if (Math.sqrt(x * x + z * z) < 6) continue;
+            const h = getTerrainHeight(x, z);
+            if (h === null) continue;
+            const hX = getTerrainHeight(x + 1.2, z);
+            const hZ = getTerrainHeight(x, z + 1.2);
+            if (hX === null || hZ === null) continue;
+            if (Math.abs(h - hX) > 1.6 || Math.abs(h - hZ) > 1.6) continue;
+            const parent = new BABYLON.TransformNode("tree" + i, scene);
+            parent.position.set(x, h, z);
+            parent.rotation.y = rand(0, Math.PI * 2);
+            const scale = 0.8 + Math.random() * 1.2;
+            parent.scaling.set(scale, scale, scale);
+            const trunk = trunkTemplate.createInstance("treeTrunkInst" + i);
+            trunk.parent = parent;
+            trunk.position.y = trunkHeight / 2;
+            trunk.checkCollisions = true;
+            const leaves = leavesTemplate.createInstance("treeLeavesInst" + i);
+            leaves.parent = parent;
+            leaves.position.y = trunkHeight - 0.3;
+         }
       }
 
       const grassTemplate = BABYLON.MeshBuilder.CreatePlane("grassTemplate", {
@@ -496,8 +655,8 @@
 
       const tuftCount = 130;
       for (let i = 0; i < tuftCount; i++) {
-         const x = rand(-world.size / 2 + 2, world.size / 2 - 2);
-         const z = rand(-world.size / 2 + 2, world.size / 2 - 2);
+         const x = rand(-halfX + 2, halfX - 2);
+         const z = rand(-halfZ + 2, halfZ - 2);
          const h = getTerrainHeight(x, z);
          if (h === null || h > 8) continue;
          const tuft = grassTemplate.createInstance("grassInst" + i);
@@ -544,12 +703,8 @@
       environment.sun?.dispose();
       environment.moon?.dispose();
       environment.hemi?.dispose();
-      if (world.ground) {
-         world.ground.dispose();
-         world.ground = null;
-      }
+      disposeTerrain();
       world.platforms = [];
-      environment.terrain = null;
       environment.updateAccumulator = 0;
 
       environment.hemi = new BABYLON.HemisphericLight("hemi", new BABYLON.Vector3(0, 1, 0), scene);
@@ -1525,6 +1680,7 @@
          parts: p.parts,
          animPhase: 0
       };
+      updateTerrainStreaming(playerRoot.position, 0, true);
 
       state.nenLight = new BABYLON.PointLight("nenLight", playerRoot.position.add(new BABYLON.Vector3(0, 1.2, 0)), scene);
       state.nenLight.intensity = 0.0;
@@ -2418,6 +2574,8 @@
          state.groundNormal.copyFrom(VEC3_UP);
       }
 
+      updateTerrainStreaming(playerRoot.position, dt);
+
       // passive regen + aura flow
       const aura = state.aura;
       const regenMult = aura.ten ? 0.85 : 1.0;
@@ -2460,11 +2618,9 @@
          const p = projectiles[i];
          p.life.t -= dt;
          if (p.life.t <= 0) {
-            if (world.ground) {
-               const groundY = getTerrainHeight(p.mesh.position.x, p.mesh.position.z);
-               if (groundY !== null && p.mesh.position.y - groundY < 6) {
-                  deformTerrainAt(new BABYLON.Vector3(p.mesh.position.x, groundY, p.mesh.position.z), 2.2, 1.0);
-               }
+            const groundY = getTerrainHeight(p.mesh.position.x, p.mesh.position.z);
+            if (groundY !== null && p.mesh.position.y - groundY < 6) {
+               removeTerrainCubeAtPoint(new BABYLON.Vector3(p.mesh.position.x, groundY, p.mesh.position.z));
             }
             p.mesh.dispose();
             projectiles.splice(i, 1);
@@ -2481,10 +2637,10 @@
             if (pick && pick.hit) collision = pick;
          }
          if (collision) {
-            if (collision.pickedMesh === world.ground && collision.pickedPoint) {
-               const radius = 2.2 + (p.radius || 0) * 1.4;
-               const depth = 1.0 + (p.radius || 0) * 0.6;
-               deformTerrainAt(collision.pickedPoint, radius, depth);
+            if (collision.pickedMesh && collision.pickedMesh.metadata?.terrainBlock) {
+               removeTerrainBlockFromMesh(collision.pickedMesh);
+            } else if (collision.pickedPoint) {
+               removeTerrainCubeAtPoint(collision.pickedPoint);
             }
             p.mesh.dispose();
             projectiles.splice(i, 1);
@@ -2752,11 +2908,73 @@
    });
 
    // Public API
+   window.GameSettings = GameSettings;
    window.HXH = {
       startGame,
       rigReady,
       getRig: () => RIG
    };
+})();
+
+
+// ===== Settings UI =====
+(function () {
+   const btnSettings = document.getElementById("btn-settings");
+   const scrSettings = document.getElementById("screen--settings");
+   const form = document.getElementById("settings-form");
+   if (!btnSettings || !scrSettings || !form) return;
+   const inputLength = document.getElementById("settings-length");
+   const inputWidth = document.getElementById("settings-width");
+   const inputCube = document.getElementById("settings-cube");
+   const inputRadius = document.getElementById("settings-radius");
+   const btnCancel = document.getElementById("settings-cancel");
+
+   function populate() {
+      const settings = window.GameSettings?.getTerrainSettings?.() || {};
+      if (inputLength) inputLength.value = settings.length ?? "";
+      if (inputWidth) inputWidth.value = settings.width ?? "";
+      if (inputCube) inputCube.value = settings.cubeSize ?? "";
+      if (inputRadius) inputRadius.value = settings.activeRadius ?? "";
+   }
+
+   function showSettings() {
+      populate();
+      document.querySelectorAll(".screen").forEach(s => s.classList.remove("visible"));
+      scrSettings.classList.add("visible");
+      window.MenuBG?.stop();
+   }
+
+   function returnToMenu() {
+      if (window.MenuScreen?.showMenu) {
+         window.MenuScreen.showMenu();
+      } else {
+         document.querySelectorAll(".screen").forEach(s => s.classList.remove("visible"));
+         const menu = document.getElementById("screen--menu");
+         menu?.classList.add("visible");
+         window.MenuBG?.start();
+      }
+   }
+
+   form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const next = {
+         length: inputLength ? parseInt(inputLength.value, 10) : undefined,
+         width: inputWidth ? parseInt(inputWidth.value, 10) : undefined,
+         cubeSize: inputCube ? parseFloat(inputCube.value) : undefined,
+         activeRadius: inputRadius ? parseFloat(inputRadius.value) : undefined
+      };
+      window.GameSettings?.setTerrainSettings?.(next);
+      returnToMenu();
+   });
+
+   btnCancel?.addEventListener("click", (e) => {
+      e.preventDefault();
+      returnToMenu();
+   });
+
+   btnSettings.addEventListener("click", () => {
+      showSettings();
+   });
 })();
 
 
@@ -2819,4 +3037,6 @@
 
    // first load -> decide whether to show Resume
    document.addEventListener("DOMContentLoaded", showMenu);
+
+   window.MenuScreen = { showMenu };
 })();
