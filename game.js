@@ -46,18 +46,34 @@
       projectiles = [];
    let lastTime = 0,
       paused = false;
-   const startPos = new BABYLON.Vector3(0, 3, 0);
+   let startPos = new BABYLON.Vector3(0, 3, 0);
    const world = {
       size: 100,
       gravityY: -28,
       ground: null,
       platforms: []
    };
+   const environment = {
+      seed: 1,
+      time: 0,
+      dayLength: 160,
+      sky: null,
+      skyMaterial: null,
+      sun: null,
+      moon: null,
+      sunMesh: null,
+      moonMesh: null,
+      hemi: null,
+      clouds: [],
+      terrain: null
+   };
+   const SKY_RADIUS = 420;
    const VEC3_UP = new BABYLON.Vector3(0, 1, 0);
    const VEC3_DOWN = new BABYLON.Vector3(0, -1, 0);
    const GROUND_RAY_EXTRA = 0.8;
    const GROUND_STICK_THRESHOLD = 0.35;
    const FOOT_CLEARANCE = 0.012;
+   const lerp = (a, b, t) => a + (b - a) * t;
 
    function isGroundMesh(mesh) {
       return !!mesh && (mesh === world.ground || world.platforms.includes(mesh));
@@ -149,6 +165,390 @@
          pivot.rotation.x = baseRotX + tiltX;
          pivot.rotation.z = baseRotZ + tiltZ;
       }
+   }
+
+   function reseedEnvironment() {
+      environment.seed = Math.random() * 1000 + (Date.now() % 1000) * 0.001;
+      environment.time = environment.dayLength * Math.random();
+   }
+
+   function noiseHash(x, z) {
+      const s = Math.sin(x * 127.1 + z * 311.7 + environment.seed * 17.7) * 43758.5453;
+      return s - Math.floor(s);
+   }
+
+   function smoothNoise(x, z) {
+      const xi = Math.floor(x);
+      const zi = Math.floor(z);
+      const xf = x - xi;
+      const zf = z - zi;
+      const h00 = noiseHash(xi, zi);
+      const h10 = noiseHash(xi + 1, zi);
+      const h01 = noiseHash(xi, zi + 1);
+      const h11 = noiseHash(xi + 1, zi + 1);
+      const sx = xf * xf * (3 - 2 * xf);
+      const sz = zf * zf * (3 - 2 * zf);
+      const x0 = lerp(h00, h10, sx);
+      const x1 = lerp(h01, h11, sx);
+      return lerp(x0, x1, sz);
+   }
+
+   function terrainHeightBase(x, z) {
+      const n1 = smoothNoise(x * 0.045, z * 0.045);
+      const n2 = smoothNoise(x * 0.09 + 100, z * 0.09 - 75);
+      const n3 = smoothNoise(x * 0.015 - 230, z * 0.015 + 110);
+      let h = (n1 - 0.5) * 6.5 + (n2 - 0.5) * 2.4 + (n3 - 0.5) * 3.2;
+      const ridgeBase = Math.abs(smoothNoise(x * 0.03 + 250, z * 0.03 - 180) - 0.5);
+      const ridge = Math.max(0, 1 - Math.min(1, ridgeBase * 2));
+      h += Math.pow(ridge, 4) * 2.2;
+      const dist = Math.sqrt(x * x + z * z);
+      if (dist < 12) {
+         const fall = 1 - dist / 12;
+         h = lerp(h, 0, fall * 0.85);
+      }
+      return h;
+   }
+
+   function createTerrain(scene) {
+      if (environment.terrain && environment.terrain.mesh) {
+         environment.terrain.mesh.dispose();
+      }
+      const subdivisions = 128;
+      const ground = BABYLON.MeshBuilder.CreateGround("ground", {
+         width: world.size,
+         height: world.size,
+         subdivisions,
+         updatable: true
+      }, scene);
+      const positions = ground.getVerticesData(BABYLON.VertexBuffer.PositionKind);
+      const normals = ground.getVerticesData(BABYLON.VertexBuffer.NormalKind);
+      const indices = ground.getIndices();
+      const size = subdivisions + 1;
+      const heights = new Float32Array(size * size);
+      for (let i = 0; i < size * size; i++) {
+         const x = positions[i * 3];
+         const z = positions[i * 3 + 2];
+         const h = terrainHeightBase(x, z);
+         positions[i * 3 + 1] = h;
+         heights[i] = h;
+      }
+      BABYLON.VertexData.ComputeNormals(positions, indices, normals);
+      ground.updateVerticesData(BABYLON.VertexBuffer.PositionKind, positions, true);
+      ground.updateVerticesData(BABYLON.VertexBuffer.NormalKind, normals, true);
+      ground.refreshBoundingInfo();
+      const terrainMat = new BABYLON.StandardMaterial("terrainMat", scene);
+      terrainMat.diffuseColor = new BABYLON.Color3(0.18, 0.32, 0.18);
+      terrainMat.emissiveColor = new BABYLON.Color3(0.02, 0.08, 0.02);
+      terrainMat.specularColor = BABYLON.Color3.Black();
+      ground.material = terrainMat;
+      ground.checkCollisions = true;
+      world.ground = ground;
+      environment.terrain = {
+         mesh: ground,
+         positions,
+         normals,
+         indices,
+         heights,
+         subdivisions,
+         step: world.size / subdivisions,
+         half: world.size / 2,
+         minHeight: -14
+      };
+   }
+
+   function getTerrainHeight(x, z) {
+      const terrain = environment.terrain;
+      if (!terrain) return null;
+      const { step, half, subdivisions, heights } = terrain;
+      const fx = (x + half) / step;
+      const fz = (z + half) / step;
+      if (fx < 0 || fz < 0 || fx > subdivisions || fz > subdivisions) return null;
+      const ix0 = Math.floor(fx);
+      const iz0 = Math.floor(fz);
+      const ix1 = Math.min(ix0 + 1, subdivisions);
+      const iz1 = Math.min(iz0 + 1, subdivisions);
+      const sx = fx - ix0;
+      const sz = fz - iz0;
+      const stride = subdivisions + 1;
+      const h00 = heights[iz0 * stride + ix0];
+      const h10 = heights[iz0 * stride + ix1];
+      const h01 = heights[iz1 * stride + ix0];
+      const h11 = heights[iz1 * stride + ix1];
+      const hx0 = lerp(h00, h10, sx);
+      const hx1 = lerp(h01, h11, sx);
+      return lerp(hx0, hx1, sz);
+   }
+
+   function deformTerrainAt(point, radius, depth) {
+      const terrain = environment.terrain;
+      if (!terrain) return;
+      const { step, half, subdivisions, heights, positions, normals, indices, mesh, minHeight } = terrain;
+      const stride = subdivisions + 1;
+      const minX = Math.max(0, Math.floor((point.x + half - radius) / step));
+      const maxX = Math.min(subdivisions, Math.ceil((point.x + half + radius) / step));
+      const minZ = Math.max(0, Math.floor((point.z + half - radius) / step));
+      const maxZ = Math.min(subdivisions, Math.ceil((point.z + half + radius) / step));
+      let changed = false;
+      for (let iz = minZ; iz <= maxZ; iz++) {
+         const vz = -half + iz * step;
+         for (let ix = minX; ix <= maxX; ix++) {
+            const vx = -half + ix * step;
+            const dx = vx - point.x;
+            const dz = vz - point.z;
+            const dist = Math.sqrt(dx * dx + dz * dz);
+            if (dist > radius) continue;
+            const falloff = Math.cos((dist / radius) * Math.PI) * 0.5 + 0.5;
+            const idx = iz * stride + ix;
+            const current = heights[idx];
+            const next = Math.max(minHeight, current - depth * falloff);
+            if (next === current) continue;
+            heights[idx] = next;
+            positions[idx * 3 + 1] = next;
+            changed = true;
+         }
+      }
+      if (!changed) return;
+      BABYLON.VertexData.ComputeNormals(positions, indices, normals);
+      mesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind, positions, true);
+      mesh.updateVerticesData(BABYLON.VertexBuffer.NormalKind, normals, true);
+      mesh.refreshBoundingInfo();
+   }
+
+   function scatterVegetation(scene) {
+      const terrain = environment.terrain;
+      if (!terrain) return;
+      const treeCount = 36;
+      const trunkHeight = 3.8;
+      const trunkTemplate = BABYLON.MeshBuilder.CreateCylinder("treeTrunkTemplate", {
+         height: trunkHeight,
+         diameterTop: 0.35,
+         diameterBottom: 0.55,
+         tessellation: 8
+      }, scene);
+      const trunkMat = new BABYLON.StandardMaterial("treeTrunkMat", scene);
+      trunkMat.diffuseColor = new BABYLON.Color3(0.36, 0.23, 0.13);
+      trunkMat.specularColor = BABYLON.Color3.Black();
+      trunkTemplate.material = trunkMat;
+      trunkTemplate.isVisible = false;
+      trunkTemplate.isPickable = false;
+      trunkTemplate.checkCollisions = true;
+
+      const leavesTemplate = BABYLON.MeshBuilder.CreateSphere("treeLeavesTemplate", {
+         diameter: 2.6,
+         segments: 6
+      }, scene);
+      const leavesMat = new BABYLON.StandardMaterial("treeLeavesMat", scene);
+      leavesMat.diffuseColor = new BABYLON.Color3(0.12, 0.32, 0.16);
+      leavesMat.emissiveColor = new BABYLON.Color3(0.04, 0.12, 0.06);
+      leavesMat.specularColor = BABYLON.Color3.Black();
+      leavesTemplate.material = leavesMat;
+      leavesTemplate.isVisible = false;
+      leavesTemplate.isPickable = false;
+
+      for (let i = 0; i < treeCount; i++) {
+         const x = rand(-world.size / 2 + 6, world.size / 2 - 6);
+         const z = rand(-world.size / 2 + 6, world.size / 2 - 6);
+         if (Math.sqrt(x * x + z * z) < 6) continue;
+         const h = getTerrainHeight(x, z);
+         if (h === null) continue;
+         const hX = getTerrainHeight(x + 1.2, z);
+         const hZ = getTerrainHeight(x, z + 1.2);
+         if (hX === null || hZ === null) continue;
+         if (Math.abs(h - hX) > 1.6 || Math.abs(h - hZ) > 1.6) continue;
+         const parent = new BABYLON.TransformNode("tree" + i, scene);
+         parent.position.set(x, h, z);
+         parent.rotation.y = rand(0, Math.PI * 2);
+         const scale = 0.8 + Math.random() * 1.2;
+         parent.scaling.set(scale, scale, scale);
+         const trunk = trunkTemplate.createInstance("treeTrunkInst" + i);
+         trunk.parent = parent;
+         trunk.position.y = trunkHeight / 2;
+         trunk.checkCollisions = true;
+         const leaves = leavesTemplate.createInstance("treeLeavesInst" + i);
+         leaves.parent = parent;
+         leaves.position.y = trunkHeight - 0.3;
+      }
+
+      const grassTemplate = BABYLON.MeshBuilder.CreatePlane("grassTemplate", {
+         width: 0.75,
+         height: 1.2,
+         sideOrientation: BABYLON.Mesh.DOUBLESIDE
+      }, scene);
+      const grassMat = new BABYLON.StandardMaterial("grassMat", scene);
+      grassMat.diffuseColor = new BABYLON.Color3(0.16, 0.44, 0.16);
+      grassMat.emissiveColor = new BABYLON.Color3(0.04, 0.16, 0.04);
+      grassMat.specularColor = BABYLON.Color3.Black();
+      grassMat.backFaceCulling = false;
+      grassTemplate.material = grassMat;
+      grassTemplate.billboardMode = BABYLON.AbstractMesh.BILLBOARDMODE_Y;
+      grassTemplate.isVisible = false;
+      grassTemplate.isPickable = false;
+
+      const tuftCount = 260;
+      for (let i = 0; i < tuftCount; i++) {
+         const x = rand(-world.size / 2 + 2, world.size / 2 - 2);
+         const z = rand(-world.size / 2 + 2, world.size / 2 - 2);
+         const h = getTerrainHeight(x, z);
+         if (h === null || h > 8) continue;
+         const tuft = grassTemplate.createInstance("grassInst" + i);
+         tuft.position.set(x, h + 0.05, z);
+         const s = 0.6 + Math.random() * 0.8;
+         tuft.scaling.set(s, s, s);
+      }
+   }
+
+   function createCloudLayer(scene) {
+      environment.clouds.forEach(c => c.mesh.dispose());
+      environment.clouds = [];
+      const cloudMat = new BABYLON.StandardMaterial("cloudMat", scene);
+      cloudMat.diffuseColor = new BABYLON.Color3(1, 1, 1);
+      cloudMat.emissiveColor = new BABYLON.Color3(0.9, 0.9, 0.95);
+      cloudMat.specularColor = BABYLON.Color3.Black();
+      cloudMat.alpha = 0.8;
+      cloudMat.disableLighting = true;
+      cloudMat.backFaceCulling = false;
+      const count = 14;
+      for (let i = 0; i < count; i++) {
+         const cloud = BABYLON.MeshBuilder.CreatePlane("cloud" + i, {
+            width: 18 + Math.random() * 14,
+            height: 8 + Math.random() * 6,
+            sideOrientation: BABYLON.Mesh.DOUBLESIDE
+         }, scene);
+         cloud.material = cloudMat;
+         cloud.billboardMode = BABYLON.AbstractMesh.BILLBOARDMODE_ALL;
+         cloud.isPickable = false;
+         cloud.position.set(rand(-world.size, world.size), 45 + Math.random() * 12, rand(-world.size, world.size));
+         environment.clouds.push({
+            mesh: cloud,
+            speed: 1 + Math.random() * 1.4,
+            drift: (Math.random() - 0.5) * 0.6
+         });
+      }
+   }
+
+   function setupEnvironment(scene) {
+      reseedEnvironment();
+      environment.sky?.dispose();
+      environment.sunMesh?.dispose();
+      environment.moonMesh?.dispose();
+      environment.sun?.dispose();
+      environment.moon?.dispose();
+      environment.hemi?.dispose();
+      if (world.ground) {
+         world.ground.dispose();
+         world.ground = null;
+      }
+      world.platforms = [];
+      environment.terrain = null;
+
+      environment.hemi = new BABYLON.HemisphericLight("hemi", new BABYLON.Vector3(0, 1, 0), scene);
+      environment.hemi.intensity = 0.35;
+      environment.hemi.groundColor = new BABYLON.Color3(0.08, 0.1, 0.12);
+
+      environment.sun = new BABYLON.DirectionalLight("sun", new BABYLON.Vector3(-0.5, -1, -0.35), scene);
+      environment.sun.diffuse = new BABYLON.Color3(1.0, 0.95, 0.88);
+      environment.sun.specular = new BABYLON.Color3(1.0, 0.95, 0.9);
+
+      environment.moon = new BABYLON.DirectionalLight("moon", new BABYLON.Vector3(0.5, -1, 0.35), scene);
+      environment.moon.diffuse = new BABYLON.Color3(0.55, 0.62, 0.9);
+      environment.moon.specular = new BABYLON.Color3(0.55, 0.62, 0.9);
+      environment.moon.intensity = 0.0;
+
+      environment.sky = BABYLON.MeshBuilder.CreateBox("sky", {
+         size: SKY_RADIUS * 2
+      }, scene);
+      environment.sky.isPickable = false;
+      environment.sky.infiniteDistance = true;
+      const skyMat = new BABYLON.StandardMaterial("skyMat", scene);
+      skyMat.backFaceCulling = false;
+      skyMat.disableLighting = true;
+      skyMat.emissiveColor = new BABYLON.Color3(0.04, 0.06, 0.1);
+      environment.sky.material = skyMat;
+      environment.skyMaterial = skyMat;
+
+      environment.sunMesh = BABYLON.MeshBuilder.CreateDisc("sunMesh", {
+         radius: 8,
+         tessellation: 32
+      }, scene);
+      const sunMat = new BABYLON.StandardMaterial("sunMat", scene);
+      sunMat.diffuseColor = new BABYLON.Color3(1.0, 0.85, 0.55);
+      sunMat.emissiveColor = new BABYLON.Color3(1.0, 0.85, 0.55);
+      sunMat.specularColor = BABYLON.Color3.Black();
+      sunMat.disableLighting = true;
+      sunMat.backFaceCulling = false;
+      environment.sunMesh.material = sunMat;
+      environment.sunMesh.billboardMode = BABYLON.AbstractMesh.BILLBOARDMODE_ALL;
+      environment.sunMesh.isPickable = false;
+
+      environment.moonMesh = BABYLON.MeshBuilder.CreateDisc("moonMesh", {
+         radius: 6,
+         tessellation: 30
+      }, scene);
+      const moonMat = new BABYLON.StandardMaterial("moonMat", scene);
+      moonMat.diffuseColor = new BABYLON.Color3(0.85, 0.9, 1.0);
+      moonMat.emissiveColor = new BABYLON.Color3(0.7, 0.76, 1.0);
+      moonMat.specularColor = BABYLON.Color3.Black();
+      moonMat.disableLighting = true;
+      moonMat.backFaceCulling = false;
+      environment.moonMesh.material = moonMat;
+      environment.moonMesh.billboardMode = BABYLON.AbstractMesh.BILLBOARDMODE_ALL;
+      environment.moonMesh.isPickable = false;
+
+      createTerrain(scene);
+      scatterVegetation(scene);
+      createCloudLayer(scene);
+      updateEnvironment(0);
+   }
+
+   function updateEnvironment(dt) {
+      if (!environment.sun || !environment.skyMaterial) return;
+      environment.time = (environment.time + dt) % environment.dayLength;
+      const phase = environment.time / environment.dayLength;
+      const angle = phase * Math.PI * 2;
+      const sunPos = new BABYLON.Vector3(Math.cos(angle) * SKY_RADIUS, Math.sin(angle) * SKY_RADIUS, Math.sin(angle * 0.6) * SKY_RADIUS);
+      const moonAngle = angle + Math.PI;
+      const moonPos = new BABYLON.Vector3(Math.cos(moonAngle) * SKY_RADIUS, Math.sin(moonAngle) * SKY_RADIUS, Math.sin(moonAngle * 0.6) * SKY_RADIUS);
+      environment.sun.position.copyFrom(sunPos);
+      environment.sun.direction = sunPos.clone().normalize().scale(-1);
+      environment.moon.position.copyFrom(moonPos);
+      environment.moon.direction = moonPos.clone().normalize().scale(-1);
+      environment.sunMesh.position.copyFrom(sunPos);
+      environment.moonMesh.position.copyFrom(moonPos);
+
+      const sunHeight = sunPos.y / SKY_RADIUS;
+      const moonHeight = moonPos.y / SKY_RADIUS;
+      const daylight = clamp((sunHeight + 0.1) / 1.1, 0, 1);
+      const nightLight = clamp((moonHeight + 0.25) / 1.3, 0, 1);
+      const sunIntensity = Math.max(0, sunHeight);
+      environment.sun.intensity = sunIntensity > 0 ? 0.25 + sunIntensity * 1.15 : 0;
+      environment.moon.intensity = nightLight * 0.35;
+      if (environment.hemi) {
+         environment.hemi.intensity = 0.18 + daylight * 0.35 + nightLight * 0.1;
+      }
+
+      const dayColor = new BABYLON.Color3(0.48, 0.68, 0.9);
+      const duskColor = new BABYLON.Color3(0.28, 0.32, 0.5);
+      const nightColor = new BABYLON.Color3(0.03, 0.05, 0.09);
+      const skyBlend = daylight * daylight;
+      const twilight = clamp((sunHeight + 0.4) / 0.7, 0, 1);
+      const skyDay = BABYLON.Color3.Lerp(duskColor, dayColor, skyBlend);
+      const skyTint = BABYLON.Color3.Lerp(nightColor, skyDay, twilight);
+      environment.skyMaterial.emissiveColor = skyTint;
+      scene.clearColor = new BABYLON.Color4(skyTint.r, skyTint.g, skyTint.b, 1);
+      scene.ambientColor = BABYLON.Color3.Lerp(new BABYLON.Color3(0.08, 0.1, 0.14), new BABYLON.Color3(0.32, 0.34, 0.4), twilight);
+      environment.sunMesh.isVisible = sunHeight > -0.1;
+      environment.moonMesh.isVisible = moonHeight > -0.4;
+
+      const cloudLimit = world.size / 2 + 60;
+      environment.clouds.forEach(cloud => {
+         const { mesh, speed, drift } = cloud;
+         mesh.position.x += speed * dt;
+         mesh.position.z += drift * dt;
+         if (mesh.position.x > cloudLimit) mesh.position.x = -cloudLimit;
+         if (mesh.position.x < -cloudLimit) mesh.position.x = cloudLimit;
+         if (mesh.position.z > cloudLimit) mesh.position.z = -cloudLimit;
+         if (mesh.position.z < -cloudLimit) mesh.position.z = cloudLimit;
+      });
    }
    // ===== Save helpers =====
    const SAVE_KEYS = {
@@ -555,62 +955,11 @@
       }
       camera.panningSensibility = 0;
       window.addEventListener("contextmenu", e => e.preventDefault());
+      setupEnvironment(scene);
 
-      new BABYLON.HemisphericLight("hemi", new BABYLON.Vector3(0, 1, 0), scene).intensity = 0.9;
-      const sun = new BABYLON.DirectionalLight("sun", new BABYLON.Vector3(-0.5, -1, -0.35), scene);
-      sun.position = new BABYLON.Vector3(30, 60, 30);
-      sun.intensity = 1.1;
-
-      const sky = BABYLON.MeshBuilder.CreateBox("sky", {
-         size: 500
-      }, scene);
-      const skyMat = new BABYLON.StandardMaterial("skym", scene);
-      skyMat.backFaceCulling = false;
-      skyMat.disableLighting = true;
-      skyMat.emissiveColor = new BABYLON.Color3(0.03, 0.05, 0.09);
-      sky.material = skyMat;
-
-      world.ground = BABYLON.MeshBuilder.CreateGround("ground", {
-         width: world.size,
-         height: world.size,
-         subdivisions: 2
-      }, scene);
-      try {
-         const grid = new BABYLON.GridMaterial("grid", scene);
-         grid.gridRatio = 3;
-         grid.majorUnitFrequency = 5;
-         grid.minorUnitVisibility = 0.45;
-         grid.opacity = 1;
-         grid.color1 = new BABYLON.Color3(0.2, 0.6, 1.0);
-         grid.color2 = new BABYLON.Color3(0.02, 0.05, 0.09);
-         world.ground.material = grid;
-      } catch (e) {
-         const gmat = new BABYLON.StandardMaterial("gmat", scene);
-         gmat.diffuseColor = new BABYLON.Color3(0.08, 0.12, 0.25);
-         world.ground.material = gmat;
-      }
-      world.ground.checkCollisions = true;
-
-      for (let i = 0; i < 16; i++) {
-         const w = 6 + Math.random() * 10,
-            d = 6 + Math.random() * 10,
-            h = 2 + Math.random() * 4;
-         const x = -world.size / 2 + 10 + Math.random() * (world.size - 20);
-         const z = -world.size / 2 + 10 + Math.random() * (world.size - 20);
-         const y = 2 + Math.random() * 12;
-         const plt = BABYLON.MeshBuilder.CreateBox("plt" + i, {
-            width: w,
-            depth: d,
-            height: h
-         }, scene);
-         plt.position.set(x, y, z);
-         plt.checkCollisions = true;
-         const pm = new BABYLON.StandardMaterial("pm" + i, scene);
-         pm.diffuseColor = new BABYLON.Color3(0.12 + Math.random() * 0.15, 0.18 + Math.random() * 0.15, 0.45 + Math.random() * 0.3);
-         pm.emissiveColor = new BABYLON.Color3(0.06, 0.08, 0.12);
-         plt.material = pm;
-         world.platforms.push(plt);
-      }
+      const spawnHeight = getTerrainHeight(0, 0);
+      const baseY = spawnHeight === null ? 3 : spawnHeight + 1.8;
+      startPos = new BABYLON.Vector3(0, baseY, 0);
 
       const p = createHumanoid(state.ch.color || "#00ffcc");
       playerRoot = player = p.root; // collider mesh
@@ -917,10 +1266,24 @@
 
    function spawnWave(n) {
       for (let i = 0; i < n; i++) {
-         const x = rand(-world.size / 3, world.size / 3),
-            z = rand(-world.size / 3, world.size / 3),
-            y = 2 + rand(0, 8);
-         enemies.push(createEnemy(new BABYLON.Vector3(x, y, z)));
+         let spawn = null;
+         for (let attempts = 0; attempts < 12 && !spawn; attempts++) {
+            const x = rand(-world.size / 2 + 6, world.size / 2 - 6);
+            const z = rand(-world.size / 2 + 6, world.size / 2 - 6);
+            const h = getTerrainHeight(x, z);
+            if (h === null) continue;
+            const hX = getTerrainHeight(x + 1.5, z);
+            const hZ = getTerrainHeight(x, z + 1.5);
+            if (hX === null || hZ === null) continue;
+            if (Math.abs(h - hX) > 2 || Math.abs(h - hZ) > 2) continue;
+            spawn = new BABYLON.Vector3(x, h + 1.4, z);
+         }
+         if (!spawn) {
+            const x = rand(-world.size / 3, world.size / 3);
+            const z = rand(-world.size / 3, world.size / 3);
+            spawn = new BABYLON.Vector3(x, 3 + rand(0, 4), z);
+         }
+         enemies.push(createEnemy(spawn));
       }
    }
 
@@ -968,6 +1331,10 @@
       const v = camera.getDirection(new BABYLON.Vector3(0, 0, 1));
       v.y = 0;
       return v.normalize();
+   }
+
+   function playerAimDir() {
+      return camera.getDirection(new BABYLON.Vector3(0, 0, 1)).normalize();
    }
 
    function playerMoveDir() {
@@ -1028,7 +1395,7 @@
          return;
       }
       setCooldown("nenblast", COOLDOWNS.nenblast);
-      const dir = playerForward().normalize();
+      const dir = playerAimDir();
       const orb = BABYLON.MeshBuilder.CreateSphere("blast", {
          diameter: 0.5
       }, scene);
@@ -1051,7 +1418,8 @@
          speed,
          life,
          dmg,
-         radius: 0.55
+         radius: 0.55,
+         prevPos: orb.position.clone()
       });
    }
 
@@ -1124,7 +1492,8 @@
             }
             setCooldown("special", COOLDOWNS.special);
             for (let i = -2; i <= 2; i++) {
-               const dir = playerForward().normalize().add(new BABYLON.Vector3(i * 0.15, 0, 0));
+               const dir = playerAimDir().add(new BABYLON.Vector3(i * 0.15, 0, 0));
+               dir.normalize();
                const orb = BABYLON.MeshBuilder.CreateSphere("blast", {
                   diameter: 0.45
                }, scene);
@@ -1146,7 +1515,8 @@
                   speed,
                   life,
                   dmg,
-                  radius: 0.5
+                  radius: 0.5,
+                  prevPos: orb.position.clone()
                });
             }
             msg("Emitter volley!");
@@ -1175,6 +1545,28 @@
       const phPrev = rootMesh.metadata.animPhase || 0;
       const ph = phPrev + (grounded ? speed * 4.8 : speed * 2.4) * dt * ANIM_SPEED;
       rootMesh.metadata.animPhase = ph;
+
+      P.pelvis.position.x = 0;
+      P.pelvis.position.y = 0;
+      P.pelvis.position.z = 0;
+      P.pelvis.rotation.set(0, 0, 0);
+      if (P.head) {
+         P.head.rotation.x = 0;
+         P.head.rotation.y = 0;
+         P.head.rotation.z = 0;
+      }
+      P.armL.shoulder.rotation.y = 0;
+      P.armR.shoulder.rotation.y = 0;
+      P.armL.shoulder.rotation.z = 0;
+      P.armR.shoulder.rotation.z = 0;
+      P.legL.hip.rotation.y = 0;
+      P.legR.hip.rotation.y = 0;
+      P.legL.hip.rotation.z = 0;
+      P.legR.hip.rotation.z = 0;
+      P.armL.elbow.rotation.y = 0;
+      P.armR.elbow.rotation.y = 0;
+      P.armL.wrist.rotation.z = 0;
+      P.armR.wrist.rotation.z = 0;
 
       const swing = grounded ? Math.sin(ph) * 0.7 : 0.3 * Math.sin(ph * 0.6);
       const armSwing = swing * 0.8;
@@ -1219,6 +1611,79 @@
       P.neck.rotation.x = -0.03 * Math.sin(ph * 2 + 0.2);
    }
 
+   function updateIdleAnim(rootMesh, dt, attackT = 0) {
+      const P = rootMesh.metadata?.parts;
+      if (!P) return;
+      const phPrev = rootMesh.metadata.animPhase || 0;
+      const ph = phPrev + dt * ANIM_SPEED * 0.9;
+      rootMesh.metadata.animPhase = ph;
+
+      const breathe = Math.sin(ph * 0.8) * 0.05;
+      const sway = Math.sin(ph * 0.35) * 0.1;
+      const shift = Math.sin(ph * 0.45 + 1.2) * 0.08;
+
+      P.pelvis.position.x = shift * 0.4;
+      P.pelvis.position.y = 0.02 * Math.sin(ph * 0.8 + 0.4);
+      P.pelvis.position.z = 0;
+      P.pelvis.rotation.x = 0;
+      P.pelvis.rotation.y = sway * 0.45;
+      P.pelvis.rotation.z = -shift * 0.35;
+
+      P.lowerTorso.rotation.x = breathe * 0.6;
+      P.lowerTorso.rotation.y = 0.08 * Math.sin(ph * 0.45);
+      P.lowerTorso.rotation.z = sway * 0.25;
+
+      P.upperTorso.rotation.x = 0.12 * Math.sin(ph * 0.85 + 0.6);
+      P.upperTorso.rotation.y = 0.14 * Math.sin(ph * 0.35 + 0.3);
+      P.upperTorso.rotation.z = -sway * 0.4;
+
+      P.neck.rotation.x = -0.06 * Math.sin(ph * 0.9 + 0.9);
+      P.neck.rotation.y = 0.04 * Math.sin(ph * 0.7);
+      P.neck.rotation.z = 0.02 * Math.sin(ph * 0.5 + 0.5);
+
+      if (P.head) {
+         P.head.rotation.x = -0.03 * Math.sin(ph * 0.85 + 0.4);
+         P.head.rotation.y = 0.05 * Math.sin(ph * 0.6 + 1.1);
+         P.head.rotation.z = 0.01 * Math.sin(ph * 0.8);
+      }
+
+      const armOsc = Math.sin(ph * 0.8);
+      P.armL.shoulder.rotation.x = -0.18 + 0.09 * armOsc;
+      P.armR.shoulder.rotation.x = -0.12 - 0.09 * armOsc;
+      P.armL.shoulder.rotation.y = 0.05 * Math.sin(ph * 0.5);
+      P.armR.shoulder.rotation.y = -0.05 * Math.sin(ph * 0.5 + 0.4);
+      P.armL.shoulder.rotation.z = 0.18 + 0.04 * Math.sin(ph * 0.7);
+      P.armR.shoulder.rotation.z = -0.18 + 0.04 * Math.sin(ph * 0.7 + Math.PI);
+
+      P.armL.elbow.rotation.x = 0.28 + 0.05 * Math.sin(ph * 0.9 + 0.3);
+      P.armR.elbow.rotation.x = 0.28 + 0.05 * Math.sin(ph * 0.9 - 0.3);
+      P.armL.elbow.rotation.y = 0;
+      P.armR.elbow.rotation.y = 0;
+      P.armL.wrist.rotation.x = -0.12 + 0.04 * Math.sin(ph * 1.1);
+      P.armR.wrist.rotation.x = -0.12 + 0.04 * Math.sin(ph * 1.1 + 0.5);
+      P.armL.wrist.rotation.z = 0.02 * Math.sin(ph * 1.4);
+      P.armR.wrist.rotation.z = -0.02 * Math.sin(ph * 1.3);
+
+      P.legL.hip.rotation.x = 0.12 + 0.03 * Math.sin(ph * 0.6);
+      P.legR.hip.rotation.x = 0.12 + 0.03 * Math.sin(ph * 0.6 + Math.PI);
+      P.legL.hip.rotation.y = 0.02 * Math.sin(ph * 0.4);
+      P.legR.hip.rotation.y = -0.02 * Math.sin(ph * 0.4);
+      P.legL.hip.rotation.z = shift * 0.8;
+      P.legR.hip.rotation.z = -shift * 0.8;
+      P.legL.knee.rotation.x = 0.14 + 0.025 * Math.sin(ph * 0.7);
+      P.legR.knee.rotation.x = 0.14 + 0.025 * Math.sin(ph * 0.7 + Math.PI);
+      P.legL.ankle.rotation.x = -0.08 + 0.02 * Math.sin(ph * 0.9);
+      P.legR.ankle.rotation.x = -0.08 + 0.02 * Math.sin(ph * 0.9 + Math.PI);
+
+      if (attackT > 0) {
+         const t = Math.min(1, attackT / 0.22);
+         const k = Math.sin(t * Math.PI);
+         P.armR.shoulder.rotation.x = -1.6 * k;
+         P.armR.elbow.rotation.x = 0.2 * (1 - k);
+         P.armR.wrist.rotation.x = 0.12;
+      }
+   }
+
    // ------------ Main loop ------------
    function tick(dt) {
       // cooldowns & buffs
@@ -1231,6 +1696,8 @@
          state.buffs[k] -= dt;
          if (state.buffs[k] <= 0) delete state.buffs[k];
       });
+
+      updateEnvironment(dt);
 
       // inputs / abilities
       if (inputOnce["Space"]) startJumpCharge();
@@ -1306,11 +1773,42 @@
          const p = projectiles[i];
          p.life.t -= dt;
          if (p.life.t <= 0) {
+            if (world.ground) {
+               const groundY = getTerrainHeight(p.mesh.position.x, p.mesh.position.z);
+               if (groundY !== null && p.mesh.position.y - groundY < 6) {
+                  deformTerrainAt(new BABYLON.Vector3(p.mesh.position.x, groundY, p.mesh.position.z), 2.2, 1.0);
+               }
+            }
             p.mesh.dispose();
             projectiles.splice(i, 1);
             continue;
          }
-         p.mesh.position.addInPlace(p.dir.scale(p.speed * dt));
+         const from = p.prevPos ? p.prevPos.clone() : p.mesh.position.clone();
+         const moveVec = p.dir.scale(p.speed * dt);
+         const stepLen = moveVec.length();
+         let collision = null;
+         if (stepLen > 0.0001) {
+            const rayDir = moveVec.clone();
+            rayDir.normalize();
+            const pick = scene.pickWithRay(new BABYLON.Ray(from, rayDir, stepLen), isGroundMesh);
+            if (pick && pick.hit) collision = pick;
+         }
+         if (collision) {
+            if (collision.pickedMesh === world.ground && collision.pickedPoint) {
+               const radius = 2.2 + (p.radius || 0) * 1.4;
+               const depth = 1.0 + (p.radius || 0) * 0.6;
+               deformTerrainAt(collision.pickedPoint, radius, depth);
+            }
+            p.mesh.dispose();
+            projectiles.splice(i, 1);
+            continue;
+         }
+         p.mesh.position.addInPlace(moveVec);
+         if (p.prevPos) {
+            p.prevPos.copyFrom(p.mesh.position);
+         } else {
+            p.prevPos = p.mesh.position.clone();
+         }
          for (const e of enemies) {
             if (!e.alive) continue;
             if (BABYLON.Vector3.Distance(e.root.position, p.mesh.position) < 0.9 + p.radius * 0.5) {
@@ -1381,7 +1879,12 @@
          const deltaXZ = e.root.position.subtract(e.prevPos);
          deltaXZ.y = 0;
          const spd = deltaXZ.length() / Math.max(dt, 1e-4);
-         updateWalkAnim(e.root, spd * 0.12, e.grounded, dt, e.attackAnimT);
+         const animSpeed = spd * 0.12;
+         if (e.grounded && animSpeed < 0.05 && Math.abs(e.vel.y) < 0.5) {
+            updateIdleAnim(e.root, dt, e.attackAnimT);
+         } else {
+            updateWalkAnim(e.root, animSpeed, e.grounded, dt, e.attackAnimT);
+         }
          applyFootIK(e.root, e.grounded);
          if (e.attackAnimT > 0) e.attackAnimT = Math.max(0, e.attackAnimT - dt);
          e.prevPos.copyFrom(e.root.position);
@@ -1391,7 +1894,12 @@
       const playerDelta = playerRoot.position.subtract(lastPos);
       playerDelta.y = 0;
       const playerSpd = playerDelta.length() / Math.max(dt, 1e-4);
-      updateWalkAnim(playerRoot, playerSpd * 0.12, state.grounded, dt, state.attackAnimT);
+      const playerAnimSpeed = playerSpd * 0.12;
+      if (state.grounded && playerAnimSpeed < 0.05 && moveDir.lengthSquared() < 0.01) {
+         updateIdleAnim(playerRoot, dt, state.attackAnimT);
+      } else {
+         updateWalkAnim(playerRoot, playerAnimSpeed, state.grounded, dt, state.attackAnimT);
+      }
       applyFootIK(playerRoot, state.grounded);
       if (state.attackAnimT > 0) state.attackAnimT = Math.max(0, state.attackAnimT - dt);
 
