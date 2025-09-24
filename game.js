@@ -531,7 +531,7 @@
       createTerrain(scene);
       scatterVegetation(scene);
       createCloudLayer(scene);
-      updateEnvironment(60);
+      updateEnvironment(240);
    }
 
    function advanceEnvironment(dt) {
