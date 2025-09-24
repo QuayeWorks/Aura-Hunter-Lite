@@ -24,12 +24,42 @@
             <div class="btn-row">
                <button id="btn-resume" class="primary" hidden>Resume</button>
                <button id="btn-new" class="success">New Game</button>
+               <button id="btn-settings" class="secondary">Settings</button>
                <button id="btn-rig" class="secondary">Rig Editor (limbs &amp; offsets)</button>
             </div>
             <details class="small">
                <summary>Controls</summary>
                <p>WASD to move, Space to jump (hold to charge), Mouse Right-drag to orbit, Q / E abilities, Shift to dash.</p>
             </details>
+         </div>
+      </div>
+      <!-- ========== SETTINGS ========== -->
+      <div id="screen--settings" class="screen">
+         <div class="panel panel-wide">
+            <h2>Terrain &amp; Performance Settings</h2>
+            <form id="settings-form" class="settings-form">
+               <div class="grid-2">
+                  <label>Terrain Length (cubes)
+                  <input type="number" id="settings-length" min="8" max="256" step="1" required />
+                  </label>
+                  <label>Terrain Width (cubes)
+                  <input type="number" id="settings-width" min="8" max="256" step="1" required />
+                  </label>
+               </div>
+               <div class="grid-2">
+                  <label>Cube Size (world units)
+                  <input type="number" id="settings-cube" min="0.5" max="4" step="0.1" required />
+                  </label>
+                  <label>Active Radius (lag reduction)
+                  <input type="number" id="settings-radius" min="6" max="200" step="1" required />
+                  </label>
+               </div>
+               <p class="small muted">Only cubes within the active radius are visible and collidable. Increase the radius for longer draw distances at the cost of performance.</p>
+               <div class="row-right">
+                  <button type="button" id="settings-cancel" class="secondary">Cancel</button>
+                  <button type="submit" class="primary">Save</button>
+               </div>
+            </form>
          </div>
       </div>
       <!-- ========== CHARACTER CREATOR ========== -->
