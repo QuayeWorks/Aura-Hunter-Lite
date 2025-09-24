@@ -28,6 +28,22 @@
       }
    };
 
+   const HUD_BAR_EPS = 0.0025;
+   const COOLDOWN_UI_INTERVAL = 1 / 30;
+   const hudState = {
+      bars: {
+         health: -1,
+         nen: -1,
+         xp: -1
+      },
+      cooldowns: {
+         nenblast: { active: false, pct: -1 },
+         special: { active: false, pct: -1 },
+         dash: { active: false, pct: -1 }
+      }
+   };
+   let cooldownUiAccumulator = COOLDOWN_UI_INTERVAL;
+
    const isTouchDevice = (() => {
       if (typeof window === "undefined") return false;
       const hasTouch = "ontouchstart" in window || (typeof navigator !== "undefined" && (
@@ -102,6 +118,17 @@
    const GROUND_RAY_EXTRA = 0.8;
    const GROUND_STICK_THRESHOLD = 0.35;
    const FOOT_CLEARANCE = 0.012;
+   const IK_POS_EPS = 1e-4;
+   const IK_ROT_EPS = 0.0015;
+   const IK_IDLE_FRAME_LIMIT = 3;
+   const TMP_PLAYER_MOVE_DIR = new BABYLON.Vector3();
+   const TMP_PLAYER_MOVE_VEC = new BABYLON.Vector3();
+   const TMP_PLAYER_MOTION = new BABYLON.Vector3();
+   const TMP_PLAYER_DELTA = new BABYLON.Vector3();
+   const TMP_ENEMY_TO_PLAYER = new BABYLON.Vector3();
+   const TMP_ENEMY_DELTA = new BABYLON.Vector3();
+   const TMP_IK_DELTA = new BABYLON.Vector3();
+   const TMP_IK_ORIGIN = new BABYLON.Vector3();
    const lerp = (a, b, t) => a + (b - a) * t;
    const ENEMY_ACTIVE_RADIUS = 42;
    const ENEMY_RENDER_RADIUS = 60;
@@ -157,6 +184,46 @@
       if (!rootMesh || !scene) return;
       const meta = rootMesh.metadata;
       if (!meta || !meta.footIK) return;
+      let ikState = meta._ikState;
+      if (!ikState) {
+         ikState = {
+            pos: rootMesh.position.clone(),
+            yaw: rootMesh.rotation.y,
+            grounded,
+            idleFrames: 0
+         };
+         meta._ikState = ikState;
+      }
+      let skipIK = false;
+      if (grounded && ikState.grounded) {
+         TMP_IK_DELTA.copyFrom(rootMesh.position);
+         TMP_IK_DELTA.subtractInPlace(ikState.pos);
+         TMP_IK_DELTA.y = 0;
+         const movedSq = TMP_IK_DELTA.lengthSquared();
+         const rotDelta = Math.abs(rootMesh.rotation.y - ikState.yaw);
+         if (movedSq < IK_POS_EPS && rotDelta < IK_ROT_EPS) {
+            if (ikState.idleFrames < IK_IDLE_FRAME_LIMIT) {
+               ikState.idleFrames++;
+               skipIK = true;
+            } else {
+               ikState.idleFrames = 0;
+            }
+         } else {
+            ikState.idleFrames = 0;
+         }
+      } else {
+         ikState.idleFrames = 0;
+      }
+      if (skipIK) {
+         ikState.pos.copyFrom(rootMesh.position);
+         ikState.yaw = rootMesh.rotation.y;
+         ikState.grounded = grounded;
+         return;
+      }
+      ikState.pos.copyFrom(rootMesh.position);
+      ikState.yaw = rootMesh.rotation.y;
+      ikState.grounded = grounded;
+      ikState.idleFrames = 0;
       const feet = [meta.footIK.left, meta.footIK.right];
       for (const foot of feet) {
          if (!foot || !foot.pivot || !foot.mesh) continue;
@@ -174,8 +241,8 @@
          bInfo.update(foot.mesh.getWorldMatrix());
          const bottomY = bInfo.boundingBox.minimumWorld.y;
          const center = bInfo.boundingBox.centerWorld;
-         const origin = new BABYLON.Vector3(center.x, center.y + foot.castUp, center.z);
-         const pick = scene.pickWithRay(new BABYLON.Ray(origin, VEC3_DOWN, foot.castUp + foot.maxDrop), isGroundMesh);
+         TMP_IK_ORIGIN.set(center.x, center.y + foot.castUp, center.z);
+         const pick = scene.pickWithRay(new BABYLON.Ray(TMP_IK_ORIGIN, VEC3_DOWN, foot.castUp + foot.maxDrop), isGroundMesh);
          if (!pick || !pick.hit) {
             pivot.rotation.x = baseRotX;
             pivot.rotation.z = baseRotZ;
@@ -688,27 +755,71 @@
          t: dur,
          max: dur
       };
+      markCooldownDirty();
    }
 
    function cdActive(key) {
       return state.cooldowns[key] && state.cooldowns[key].t > 0;
    }
 
-   function updateCooldownUI() {
-      function setCd(el, key) {
-         const c = state.cooldowns[key];
-         if (!c) {
-            el.classList.remove("cooling");
-            el.style.setProperty("--pct", "100%");
-            return;
-         }
-         const pct = Math.min(100, Math.max(0, (c.t / c.max) * 100));
-         el.classList.add("cooling");
-         el.style.setProperty("--pct", `${pct}%`);
+   function markCooldownDirty() {
+      cooldownUiAccumulator = COOLDOWN_UI_INTERVAL;
+   }
+
+   function setHudBarWidth(el, pct, key) {
+      if (!el) return;
+      const clamped = clamp(Number.isFinite(pct) ? pct : 0, 0, 1);
+      const last = hudState.bars[key];
+      if (last < 0 || Math.abs(last - clamped) > HUD_BAR_EPS) {
+         el.style.width = `${clamped * 100}%`;
+         hudState.bars[key] = clamped;
       }
-      setCd(hud.cdQ, "nenblast");
-      setCd(hud.cdE, "special");
-      setCd(hud.cdDash, "dash");
+   }
+
+   function updateHealthHud() {
+      setHudBarWidth(hud.health, state.hp / state.maxHP, "health");
+   }
+
+   function updateNenHud() {
+      setHudBarWidth(hud.nenbar, state.nen / state.nenMax, "nen");
+   }
+
+   function updateXpHud(pct) {
+      setHudBarWidth(hud.xpbar, pct, "xp");
+   }
+
+   function updateCooldownUI(dt = 0) {
+      cooldownUiAccumulator += dt;
+      if (cooldownUiAccumulator < COOLDOWN_UI_INTERVAL) return;
+      cooldownUiAccumulator = 0;
+      const targets = [
+         { el: hud.cdQ, key: "nenblast" },
+         { el: hud.cdE, key: "special" },
+         { el: hud.cdDash, key: "dash" }
+      ];
+      for (const { el, key } of targets) {
+         if (!el) continue;
+         const cdState = hudState.cooldowns[key];
+         const cooldown = state.cooldowns[key];
+         if (!cooldown) {
+            if (cdState.active || cdState.pct !== 1) {
+               el.classList.remove("cooling");
+               el.style.setProperty("--pct", "100%");
+               cdState.active = false;
+               cdState.pct = 1;
+            }
+            continue;
+         }
+         const pct = clamp(cooldown.t / cooldown.max, 0, 1);
+         if (!cdState.active) {
+            el.classList.add("cooling");
+            cdState.active = true;
+         }
+         if (cdState.pct < 0 || Math.abs(cdState.pct - pct) > 0.01) {
+            el.style.setProperty("--pct", `${pct * 100}%`);
+            cdState.pct = pct;
+         }
+      }
    }
 
    function msg(s) {
@@ -719,11 +830,11 @@
       hud.name.textContent = state.ch.name || "Hunter";
       hud.nen.textContent = `${state.ch.nen} — ${state.ch.clan||"Wanderer"}`;
       hud.level.textContent = `Lv ${progress.level}  •  Points: ${progress.unspent}`;
-      hud.health.style.width = `${(state.hp/state.maxHP)*100}%`;
-      hud.nenbar.style.width = `${(state.nen/state.nenMax)*100}%`;
+      updateHealthHud();
+      updateNenHud();
       const req = xpToNext(progress.level);
-      const pct = progress.level >= 410 ? 100 : (progress.xp / req) * 100;
-      hud.xpbar.style.width = `${pct}%`;
+      const pct = progress.level >= 410 ? 1 : (progress.xp / req);
+      updateXpHud(pct);
    }
 
    // ===== Rig loader (shared with the Rig Editor) =====
@@ -1165,6 +1276,7 @@
       vel: new BABYLON.Vector3(0, 0, 0),
       grounded: false,
       groundNormal: new BABYLON.Vector3(0, 1, 0),
+      prevPlayerPos: null,
 
       // Jump charging
       chargingJump: false,
@@ -1389,6 +1501,7 @@
       const p = createHumanoid(state.ch.color || "#00ffcc");
       playerRoot = player = p.root; // collider mesh
       playerRoot.position.copyFrom(startPos);
+      state.prevPlayerPos = playerRoot.position.clone();
       player.checkCollisions = true;
       player.metadata = {
          parts: p.parts,
@@ -1722,7 +1835,7 @@
    // ------------ Combat / Abilities ------------
    function takeDamage(amount) {
       state.hp = Math.max(0, state.hp - amount);
-      hud.health.style.width = `${(state.hp/state.maxHP)*100}%`;
+      updateHealthHud();
       if (state.hp <= 0) {
          msg("You were defeated!");
       }
@@ -1731,7 +1844,7 @@
    function spendNen(cost) {
       if (state.nen < cost) return false;
       state.nen -= cost;
-      hud.nenbar.style.width = `${(state.nen/state.nenMax)*100}%`;
+      updateNenHud();
       return true;
    }
 
@@ -1774,7 +1887,8 @@
       const right = camera.getDirection(new BABYLON.Vector3(1, 0, 0));
       right.y = 0;
       right.normalize();
-      const dir = new BABYLON.Vector3(0, 0, 0);
+      const dir = TMP_PLAYER_MOVE_DIR;
+      dir.set(0, 0, 0);
       if (mobileMove.active) {
          dir.addInPlace(fwd.scale(-mobileMove.y));
          dir.addInPlace(right.scale(mobileMove.x));
@@ -1808,7 +1922,7 @@
          return;
       }
       state.nen = Math.max(0, state.nen - drain);
-      hud.nenbar.style.width = `${(state.nen/state.nenMax)*100}%`;
+      updateNenHud();
       state.jumpChargeT = Math.min(JUMP_MAX_T, state.jumpChargeT + dt);
       if (state.nenLight) state.nenLight.intensity = 0.2 + 0.6 * (state.jumpChargeT / JUMP_MAX_T);
    }
@@ -2125,16 +2239,22 @@
 
    // ------------ Main loop ------------
    function tick(dt) {
-      // cooldowns & buffs
-      Object.keys(state.cooldowns).forEach(k => {
-         state.cooldowns[k].t = Math.max(0, state.cooldowns[k].t - dt);
-         if (state.cooldowns[k].t === 0) delete state.cooldowns[k];
-      });
-      updateCooldownUI();
-      Object.keys(state.buffs).forEach(k => {
-         state.buffs[k] -= dt;
-         if (state.buffs[k] <= 0) delete state.buffs[k];
-      });
+      const hasOwn = Object.prototype.hasOwnProperty;
+      for (const key in state.cooldowns) {
+         if (!hasOwn.call(state.cooldowns, key)) continue;
+         const cd = state.cooldowns[key];
+         cd.t = Math.max(0, cd.t - dt);
+         if (cd.t === 0) {
+            delete state.cooldowns[key];
+            markCooldownDirty();
+         }
+      }
+      updateCooldownUI(dt);
+      for (const key in state.buffs) {
+         if (!hasOwn.call(state.buffs, key)) continue;
+         state.buffs[key] -= dt;
+         if (state.buffs[key] <= 0) delete state.buffs[key];
+      }
 
       advanceEnvironment(dt);
 
@@ -2157,15 +2277,25 @@
          if (state.nenLight) state.nenLight.intensity = 0.0;
       }
 
+      if (!state.prevPlayerPos) {
+         state.prevPlayerPos = playerRoot.position.clone();
+      }
+
       // movement + rotation
       const moveDir = playerMoveDir();
       let moveSpeed = 7 + state.eff.agility * 0.6;
       if (state.buffs.berserk) moveSpeed *= 1.35;
-      const moveVec = moveDir.scale(moveSpeed * dt);
+      const moveVec = TMP_PLAYER_MOVE_VEC;
+      moveVec.copyFrom(moveDir);
+      moveVec.scaleInPlace(moveSpeed * dt);
       state.vel.y += world.gravityY * dt;
-      const motion = new BABYLON.Vector3(moveVec.x + state.vel.x * dt, state.vel.y * dt, moveVec.z + state.vel.z * dt);
-      player.moveWithCollisions(motion);
-      const lastPos = playerRoot.position.clone();
+      TMP_PLAYER_MOTION.set(
+         moveVec.x + state.vel.x * dt,
+         state.vel.y * dt,
+         moveVec.z + state.vel.z * dt
+      );
+      player.moveWithCollisions(TMP_PLAYER_MOTION);
+      const lastPos = state.prevPlayerPos;
       playerRoot.position.copyFrom(player.position);
       state.vel.x *= (1 - Math.min(0.92 * dt, 0.9));
       state.vel.z *= (1 - Math.min(0.92 * dt, 0.9));
@@ -2191,15 +2321,18 @@
 
       // passive regen
       state.nen = clamp(state.nen + state.baseNenRegen * dt + (state.chargingNen ? 4.0 * dt : 0), 0, state.nenMax);
-      hud.nenbar.style.width = `${(state.nen/state.nenMax)*100}%`;
+      updateNenHud();
       state.hp = clamp(state.hp + state.baseHpRegen * dt, 0, state.maxHP);
-      hud.health.style.width = `${(state.hp/state.maxHP)*100}%`;
+      updateHealthHud();
 
       // Specialist ult drain
       if (state.timeStop) {
          state.ultT += dt;
+         const prevNen = state.nen;
          state.nen = Math.max(0, state.nen - state.ultDrainRate * dt);
-         hud.nenbar.style.width = `${(state.nen/state.nenMax)*100}%`;
+         if (state.nen !== prevNen) {
+            updateNenHud();
+         }
          if (state.nen <= state.ultMinNen || state.ultT >= state.ultMaxDur) {
             state.timeStop = false;
             setCooldown("special", COOLDOWNS.special);
@@ -2268,8 +2401,9 @@
       const playerPos = playerRoot.position;
       for (const e of enemies) {
          if (!e.alive) continue;
-         const toPlayer = playerPos.subtract(e.root.position);
-         const distSq = toPlayer.lengthSquared();
+         TMP_ENEMY_TO_PLAYER.copyFrom(playerPos);
+         TMP_ENEMY_TO_PLAYER.subtractInPlace(e.root.position);
+         const distSq = TMP_ENEMY_TO_PLAYER.lengthSquared();
 
          if (distSq > ENEMY_RENDER_RADIUS_SQ) {
             if (e.root.isEnabled()) e.root.setEnabled(false);
@@ -2311,9 +2445,9 @@
             e.dormant = false;
          }
 
-         const distXZSq = toPlayer.x * toPlayer.x + toPlayer.z * toPlayer.z;
+         const distXZSq = TMP_ENEMY_TO_PLAYER.x * TMP_ENEMY_TO_PLAYER.x + TMP_ENEMY_TO_PLAYER.z * TMP_ENEMY_TO_PLAYER.z;
          if (distXZSq > 1e-6) {
-            const yaw = Math.atan2(toPlayer.x, toPlayer.z);
+            const yaw = Math.atan2(TMP_ENEMY_TO_PLAYER.x, TMP_ENEMY_TO_PLAYER.z);
             e.root.rotation.y = BABYLON.Scalar.LerpAngle(e.root.rotation.y, yaw, 1 - Math.pow(0.001, dt * 60));
          }
 
@@ -2322,14 +2456,18 @@
          if (!state.timeStop) {
             if (dist > 1.6) {
                if (dist > 1e-4) {
-                  toPlayer.scaleInPlace(1 / dist);
+                  TMP_ENEMY_TO_PLAYER.scaleInPlace(1 / dist);
                } else {
-                  toPlayer.set(0, 0, 0);
+                  TMP_ENEMY_TO_PLAYER.set(0, 0, 0);
                }
-               const step = toPlayer.scale(e.speed * dt);
+               TMP_ENEMY_TO_PLAYER.scaleInPlace(e.speed * dt);
                e.vel.y += world.gravityY * dt;
-               const motionE = new BABYLON.Vector3(step.x + e.vel.x * dt, e.vel.y * dt, step.z + e.vel.z * dt);
-               e.root.moveWithCollisions(motionE);
+               TMP_ENEMY_DELTA.set(
+                  TMP_ENEMY_TO_PLAYER.x + e.vel.x * dt,
+                  e.vel.y * dt,
+                  TMP_ENEMY_TO_PLAYER.z + e.vel.z * dt
+               );
+               e.root.moveWithCollisions(TMP_ENEMY_DELTA);
                e.vel.x *= (1 - Math.min(0.92 * dt, 0.9));
                e.vel.z *= (1 - Math.min(0.92 * dt, 0.9));
                if (e.grounded && Math.random() < 0.005) e.vel.y = 7 + Math.random() * 2;
@@ -2346,7 +2484,8 @@
             e.vel.x = 0;
             e.vel.z = 0;
             e.vel.y += world.gravityY * dt * 0.1;
-            e.root.moveWithCollisions(new BABYLON.Vector3(0, e.vel.y * dt, 0));
+            TMP_ENEMY_DELTA.set(0, e.vel.y * dt, 0);
+            e.root.moveWithCollisions(TMP_ENEMY_DELTA);
          }
 
          const groundE = resolveGrounding(e.root, e.vel.y);
@@ -2362,9 +2501,10 @@
             e.groundNormal.copyFrom(VEC3_UP);
          }
 
-         const deltaXZ = e.root.position.subtract(e.prevPos);
-         deltaXZ.y = 0;
-         const spd = deltaXZ.length() / Math.max(dt, 1e-4);
+         TMP_ENEMY_DELTA.copyFrom(e.root.position);
+         TMP_ENEMY_DELTA.subtractInPlace(e.prevPos);
+         TMP_ENEMY_DELTA.y = 0;
+         const spd = TMP_ENEMY_DELTA.length() / Math.max(dt, 1e-4);
          const animSpeed = spd * 0.12;
          if (e.grounded && animSpeed < 0.05 && Math.abs(e.vel.y) < 0.5) {
             updateIdleAnim(e.root, dt, e.attackAnimT);
@@ -2377,9 +2517,10 @@
       }
 
       // player walk anim
-      const playerDelta = playerRoot.position.subtract(lastPos);
-      playerDelta.y = 0;
-      const playerSpd = playerDelta.length() / Math.max(dt, 1e-4);
+      TMP_PLAYER_DELTA.copyFrom(playerRoot.position);
+      TMP_PLAYER_DELTA.subtractInPlace(lastPos);
+      TMP_PLAYER_DELTA.y = 0;
+      const playerSpd = TMP_PLAYER_DELTA.length() / Math.max(dt, 1e-4);
       const playerAnimSpeed = playerSpd * 0.12;
       if (state.grounded && playerAnimSpeed < 0.05 && moveDir.lengthSquared() < 0.01) {
          updateIdleAnim(playerRoot, dt, state.attackAnimT);
@@ -2388,6 +2529,7 @@
       }
       applyFootIK(playerRoot, state.grounded);
       if (state.attackAnimT > 0) state.attackAnimT = Math.max(0, state.attackAnimT - dt);
+      lastPos.copyFrom(playerRoot.position);
 
       // wave clear / exit
       if (enemies.length && enemies.every(e => !e.alive)) {
@@ -2407,9 +2549,9 @@
                msg("Next wave!");
                spawnWave(8);
                state.hp = Math.min(state.maxHP, state.hp + 20);
-               hud.health.style.width = `${(state.hp/state.maxHP)*100}%`;
+               updateHealthHud();
                state.nen = Math.min(state.nenMax, state.nen + 30);
-               hud.nenbar.style.width = `${(state.nen/state.nenMax)*100}%`;
+               updateNenHud();
             }
          }
       }
