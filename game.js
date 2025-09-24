@@ -270,9 +270,16 @@
       }
    }
 
+   function getCurrentDayPhase() {
+      if (typeof Date !== "function") return 0;
+      const now = new Date();
+      const seconds = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds() + now.getMilliseconds() / 1000;
+      return (seconds % 86400) / 86400;
+   }
+
    function reseedEnvironment() {
       environment.seed = Math.random() * 1000 + (Date.now() % 1000) * 0.001;
-      environment.time = environment.dayLength * Math.random();
+      environment.time = environment.dayLength * getCurrentDayPhase();
    }
 
    function noiseHash(x, z) {
@@ -614,7 +621,7 @@
 
    function updateEnvironment(dt) {
       if (!environment.sun || !environment.skyMaterial) return;
-      environment.time = (environment.time + dt) % environment.dayLength;
+      environment.time = environment.dayLength * getCurrentDayPhase();
       const phase = environment.time / environment.dayLength;
       const angle = phase * Math.PI * 2;
       const sunPos = new BABYLON.Vector3(Math.cos(angle) * SKY_RADIUS, Math.sin(angle) * SKY_RADIUS, Math.sin(angle * 0.6) * SKY_RADIUS);
