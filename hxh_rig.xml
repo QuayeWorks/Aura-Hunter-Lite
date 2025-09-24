@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rig name="CustomRig" color="#804a00">
+  <sizes>
+    <pelvis w="0.850" h="0.350" d="0.520" />
+    <torsoLower w="0.900" h="0.450" d="0.550" />
+    <torsoUpper w="0.950" h="0.710" d="0.550" />
+    <neck w="0.250" h="0.250" d="0.250" />
+    <head w="0.450" h="0.500" d="0.450" />
+    <arm upperW="0.340" upperD="0.340" upperLen="0.750" foreW="0.300" foreD="0.270" foreLen="0.700" handLen="0.250" />
+    <leg thighW="0.450" thighD="0.500" thighLen="1.050" shinW="0.330" shinD="0.430" shinLen="0.880" footW="0.320" footH="0.210" footLen="0.750" />
+  </sizes>
+  <transforms>
+    <pelvis posX="0.000" posY="1.190" posZ="0.000" rotX="0.000" rotY="0.000" rotZ="0.000" />
+    <torsoLower posX="0.000" posY="0.450" posZ="0.000" rotX="0.000" rotY="0.000" rotZ="0.000" />
+    <torsoUpper posX="0.000" posY="0.710" posZ="0.000" rotX="0.000" rotY="0.000" rotZ="0.000" />
+    <neck posX="0.000" posY="0.250" posZ="0.000" rotX="0.000" rotY="0.000" rotZ="0.000" />
+    <head posX="0.000" posY="0.000" posZ="0.000" rotX="0.000" rotY="0.000" rotZ="0.000" />
+    <shoulderL posX="-0.650" posY="0.000" posZ="0.000" rotX="0.000" rotY="180.000" rotZ="0.000" />
+    <armL_upper posX="0.000" posY="0.000" posZ="0.000" rotX="0.000" rotY="0.000" rotZ="0.000" />
+    <armL_fore posX="0.000" posY="-0.750" posZ="0.000" rotX="0.000" rotY="0.000" rotZ="0.000" />
+    <armL_hand posX="0.000" posY="-0.710" posZ="0.000" rotX="0.000" rotY="0.000" rotZ="0.000" />
+    <shoulderR posX="0.650" posY="0.000" posZ="0.000" rotX="0.000" rotY="180.000" rotZ="0.000" />
+    <armR_upper posX="0.000" posY="0.000" posZ="0.000" rotX="0.000" rotY="0.000" rotZ="0.000" />
+    <armR_fore posX="0.000" posY="-0.750" posZ="0.000" rotX="0.000" rotY="0.000" rotZ="0.000" />
+    <armR_hand posX="0.000" posY="-0.710" posZ="0.000" rotX="0.000" rotY="0.000" rotZ="0.000" />
+    <hipL posX="-0.250" posY="-0.350" posZ="0.000" rotX="0.000" rotY="0.000" rotZ="0.000" />
+    <legL_thigh posX="0.000" posY="0.000" posZ="0.000" rotX="0.000" rotY="0.000" rotZ="0.000" />
+    <legL_shin posX="0.000" posY="-1.050" posZ="0.000" rotX="0.000" rotY="0.000" rotZ="0.000" />
+    <legL_foot posX="0.000" posY="-0.880" posZ="-0.210" rotX="0.000" rotY="0.000" rotZ="0.000" />
+    <hipR posX="0.250" posY="-0.350" posZ="0.000" rotX="0.000" rotY="0.000" rotZ="0.000" />
+    <legR_thigh posX="0.000" posY="0.000" posZ="0.000" rotX="0.000" rotY="0.000" rotZ="0.000" />
+    <legR_shin posX="0.000" posY="-1.050" posZ="0.000" rotX="0.000" rotY="0.000" rotZ="0.000" />
+    <legR_foot posX="0.000" posY="-0.880" posZ="-0.210" rotX="0.000" rotY="0.000" rotZ="0.000" />
+  </transforms>
+</rig>
