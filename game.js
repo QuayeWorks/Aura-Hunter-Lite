@@ -753,7 +753,7 @@
 
    // default sizes + *sane default transforms* (shoulders/hips start in a T-pose)
    const DEFAULT_RIG = {
-      color: "#00ffcc",
+      color: "#804a00",
       pelvis: {
          w: 0.850,
          h: 0.350,
@@ -800,55 +800,149 @@
          footLen: 0.75
       },
       transforms: {
-         pelvis: t0(),
-         torsoLower: t0(),
-         torsoUpper: t0(),
-         neck: t0(),
+         pelvis: {
+            ...t0(),
+            pos: {
+               x: 0,
+               y: 1.19,
+               z: 0
+            }
+         },
+         torsoLower: {
+            ...t0(),
+            pos: {
+               x: 0,
+               y: 0.45,
+               z: 0
+            }
+         },
+         torsoUpper: {
+            ...t0(),
+            pos: {
+               x: 0,
+               y: 0.71,
+               z: 0
+            }
+         },
+         neck: {
+            ...t0(),
+            pos: {
+               x: 0,
+               y: 0.25,
+               z: 0
+            }
+         },
          head: t0(),
          shoulderL: {
             ...t0(),
             pos: {
-               x: 0.65,
-               y: 0.00,
+               x: -0.65,
+               y: 0,
+               z: 0
+            },
+            rot: {
+               x: 0,
+               y: 180,
+               z: 0
+            }
+         },
+         armL_upper: t0(),
+         armL_fore: {
+            ...t0(),
+            pos: {
+               x: 0,
+               y: -0.75,
+               z: 0
+            }
+         },
+         armL_hand: {
+            ...t0(),
+            pos: {
+               x: 0,
+               y: -0.71,
                z: 0
             }
          },
          shoulderR: {
             ...t0(),
             pos: {
-               x: -0.65,
-               y: 0.00,
+               x: 0.65,
+               y: 0,
+               z: 0
+            },
+            rot: {
+               x: 0,
+               y: 180,
                z: 0
             }
          },
-         armL_upper: t0(),
-         armL_fore: t0(),
-         armL_hand: t0(),
          armR_upper: t0(),
-         armR_fore: t0(),
-         armR_hand: t0(),
+         armR_fore: {
+            ...t0(),
+            pos: {
+               x: 0,
+               y: -0.75,
+               z: 0
+            }
+         },
+         armR_hand: {
+            ...t0(),
+            pos: {
+               x: 0,
+               y: -0.71,
+               z: 0
+            }
+         },
          hipL: {
             ...t0(),
             pos: {
                x: -0.25,
-               y: -0.12,
+               y: -0.35,
                z: 0
+            }
+         },
+         legL_thigh: t0(),
+         legL_shin: {
+            ...t0(),
+            pos: {
+               x: 0,
+               y: -1.05,
+               z: 0
+            }
+         },
+         legL_foot: {
+            ...t0(),
+            pos: {
+               x: 0,
+               y: -0.88,
+               z: -0.21
             }
          },
          hipR: {
             ...t0(),
             pos: {
-               x: 0.33,
-               y: -0.12,
+               x: 0.25,
+               y: -0.35,
                z: 0
             }
          },
-         legL_thigh: t0(),
-         legL_shin: t0(),
-         legL_foot: t0(),
          legR_thigh: t0(),
-         legR_shin: t0(),
-         legR_foot: t0(),
+         legR_shin: {
+            ...t0(),
+            pos: {
+               x: 0,
+               y: -1.05,
+               z: 0
+            }
+         },
+         legR_foot: {
+            ...t0(),
+            pos: {
+               x: 0,
+               y: -0.88,
+               z: -0.21
+            }
+         },
       }
    };
 
@@ -860,6 +954,10 @@
    function ensureRig(rig) {
       const r = rig && typeof rig === "object" ? rig : {};
       const out = deepClone(DEFAULT_RIG);
+
+      if (typeof r.color === "string") {
+         out.color = r.color;
+      }
 
       // copy sizes if present
       ["pelvis", "torsoLower", "torsoUpper", "neck", "head"].forEach(k => {
@@ -891,18 +989,160 @@
       return out;
    }
 
-   function loadRigParams() {
+   function parseFloatAttr(node, name) {
+      if (!node || !node.hasAttribute(name)) return null;
+      const v = parseFloat(node.getAttribute(name));
+      return Number.isFinite(v) ? v : null;
+   }
+
+   function parseRigXML(text) {
       try {
-         const txt = localStorage.getItem(RIG_KEY);
-         if (!txt) return deepClone(DEFAULT_RIG);
-         return ensureRig(JSON.parse(txt));
-      } catch {
-         return deepClone(DEFAULT_RIG);
+         const doc = new DOMParser().parseFromString(text, "application/xml");
+         if (doc.getElementsByTagName("parsererror").length) return null;
+         const root = doc.querySelector("rig");
+         if (!root) return null;
+
+         const parsed = { transforms: {} };
+         const col = root.getAttribute("color");
+         if (col) parsed.color = col;
+
+         const sizes = root.querySelector("sizes");
+         if (sizes) {
+            const assignDims = (tag, key) => {
+               const node = sizes.querySelector(tag);
+               if (!node) return;
+               const dest = parsed[key] = parsed[key] || {};
+               ["w", "h", "d"].forEach(attr => {
+                  const val = parseFloatAttr(node, attr);
+                  if (val !== null) dest[attr] = val;
+               });
+            };
+            assignDims("pelvis", "pelvis");
+            assignDims("torsoLower", "torsoLower");
+            assignDims("torsoUpper", "torsoUpper");
+            assignDims("neck", "neck");
+            assignDims("head", "head");
+
+            const arm = sizes.querySelector("arm");
+            if (arm) {
+               const dest = parsed.arm = parsed.arm || {};
+               [
+                  ["upperW", "upperW"],
+                  ["upperD", "upperD"],
+                  ["upperLen", "upperLen"],
+                  ["foreW", "foreW"],
+                  ["foreD", "foreD"],
+                  ["foreLen", "foreLen"],
+                  ["handLen", "handLen"]
+               ].forEach(([attr, key]) => {
+                  const val = parseFloatAttr(arm, attr);
+                  if (val !== null) dest[key] = val;
+               });
+            }
+
+            const leg = sizes.querySelector("leg");
+            if (leg) {
+               const dest = parsed.leg = parsed.leg || {};
+               [
+                  ["thighW", "thighW"],
+                  ["thighD", "thighD"],
+                  ["thighLen", "thighLen"],
+                  ["shinW", "shinW"],
+                  ["shinD", "shinD"],
+                  ["shinLen", "shinLen"],
+                  ["footW", "footW"],
+                  ["footH", "footH"],
+                  ["footLen", "footLen"]
+               ].forEach(([attr, key]) => {
+                  const val = parseFloatAttr(leg, attr);
+                  if (val !== null) dest[key] = val;
+               });
+            }
+         }
+
+         const transforms = root.querySelector("transforms");
+         if (transforms) {
+            for (const key of PART_KEYS) {
+               const node = transforms.querySelector(key);
+               if (!node) continue;
+               const tr = { pos: {}, rot: {} };
+               let touched = false;
+               [
+                  ["posX", "x"],
+                  ["posY", "y"],
+                  ["posZ", "z"]
+               ].forEach(([attr, axis]) => {
+                  const val = parseFloatAttr(node, attr);
+                  if (val !== null) {
+                     tr.pos[axis] = val;
+                     touched = true;
+                  }
+               });
+               [
+                  ["rotX", "x"],
+                  ["rotY", "y"],
+                  ["rotZ", "z"]
+               ].forEach(([attr, axis]) => {
+                  const val = parseFloatAttr(node, attr);
+                  if (val !== null) {
+                     tr.rot[axis] = val;
+                     touched = true;
+                  }
+               });
+               if (touched) parsed.transforms[key] = tr;
+            }
+         }
+
+         return parsed;
+      } catch (err) {
+         console.warn("Failed to parse rig XML", err);
+         return null;
       }
    }
 
-   // Load once on boot
-   const RIG = loadRigParams();
+   function loadRigFromStorage() {
+      try {
+         const txt = localStorage.getItem(RIG_KEY);
+         if (!txt) return null;
+         return ensureRig(JSON.parse(txt));
+      } catch {
+         return null;
+      }
+   }
+
+   async function fetchRigDefault() {
+      if (typeof fetch !== "function") return null;
+      try {
+         const res = await fetch("hxh_rig.xml", { cache: "no-cache" });
+         if (!res.ok) throw new Error(`HTTP ${res.status}`);
+         const text = await res.text();
+         const parsed = parseRigXML(text);
+         return parsed ? ensureRig(parsed) : null;
+      } catch (err) {
+         console.warn("Failed to load default rig XML", err);
+         return null;
+      }
+   }
+
+   let RIG = deepClone(DEFAULT_RIG);
+   const rigReady = (async () => {
+      const stored = loadRigFromStorage();
+      if (stored) {
+         RIG = stored;
+         return;
+      }
+
+      const xmlRig = await fetchRigDefault();
+      if (xmlRig) {
+         RIG = xmlRig;
+         try {
+            localStorage.setItem(RIG_KEY, JSON.stringify(RIG));
+         } catch {}
+         return;
+      }
+
+      RIG = deepClone(DEFAULT_RIG);
+   })();
 
    // ------- Game state -------
    const state = {
@@ -1204,7 +1444,9 @@
       hud.pauseOverlay.classList.toggle("visible", paused);
    }
 
-   function startGame(ch) {
+   async function startGame(ch) {
+      await rigReady;
+
       state.ch = ch;
       saveCharacter(ch);
       // seed pools before recompute (so we don't clamp to zero)
@@ -2218,7 +2460,9 @@
 
    // Public API
    window.HXH = {
-      startGame
+      startGame,
+      rigReady,
+      getRig: () => RIG
    };
 })();
 

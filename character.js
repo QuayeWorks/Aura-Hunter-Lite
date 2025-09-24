@@ -9,7 +9,9 @@
       const rig = JSON.parse(localStorage.getItem("hxh.rig.params") || "null");
       if (rig?.color) return rig.color;
     } catch {}
-    return "#00ffcc";
+    const runtimeRig = window.HXH?.getRig?.();
+    if (runtimeRig?.color) return runtimeRig.color;
+    return "#804a00";
   }
 
   function boot() {
@@ -33,6 +35,14 @@
     if (colEl && !colEl.dataset.userTouched) {
       colEl.value = loadRigColor();
       colEl.addEventListener("input", ()=> colEl.dataset.userTouched = "1");
+      const ready = window.HXH?.rigReady;
+      if (ready && typeof ready.then === "function") {
+        ready.then(() => {
+          if (colEl && !colEl.dataset.userTouched) {
+            colEl.value = loadRigColor();
+          }
+        }).catch(() => {});
+      }
     }
 
     function clamp01(x,min,max){ return Math.min(max, Math.max(min, x)); }
