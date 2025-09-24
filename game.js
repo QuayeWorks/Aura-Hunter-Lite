@@ -53,6 +53,103 @@
       ground: null,
       platforms: []
    };
+   const VEC3_UP = new BABYLON.Vector3(0, 1, 0);
+   const VEC3_DOWN = new BABYLON.Vector3(0, -1, 0);
+   const GROUND_RAY_EXTRA = 0.8;
+   const GROUND_STICK_THRESHOLD = 0.35;
+   const FOOT_CLEARANCE = 0.012;
+
+   function isGroundMesh(mesh) {
+      return !!mesh && (mesh === world.ground || world.platforms.includes(mesh));
+   }
+
+   function resolveGrounding(mesh, velY) {
+      if (!scene || !mesh || mesh.isDisposed()) {
+         return {
+            grounded: false,
+            correction: 0,
+            normal: VEC3_UP,
+            distance: Infinity,
+            hitPointY: -Infinity
+         };
+      }
+      mesh.computeWorldMatrix(true);
+      const boundingInfo = mesh.getBoundingInfo();
+      boundingInfo.update(mesh.getWorldMatrix());
+      const halfHeight = boundingInfo.boundingBox.extendSize.y;
+      const origin = new BABYLON.Vector3(mesh.position.x, mesh.position.y + halfHeight + GROUND_RAY_EXTRA, mesh.position.z);
+      const rayLen = halfHeight + GROUND_RAY_EXTRA + 1.5;
+      const pick = scene.pickWithRay(new BABYLON.Ray(origin, VEC3_DOWN, rayLen), isGroundMesh);
+      if (!pick || !pick.hit) {
+         return {
+            grounded: false,
+            correction: 0,
+            normal: VEC3_UP,
+            distance: Infinity,
+            hitPointY: -Infinity
+         };
+      }
+      const bottom = boundingInfo.boundingBox.minimumWorld.y;
+      const distToGround = bottom - pick.pickedPoint.y;
+      const grounded = velY <= 0.4 && distToGround <= GROUND_STICK_THRESHOLD;
+      const desiredMin = pick.pickedPoint.y + FOOT_CLEARANCE;
+      const correction = grounded ? Math.max(0, desiredMin - bottom) : 0;
+      const normal = pick.getNormal(true) || VEC3_UP;
+      return {
+         grounded,
+         correction,
+         normal,
+         distance: distToGround,
+         hitPointY: pick.pickedPoint.y
+      };
+   }
+
+   function applyFootIK(rootMesh, grounded) {
+      if (!rootMesh || !scene) return;
+      const meta = rootMesh.metadata;
+      if (!meta || !meta.footIK) return;
+      const feet = [meta.footIK.left, meta.footIK.right];
+      for (const foot of feet) {
+         if (!foot || !foot.pivot || !foot.mesh) continue;
+         const pivot = foot.pivot;
+         const baseRotX = pivot.rotation.x;
+         const baseRotZ = pivot.rotation.z;
+         pivot.position.copyFrom(foot.restPos);
+         if (!grounded) {
+            pivot.rotation.x = baseRotX;
+            pivot.rotation.z = baseRotZ;
+            continue;
+         }
+         foot.mesh.computeWorldMatrix(true);
+         const bInfo = foot.mesh.getBoundingInfo();
+         bInfo.update(foot.mesh.getWorldMatrix());
+         const bottomY = bInfo.boundingBox.minimumWorld.y;
+         const center = bInfo.boundingBox.centerWorld;
+         const origin = new BABYLON.Vector3(center.x, center.y + foot.castUp, center.z);
+         const pick = scene.pickWithRay(new BABYLON.Ray(origin, VEC3_DOWN, foot.castUp + foot.maxDrop), isGroundMesh);
+         if (!pick || !pick.hit) {
+            pivot.rotation.x = baseRotX;
+            pivot.rotation.z = baseRotZ;
+            continue;
+         }
+         const gap = bottomY - pick.pickedPoint.y;
+         if (gap > foot.contactThreshold) {
+            pivot.rotation.x = baseRotX;
+            pivot.rotation.z = baseRotZ;
+            continue;
+         }
+         const desiredMin = pick.pickedPoint.y + foot.clearance;
+         const lift = desiredMin - bottomY;
+         if (lift > 0) {
+            pivot.position.y += Math.min(lift, foot.maxLift);
+         }
+         const normal = pick.getNormal(true) || VEC3_UP;
+         const tiltX = Math.atan2(normal.z, normal.y);
+         const tiltZ = -Math.atan2(normal.x, normal.y);
+         pivot.rotation.x = baseRotX + tiltX;
+         pivot.rotation.z = baseRotZ + tiltZ;
+      }
+   }
    // ===== Save helpers =====
    const SAVE_KEYS = {
       progress: "hxh.progress",
@@ -385,6 +482,7 @@
       cooldowns: {},
       vel: new BABYLON.Vector3(0, 0, 0),
       grounded: false,
+      groundNormal: new BABYLON.Vector3(0, 1, 0),
 
       // Jump charging
       chargingJump: false,
@@ -747,18 +845,44 @@
          legL: {
             hip: legL.thigh.pivot,
             knee: legL.shin.pivot,
-            ankle: legL.foot.pivot
+            ankle: legL.foot.pivot,
+            footMesh: legL.foot.mesh
          },
          legR: {
             hip: legR.thigh.pivot,
             knee: legR.shin.pivot,
-            ankle: legR.foot.pivot
+            ankle: legR.foot.pivot,
+            footMesh: legR.foot.mesh
+         }
+      };
+
+      const footIK = {
+         left: {
+            pivot: legL.foot.pivot,
+            mesh: legL.foot.mesh,
+            restPos: legL.foot.pivot.position.clone(),
+            castUp: 0.45,
+            maxDrop: s.leg.thighLen + s.leg.shinLen + 0.6,
+            clearance: FOOT_CLEARANCE,
+            contactThreshold: 0.5,
+            maxLift: 0.35
+         },
+         right: {
+            pivot: legR.foot.pivot,
+            mesh: legR.foot.mesh,
+            restPos: legR.foot.pivot.position.clone(),
+            castUp: 0.45,
+            maxDrop: s.leg.thighLen + s.leg.shinLen + 0.6,
+            clearance: FOOT_CLEARANCE,
+            contactThreshold: 0.5,
+            maxLift: 0.35
          }
       };
 
       root.metadata = {
          parts,
-         animPhase: 0
+         animPhase: 0,
+         footIK
       };
       return {
          root,
@@ -779,14 +903,15 @@
          attackCd: 0,
          vel: new BABYLON.Vector3(0, 0, 0),
          grounded: false,
+         groundNormal: new BABYLON.Vector3(0, 1, 0),
          prevPos: h.root.position.clone(),
          animPhase: 0,
          attackAnimT: 0
       };
-      h.root.metadata = {
-         parts: h.parts,
-         animPhase: 0
-      };
+      const meta = h.root.metadata || {};
+      meta.parts = h.parts;
+      meta.animPhase = 0;
+      h.root.metadata = meta;
       return e;
    }
 
@@ -1144,15 +1269,18 @@
       }
 
       // ground check
-      const ray = new BABYLON.Ray(player.position, new BABYLON.Vector3(0, -1, 0), 1.1);
-      const pick = scene.pickWithRay(ray, (m) => m === world.ground || world.platforms.includes(m));
-      const wasGrounded = state.grounded;
-      state.grounded = !!pick.hit && state.vel.y <= 0.1;
+      const groundInfo = resolveGrounding(player, state.vel.y);
+      state.grounded = groundInfo.grounded;
       if (state.grounded) {
-         if (!wasGrounded) {
-            player.moveWithCollisions(new BABYLON.Vector3(0, 0.02, 0));
+         state.groundNormal.copyFrom(groundInfo.normal);
+         if (groundInfo.correction > 0) {
+            player.position.y += groundInfo.correction;
+            player.computeWorldMatrix(true);
+            playerRoot.position.copyFrom(player.position);
          }
          if (state.vel.y < 0) state.vel.y = 0;
+      } else {
+         state.groundNormal.copyFrom(VEC3_UP);
       }
 
       // passive regen
@@ -1237,19 +1365,24 @@
             e.root.moveWithCollisions(new BABYLON.Vector3(0, e.vel.y * dt, 0));
          }
 
-         const rayE = new BABYLON.Ray(e.root.position, new BABYLON.Vector3(0, -1, 0), 1.1);
-         const pickE = scene.pickWithRay(rayE, (m) => m === world.ground || world.platforms.includes(m));
-         const wasG = e.grounded;
-         e.grounded = !!pickE.hit && e.vel.y <= 0.1;
-         if (e.grounded && e.vel.y < 0) e.vel.y = 0;
-         if (e.grounded && !wasG) {
-            e.root.moveWithCollisions(new BABYLON.Vector3(0, 0.02, 0));
+         const groundE = resolveGrounding(e.root, e.vel.y);
+         e.grounded = groundE.grounded;
+         if (e.grounded) {
+            if (groundE.correction > 0) {
+               e.root.position.y += groundE.correction;
+               e.root.computeWorldMatrix(true);
+            }
+            if (e.vel.y < 0) e.vel.y = 0;
+            e.groundNormal.copyFrom(groundE.normal);
+         } else {
+            e.groundNormal.copyFrom(VEC3_UP);
          }
 
          const deltaXZ = e.root.position.subtract(e.prevPos);
          deltaXZ.y = 0;
          const spd = deltaXZ.length() / Math.max(dt, 1e-4);
          updateWalkAnim(e.root, spd * 0.12, e.grounded, dt, e.attackAnimT);
+         applyFootIK(e.root, e.grounded);
          if (e.attackAnimT > 0) e.attackAnimT = Math.max(0, e.attackAnimT - dt);
          e.prevPos.copyFrom(e.root.position);
       }
@@ -1259,6 +1392,7 @@
       playerDelta.y = 0;
       const playerSpd = playerDelta.length() / Math.max(dt, 1e-4);
       updateWalkAnim(playerRoot, playerSpd * 0.12, state.grounded, dt, state.attackAnimT);
+      applyFootIK(playerRoot, state.grounded);
       if (state.attackAnimT > 0) state.attackAnimT = Math.max(0, state.attackAnimT - dt);
 
       // wave clear / exit
