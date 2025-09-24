@@ -156,11 +156,16 @@
       moonMesh: null,
       hemi: null,
       clouds: [],
+      trees: [],
       terrain: null,
       terrainSettings: { ...savedTerrainSettings },
       updateAccumulator: 0,
       updateInterval: 1 / 24
    };
+
+   const TREE_MODEL_FILES = ["tree1.fbx", "tree2.fbx"];
+   let treeAssetPromise = null;
+   let treeAssetSources = null;
 
    const GameSettings = {
       getTerrainSettings() {
@@ -579,90 +584,88 @@
       return removeTopBlock(idx);
    }
 
-   function scatterVegetation(scene) {
+   async function loadTreeAssets(scene) {
+      if (treeAssetSources) return treeAssetSources;
+      if (!treeAssetPromise) {
+         treeAssetPromise = Promise.all(TREE_MODEL_FILES.map(async (file) => {
+            const container = await BABYLON.SceneLoader.LoadAssetContainerAsync("assets/models/", file, scene);
+            container.meshes.forEach(mesh => {
+               mesh.isPickable = false;
+               mesh.checkCollisions = true;
+            });
+            container.transformNodes.forEach(node => {
+               if (node.rotationQuaternion) {
+                  node.rotation = node.rotationQuaternion.toEulerAngles();
+                  node.rotationQuaternion = null;
+               }
+            });
+            return container;
+         })).then(containers => containers.filter(Boolean));
+      }
+      treeAssetSources = await treeAssetPromise;
+      return treeAssetSources;
+   }
+
+   async function scatterVegetation(scene) {
       const terrain = environment.terrain;
       if (!terrain) return;
+
+      environment.trees.forEach(tree => tree.dispose());
+      environment.trees = [];
+
+      const sources = await loadTreeAssets(scene);
+      if (!sources || sources.length === 0) return;
+
       const treeCount = 18;
-      const trunkHeight = 3.8;
-      const trunkTemplate = BABYLON.MeshBuilder.CreateCylinder("treeTrunkTemplate", {
-         height: trunkHeight,
-         diameterTop: 0.35,
-         diameterBottom: 0.55,
-         tessellation: 8
-      }, scene);
-      const trunkMat = new BABYLON.StandardMaterial("treeTrunkMat", scene);
-      trunkMat.diffuseColor = new BABYLON.Color3(0.36, 0.23, 0.13);
-      trunkMat.specularColor = BABYLON.Color3.Black();
-      trunkTemplate.material = trunkMat;
-      trunkTemplate.isVisible = false;
-      trunkTemplate.isPickable = false;
-      trunkTemplate.checkCollisions = true;
-
-      const leavesTemplate = BABYLON.MeshBuilder.CreateSphere("treeLeavesTemplate", {
-         diameter: 2.6,
-         segments: 6
-      }, scene);
-      const leavesMat = new BABYLON.StandardMaterial("treeLeavesMat", scene);
-      leavesMat.diffuseColor = new BABYLON.Color3(0.12, 0.32, 0.16);
-      leavesMat.emissiveColor = new BABYLON.Color3(0.04, 0.12, 0.06);
-      leavesMat.specularColor = BABYLON.Color3.Black();
-      leavesTemplate.material = leavesMat;
-      leavesTemplate.isVisible = false;
-      leavesTemplate.isPickable = false;
-
       const halfX = terrain.halfX;
       const halfZ = terrain.halfZ;
-      if (halfX > 6 && halfZ > 6) {
-         for (let i = 0; i < treeCount; i++) {
-            const x = rand(-halfX + 6, halfX - 6);
-            const z = rand(-halfZ + 6, halfZ - 6);
-            if (Math.sqrt(x * x + z * z) < 6) continue;
-            const h = getTerrainHeight(x, z);
-            if (h === null) continue;
-            const hX = getTerrainHeight(x + 1.2, z);
-            const hZ = getTerrainHeight(x, z + 1.2);
-            if (hX === null || hZ === null) continue;
-            if (Math.abs(h - hX) > 1.6 || Math.abs(h - hZ) > 1.6) continue;
-            const parent = new BABYLON.TransformNode("tree" + i, scene);
-            parent.position.set(x, h, z);
-            parent.rotation.y = rand(0, Math.PI * 2);
-            const scale = 0.8 + Math.random() * 1.2;
-            parent.scaling.set(scale, scale, scale);
-            const trunk = trunkTemplate.createInstance("treeTrunkInst" + i);
-            trunk.parent = parent;
-            trunk.position.y = trunkHeight / 2;
-            trunk.checkCollisions = true;
-            const leaves = leavesTemplate.createInstance("treeLeavesInst" + i);
-            leaves.parent = parent;
-            leaves.position.y = trunkHeight - 0.3;
-         }
-      }
+      if (halfX <= 6 || halfZ <= 6) return;
 
-      const grassTemplate = BABYLON.MeshBuilder.CreatePlane("grassTemplate", {
-         width: 0.75,
-         height: 1.2,
-         sideOrientation: BABYLON.Mesh.DOUBLESIDE
-      }, scene);
-      const grassMat = new BABYLON.StandardMaterial("grassMat", scene);
-      grassMat.diffuseColor = new BABYLON.Color3(0.16, 0.44, 0.16);
-      grassMat.emissiveColor = new BABYLON.Color3(0.04, 0.16, 0.04);
-      grassMat.specularColor = BABYLON.Color3.Black();
-      grassMat.backFaceCulling = false;
-      grassTemplate.material = grassMat;
-      grassTemplate.billboardMode = BABYLON.AbstractMesh.BILLBOARDMODE_Y;
-      grassTemplate.isVisible = false;
-      grassTemplate.isPickable = false;
-
-      const tuftCount = 130;
-      for (let i = 0; i < tuftCount; i++) {
-         const x = rand(-halfX + 2, halfX - 2);
-         const z = rand(-halfZ + 2, halfZ - 2);
+      for (let i = 0; i < treeCount; i++) {
+         const x = rand(-halfX + 6, halfX - 6);
+         const z = rand(-halfZ + 6, halfZ - 6);
+         if (Math.sqrt(x * x + z * z) < 6) continue;
          const h = getTerrainHeight(x, z);
-         if (h === null || h > 8) continue;
-         const tuft = grassTemplate.createInstance("grassInst" + i);
-         tuft.position.set(x, h + 0.05, z);
-         const s = 0.6 + Math.random() * 0.8;
-         tuft.scaling.set(s, s, s);
+         if (h === null) continue;
+         const hX = getTerrainHeight(x + 1.2, z);
+         const hZ = getTerrainHeight(x, z + 1.2);
+         if (hX === null || hZ === null) continue;
+         if (Math.abs(h - hX) > 1.6 || Math.abs(h - hZ) > 1.6) continue;
+
+         const template = sources[Math.floor(Math.random() * sources.length)];
+         if (!template) continue;
+         const instance = template.instantiateModelsToScene((name) => `${name}_tree${i}`, false);
+         const treeRoot = new BABYLON.TransformNode(`tree${i}`, scene);
+         treeRoot.position.set(x, 0, z);
+         treeRoot.rotation.y = rand(0, Math.PI * 2);
+         const scale = 0.8 + Math.random() * 1.2;
+         treeRoot.scaling.set(scale, scale, scale);
+
+         instance.rootNodes.forEach(node => {
+            node.parent = treeRoot;
+         });
+         instance.animationGroups.forEach(group => {
+            group.stop();
+            group.dispose();
+         });
+
+         const childMeshes = treeRoot.getChildMeshes();
+         childMeshes.forEach(mesh => {
+            mesh.isPickable = false;
+            mesh.checkCollisions = true;
+            mesh.computeWorldMatrix(true);
+         });
+
+         let minY = Infinity;
+         childMeshes.forEach(mesh => {
+            const info = mesh.getBoundingInfo();
+            if (!info) return;
+            const min = info.boundingBox.minimumWorld.y;
+            if (min < minY) minY = min;
+         });
+         treeRoot.position.y = Number.isFinite(minY) ? h - minY : h;
+
+         environment.trees.push(treeRoot);
       }
    }
 
@@ -695,7 +698,7 @@
       }
    }
 
-   function setupEnvironment(scene) {
+   async function setupEnvironment(scene) {
       reseedEnvironment();
       environment.sky?.dispose();
       environment.sunMesh?.dispose();
@@ -761,7 +764,7 @@
       environment.moonMesh.isPickable = false;
 
       createTerrain(scene);
-      scatterVegetation(scene);
+      await scatterVegetation(scene);
       createCloudLayer(scene);
       updateEnvironment(240);
    }
@@ -1643,7 +1646,7 @@
       });
    }
 
-   function setupBabylon(canvas) {
+   async function setupBabylon(canvas) {
       engine = new BABYLON.Engine(canvas, true, {
          stencil: true
       });
@@ -1665,7 +1668,7 @@
       }
       camera.panningSensibility = 0;
       window.addEventListener("contextmenu", e => e.preventDefault());
-      setupEnvironment(scene);
+      await setupEnvironment(scene);
 
       const spawnHeight = getTerrainHeight(0, 0);
       const baseY = spawnHeight === null ? 3 : spawnHeight + 1.8;
@@ -1697,6 +1700,14 @@
          initMobileControls();
       }
 
+      canvas.addEventListener("pointerdown", (e) => {
+         if (paused) return;
+         if (e.pointerType === "mouse" && e.button === 0) {
+            e.preventDefault();
+            melee();
+         }
+      });
+
       window.addEventListener("keydown", e => {
          if (e.code === "Escape") {
             togglePause();
@@ -1711,7 +1722,7 @@
       });
       window.addEventListener("mousedown", (e) => {
          if (paused) return;
-         if (e.button === 0) melee();
+         if (e.button === 0 && e.target !== canvas) melee();
       });
 
       engine.runRenderLoop(() => {
@@ -1754,7 +1765,7 @@
       updateHUD();
       msg("Defeat enemies to trigger the exit portal! Press L to open the Level menu.");
       const canvas = $("#game-canvas");
-      setupBabylon(canvas);
+      await setupBabylon(canvas);
       setTimeout(() => {
          try {
             canvas.focus();
@@ -2407,9 +2418,14 @@
       if (attackT > 0) {
          const t = Math.min(1, attackT / 0.22);
          const k = Math.sin(t * Math.PI);
-         P.armR.shoulder.rotation.x = -1.6 * k;
-         P.armR.elbow.rotation.x = 0.2 * (1 - k);
-         P.armR.wrist.rotation.x = 0.12;
+         const reach = 1.6 * 1.9;
+         const elbowStart = 0.2;
+         const elbowEnd = -0.32;
+         const wristStart = 0.12;
+         const wristEnd = -0.08;
+         P.armR.shoulder.rotation.x = -reach * k;
+         P.armR.elbow.rotation.x = elbowStart * (1 - k) + elbowEnd * k;
+         P.armR.wrist.rotation.x = wristStart * (1 - k) + wristEnd * k;
       }
 
       P.lowerTorso.rotation.x = 0.05 * Math.sin(ph * 2) * (grounded ? 1 : 0.3);
@@ -2484,9 +2500,14 @@
       if (attackT > 0) {
          const t = Math.min(1, attackT / 0.22);
          const k = Math.sin(t * Math.PI);
-         P.armR.shoulder.rotation.x = -1.6 * k;
-         P.armR.elbow.rotation.x = 0.2 * (1 - k);
-         P.armR.wrist.rotation.x = 0.12;
+         const reach = 1.6 * 1.9;
+         const elbowStart = 0.2;
+         const elbowEnd = -0.32;
+         const wristStart = 0.12;
+         const wristEnd = -0.08;
+         P.armR.shoulder.rotation.x = -reach * k;
+         P.armR.elbow.rotation.x = elbowStart * (1 - k) + elbowEnd * k;
+         P.armR.wrist.rotation.x = wristStart * (1 - k) + wristEnd * k;
       }
    }
 
