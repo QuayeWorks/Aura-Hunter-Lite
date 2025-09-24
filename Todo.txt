@@ -1,0 +1,181 @@
+Lets improve Gameplay to make this more intreresting.
+
+Character Variety
+
+Support humanoid and anthropomorphic rigs across a wide range of heights and proportions as well as quadroped.
+
+
+
+anthropomorphic Mechanic
+
+On killing a target, a anthropomorphic has a 25% chance to absorb one of the victim’s abilities and gain a portion of their strength.
+
+
+Fix left clicking not attacking. Also fix the punches so the animations extend the arms out by 90% more.
+
+I have added tree1.fbx and tree2.fbx in the assets/models folder. Pleas use these as the trees instead of generating random ones from now on. Also no loger generate grass.
+
+Core Aura Economy (always on)
+
+Aura leak: if not in Ten or Zetsu, Nen slowly leaks (–0.8/s).
+
+Ten (T toggle): seals leaks, +10% DR vs non-Nen hits; slight nen regen penalty (–15%).
+
+Zetsu (Z toggle): no aura leak, +stealth (enemies’ aggro range –60%), no aura guard (take +50% Nen damage).
+
+Ren (hold R): ramps aura output; +30–120% attack/ability power while held, drains nen (2→8/s). Suppressed by Zetsu/Ten rules below.
+
+Emotion/Threat: holding Ren + aiming at enemies emits bloodlust cone; weak mobs hesitate/flee.
+
+Update in tick(dt): apply leak/regen, DR, stealth, and state.aura.renMul.
+
+
+Four Major + Advanced Techniques
+1) Gyo (Focus) – Eyes
+
+Input: G toggle (drains 0.6/s).
+
+Effect: Reveals In objects/traps and enemy weak points (+15% crit window). Slight tunnel vision vignette.
+
+2) In (Conceal)
+
+Use: Hide your next conjured trap or emitted orb.
+
+Cost: upfront 8 Nen + 1/s upkeep (auto-drops when you attack with Ko).
+
+Counter: Gyo/strong Zetsu tracking.
+
+3) En (Aura field)
+
+Input: V press/hold to pulse/maintain.
+
+Pulse: 12 Nen burst → 12m sense ping + time-dilation on pinged daggers/projectiles (0.3s).
+
+Maintain: radius 6→18m while held; drains 4–10/s; shows faint silhouettes.
+
+4) Shu (Imbue)
+
+Input: B toggle; applies to melee & thrown pickups.
+
+Effect: weapon durability/DMG ↑; projectiles pierce 1 target; drains 1/s while a weapon is out.
+
+5) Ko / Ken / Ryu (Offense/Defense flow)
+
+Ko (C+LMB): one strike/guard with 100% aura to a limb → huge dmg/guard, body unprotected for 0.8s; costs 10 Nen + (AAP×0.5).
+
+Ken (K toggle): sustained shell (Ten+Ren) → strong all-around guard; drains 1.8/s.
+
+Ryu (Mouse wheel while holding Ken): shift 70/30, 60/40, etc. Live HUD pie shows flow.
+
+Implementation tip: simple percentages into state.auraFlow = {head, torso, rArm, lArm, rLeg, lLeg} and multiply incoming/outgoing DMG.
+
+Nen Type Specials (class identity)
+
+Enhancer: Ren stacks also boost Ten/Ken DR; Ko hits leave shockwaves (small AoE).
+
+Transmuter: give emitted shots properties (sticky, elastic, conductive). Pick 1 at a time via radial menu (Tab).
+
+Emitter: charged blasts persist off-body longer; Volley gains slight homing during En pulse.
+
+Conjurer: place Bound Sigil (E) that strengthens a rule (see Vows) inside 6m; visible only with Gyo.
+
+Manipulator: tag darts/threads; on 3 tags, short Compel (0.8s) or Jam (silence).
+
+Specialist: limited-uptime Time Distortion you already have → make it scale on Focus & Vow severity (see below) and auto-end when Nen ≤ ultMin.
+
+Vows & Limitations (build-defining power-ups)
+
+In menus, let players craft 1–3 active vows; each gives a multiplier and a rule:
+
+“Only Ko strikes this wave” → +35% Ko power, Ken disabled.
+
+“No dash this wave” → +20% all Nen damage.
+
+“Only attack the marked elite” → +60% vs that target; –30% vs others.
+
+“I’ll die if I break it” checkbox (endgame) → doubles the bonus but failing = instant down.
+
+UI: simple checklist + multiplier preview. Serialize into save; show active vows in HUD.
+
+Initiation & Talent
+
+Initiation (fast awaken): skip tutorials but apply Leak Sickness debuff for 3 fights (–30% nen regen, random stuns on big Ren spikes).
+
+Talent/Potential: hidden roll at creation influences training minigame speeds and stat scaling (Power/Agility/Focus per level).
+
+Post-Mortem Nen (risk/reward)
+
+On player death, if a Grudge bar was full (tied to vow/emotion), trigger Curse Mark on killer (DoT + slow).
+
+Enemies can leave lingering curses too → add Exorcism side quests/consumables.
+
+Sensory/Stealth Loop
+
+Zetsu + crouch = super-stealth route through arenas; but you’re fragile.
+
+En pings reveal cloaked ambushers; Gyo sees enemy aura flows (use Ryu to counter).
+
+Training Minigames (progression that feels “Nen”)
+
+Ren hold practice: keep a rising meter within bands for 90s (extends Ren duration cap).
+
+Gyo numbers: flash In numbers; you must Gyo-tap the correct answers quickly.
+
+Ryu drill: match target distributions (e.g., 70% right arm) in a timer—improves Ryu speed/accuracy.
+
+Shu rock test: imbue a stone and break 100 others without cracking it—boosts Shu efficiency.
+
+Each success permanently tweaks ceilings: Ken duration, Ko wind-up safety frames, En radius cap, etc.
+
+Quantified Aura (simple, readable)
+
+Map M.A.P. ≈ state.nenMax, P.A.P. = current Nen, A.A.P. = technique output/sec.
+
+Use AAP caps so low-affinity uses waste aura (great for balancing Emitters spamming melee Ko, etc.).
+
+Enemy Use & Counterplay
+
+Some enemies telegraph Ko (glow to a limb) → punish with Ryu to the block side.
+
+Assassin types enter Zetsu then backstab; Gyo counters.
+
+Bosses drop Divine Script glyphs; standing within your own glyph buffs your Hatsu (Conjurer synergy).
+
+Super-thin Implementation Sketch (drop-in)
+
+Inputs (keep it mnemonic): T=Ten, Z=Zetsu, R=Ren (hold), G=Gyo, V=En, B=Shu, K=Ken, Wheel=Ryu, C+LMB=Ko.
+
+State additions
+
+state.aura = { ten:false, zetsu:false, ren:false, ken:false, in:false, gyo:false, shu:false, en:{on:false, r:0} };
+state.flow = { rArm:.166,lArm:.166, rLeg:.166,lLeg:.166, torso:.25, head:.09 }; // Ryu distribution
+state.vows = []; // {ruleId, strength, lethal}
+
+
+Per-tick:
+
+Leak/regen math:
+
+base leak = 0.8; if Ten → 0; if Zetsu → 0; else subtract from Nen.
+
+Ren on → state.aura.renMul = 1 + ramp [0.3..1.2]; add nen drain.
+
+Ken drains, En drains per radius, Gyo drains a trickle.
+
+Damage calc wraps limb multipliers (Ryu) and DR from Ken/Ten; Ko overrides to 100% limb.
+
+Stealth/aggro checks read Zetsu/Ten/En.
+
+HUD: small “Aura Modes” strip + pie for Ryu when Ken held; vow icons.
+
+Small, flavorful extras
+
+Bloodlust meter: builds with Ren usage; spikes cause weak mobs to hesitate.
+
+Half-Awakened NPCs: can feel aura → react to bloodlust but can’t see aura (fun stealth tells).
+
+Water Divination at creation to pick/confirm type (mini shader + quick outcomes).
+
+Dual-Affinity trait (rare): learn adjacent type nodes 20% faster.
+
+If you want, I can turn any subset of these into concrete patches against your current game.js (e.g., Ten/Zetsu/Ren + Gyo/En + Ko/Ken/Ryu first), with input bindings, HUD chips, and the per-tick math ready to paste.
