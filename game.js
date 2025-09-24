@@ -12,9 +12,9 @@
       cdQ: $("#cd-q"),
       cdE: $("#cd-e"),
       cdDash: $("#cd-shift"),
-	  pauseOverlay: $("#pause-overlay"),
-	  btnResume: $("#pause-overlay #btn-resume-pause"),
-	  btnExit:   document.querySelector("#pause-overlay #btn-exit"),
+      pauseOverlay: $("#pause-overlay"),
+      btnResume: $("#pause-overlay #btn-resume-pause"),
+      btnExit: document.querySelector("#pause-overlay #btn-exit"),
       lvOverlay: $("#level-overlay"),
       lvCur: $("#lv-cur"),
       lvUnspent: $("#lv-unspent"),
@@ -27,6 +27,33 @@
          focus: $("#s-focus")
       }
    };
+
+   const isTouchDevice = (() => {
+      if (typeof window === "undefined") return false;
+      const hasTouch = "ontouchstart" in window || (typeof navigator !== "undefined" && (
+         ("maxTouchPoints" in navigator && navigator.maxTouchPoints > 0) ||
+         ("msMaxTouchPoints" in navigator && navigator.msMaxTouchPoints > 0)
+      ));
+      const coarseMatch = typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches;
+      return hasTouch || coarseMatch;
+   })();
+
+   const mobileUI = {
+      container: $("#mobile-controls"),
+      joystick: $("#mobile-joystick"),
+      thumb: $("#mobile-joystick-thumb"),
+      buttons: {
+         attack: $("#mc-attack"),
+         jump: $("#mc-jump"),
+         dash: $("#mc-dash"),
+         blast: $("#mc-blast"),
+         special: $("#mc-special"),
+         nen: $("#mc-nen")
+      }
+   };
+
+   const mobileMove = { x: 0, y: 0, active: false };
+   let mobileControlsInitialized = false;
 
    const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
    const rand = (a, b) => a + Math.random() * (b - a);
@@ -948,6 +975,149 @@
       COOLDOWNS.dash = 2.6 * (1 - e.agility * 0.02);
    }
 
+   function bindHoldButton(el, code) {
+      if (!el) return;
+      el.addEventListener("click", (e) => e.preventDefault());
+      let pointerId = null;
+      let active = false;
+
+      const press = (e) => {
+         e.preventDefault();
+         pointerId = e.pointerId;
+         try {
+            el.setPointerCapture(pointerId);
+         } catch (err) {}
+         if (active) return;
+         active = true;
+         input[code] = true;
+         inputOnce[code] = true;
+         el.classList.add("active");
+      };
+
+      const release = (e) => {
+         if (!active || (pointerId !== null && e.pointerId !== pointerId)) return;
+         e.preventDefault();
+         try {
+            el.releasePointerCapture(pointerId);
+         } catch (err) {}
+         pointerId = null;
+         active = false;
+         input[code] = false;
+         inputUp[code] = true;
+         el.classList.remove("active");
+      };
+
+      el.addEventListener("pointerdown", press);
+      el.addEventListener("pointerup", release);
+      el.addEventListener("pointercancel", release);
+      el.addEventListener("pointerleave", release);
+   }
+
+   function resetMobileJoystick() {
+      mobileMove.x = 0;
+      mobileMove.y = 0;
+      mobileMove.active = false;
+      if (mobileUI.thumb) {
+         mobileUI.thumb.style.transform = "translate(-50%, -50%)";
+      }
+   }
+
+   function initMobileControls() {
+      if (!isTouchDevice || !mobileUI.container) return;
+      mobileUI.container.classList.add("visible");
+
+      if (!mobileControlsInitialized) {
+         mobileControlsInitialized = true;
+         const joystick = mobileUI.joystick;
+         let joyPointerId = null;
+
+         const updateJoystick = (e) => {
+            const joystickEl = mobileUI.joystick;
+            if (!joystickEl) return;
+            const rect = joystickEl.getBoundingClientRect();
+            const cx = rect.left + rect.width * 0.5;
+            const cy = rect.top + rect.height * 0.5;
+            const dx = e.clientX - cx;
+            const dy = e.clientY - cy;
+            const max = rect.width * 0.5 || 1;
+            let nx = clamp(dx / max, -1, 1);
+            let ny = clamp(dy / max, -1, 1);
+            let len = Math.hypot(nx, ny);
+            if (len > 1) {
+               nx /= len;
+               ny /= len;
+               len = 1;
+            }
+            mobileMove.x = nx;
+            mobileMove.y = ny;
+            mobileMove.active = len > 0.08;
+            const thumbEl = mobileUI.thumb;
+            if (thumbEl) {
+               const offsetX = nx * rect.width * 0.32;
+               const offsetY = ny * rect.height * 0.32;
+               thumbEl.style.transform = `translate(-50%, -50%) translate(${offsetX}px, ${offsetY}px)`;
+            }
+         };
+
+         if (joystick) {
+            joystick.addEventListener("pointerdown", (e) => {
+               e.preventDefault();
+               joyPointerId = e.pointerId;
+               try {
+                  joystick.setPointerCapture(joyPointerId);
+               } catch (err) {}
+               updateJoystick(e);
+            });
+            joystick.addEventListener("pointermove", (e) => {
+               if (e.pointerId !== joyPointerId) return;
+               e.preventDefault();
+               updateJoystick(e);
+            });
+            const end = (e) => {
+               if (e.pointerId !== joyPointerId) return;
+               e.preventDefault();
+               try {
+                  joystick.releasePointerCapture(joyPointerId);
+               } catch (err) {}
+               joyPointerId = null;
+               resetMobileJoystick();
+            };
+            joystick.addEventListener("pointerup", end);
+            joystick.addEventListener("pointercancel", end);
+            joystick.addEventListener("pointerleave", end);
+         }
+
+         bindHoldButton(mobileUI.buttons.jump, "Space");
+         bindHoldButton(mobileUI.buttons.dash, "ShiftLeft");
+         bindHoldButton(mobileUI.buttons.blast, "KeyQ");
+         bindHoldButton(mobileUI.buttons.special, "KeyE");
+         bindHoldButton(mobileUI.buttons.nen, "KeyC");
+
+         if (mobileUI.buttons.attack) {
+            const attackBtn = mobileUI.buttons.attack;
+            attackBtn.addEventListener("click", (e) => e.preventDefault());
+            attackBtn.addEventListener("pointerdown", (e) => {
+               e.preventDefault();
+               attackBtn.classList.add("active");
+               melee();
+            });
+            const clear = () => attackBtn.classList.remove("active");
+            attackBtn.addEventListener("pointerup", clear);
+            attackBtn.addEventListener("pointercancel", clear);
+            attackBtn.addEventListener("pointerleave", clear);
+         }
+      }
+
+      resetMobileJoystick();
+      Object.values(mobileUI.buttons).forEach(btn => {
+         if (btn) btn.classList.remove("active");
+      });
+      ["Space", "ShiftLeft", "KeyQ", "KeyE", "KeyC"].forEach(code => {
+         input[code] = false;
+         inputUp[code] = false;
+      });
+   }
+
    function setupBabylon(canvas) {
       engine = new BABYLON.Engine(canvas, true, {
          stencil: true
@@ -995,6 +1165,10 @@
       });
 
       spawnWave(6);
+
+      if (isTouchDevice) {
+         initMobileControls();
+      }
 
       window.addEventListener("keydown", e => {
          if (e.code === "Escape") {
@@ -1359,6 +1533,13 @@
       right.y = 0;
       right.normalize();
       const dir = new BABYLON.Vector3(0, 0, 0);
+      if (mobileMove.active) {
+         dir.addInPlace(fwd.scale(-mobileMove.y));
+         dir.addInPlace(right.scale(mobileMove.x));
+         if (dir.lengthSquared() > 0.0001) {
+            return dir.normalize();
+         }
+      }
       if (input["KeyW"]) dir.addInPlace(fwd);
       if (input["KeyS"]) dir.addInPlace(fwd.scale(-1));
       if (input["KeyA"]) dir.addInPlace(right.scale(-1));

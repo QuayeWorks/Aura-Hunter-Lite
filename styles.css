@@ -136,13 +136,128 @@ legend {
 }
 
 #hud {
-	position: fixed;
-	top: 0;
-	left: 0;
-	right: 0;
-	bottom: 0;
-	pointer-events: none;
-	padding: .6rem
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        pointer-events: none;
+        padding: .6rem
+}
+
+#mobile-controls {
+        position: fixed;
+        inset: 0;
+        display: none;
+        pointer-events: none;
+        z-index: 6;
+}
+
+#mobile-controls.visible {
+        display: block
+}
+
+#mobile-joystick {
+        position: absolute;
+        left: 1rem;
+        bottom: 1.2rem;
+        width: 140px;
+        height: 140px;
+        border-radius: 50%;
+        background: rgba(15, 26, 48, .58);
+        border: 2px solid #27355e;
+        box-shadow: 0 6px 18px rgba(0, 0, 0, .4);
+        pointer-events: auto;
+        touch-action: none;
+}
+
+#mobile-joystick-thumb {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        width: 72px;
+        height: 72px;
+        border-radius: 50%;
+        background: rgba(0, 255, 204, .3);
+        border: 2px solid rgba(0, 255, 204, .8);
+        transform: translate(-50%, -50%);
+        transition: transform .08s ease-out;
+}
+
+.mobile-buttons {
+        position: absolute;
+        right: 1rem;
+        bottom: 1.2rem;
+        display: flex;
+        flex-direction: column;
+        gap: .5rem;
+        align-items: flex-end;
+        pointer-events: auto;
+        touch-action: none;
+}
+
+.mobile-btn-row {
+        display: flex;
+        gap: .5rem;
+        justify-content: flex-end;
+}
+
+.mobile-btn {
+        min-width: 76px;
+        min-height: 76px;
+        border-radius: 16px;
+        font-size: .85rem;
+        padding: .6rem .9rem;
+        background: rgba(15, 26, 48, .75);
+        border: 2px solid #27355e;
+        color: var(--text);
+        box-shadow: 0 6px 18px rgba(0, 0, 0, .35);
+}
+
+.mobile-btn.small {
+        min-width: 64px;
+        min-height: 64px;
+        font-size: .78rem;
+}
+
+.mobile-btn.primary {
+        background: linear-gradient(135deg, #2aa960, #2bd08a);
+        border-color: transparent;
+        color: #0b1a21;
+        font-weight: 600;
+}
+
+.mobile-btn.active {
+        transform: scale(.95);
+        background: rgba(0, 255, 204, .32);
+}
+
+.mobile-buttons button {
+        touch-action: none;
+}
+
+@media (max-width: 600px) {
+
+        #mobile-joystick {
+                width: 120px;
+                height: 120px;
+        }
+
+        #mobile-joystick-thumb {
+                width: 64px;
+                height: 64px;
+        }
+
+        .mobile-btn {
+                min-width: 68px;
+                min-height: 68px;
+                font-size: .78rem;
+        }
+
+        .mobile-btn.small {
+                min-width: 58px;
+                min-height: 58px;
+        }
 }
 
 .hud-left {
