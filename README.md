@@ -5,4 +5,4 @@ Create a custom humanoid rig, allocate **Power / Agility / Focus**, and battle A
 
 ## Play
 Once deployed with GitHub Pages, your game will be available at:
-
+https://QuayeWorks.github.io/aura-hunter-lite/
