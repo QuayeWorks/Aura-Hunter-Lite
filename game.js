@@ -317,7 +317,7 @@
    function scatterVegetation(scene) {
       const terrain = environment.terrain;
       if (!terrain) return;
-      const treeCount = 36;
+      const treeCount = 18;
       const trunkHeight = 3.8;
       const trunkTemplate = BABYLON.MeshBuilder.CreateCylinder("treeTrunkTemplate", {
          height: trunkHeight,
@@ -384,7 +384,7 @@
       grassTemplate.isVisible = false;
       grassTemplate.isPickable = false;
 
-      const tuftCount = 260;
+      const tuftCount = 130;
       for (let i = 0; i < tuftCount; i++) {
          const x = rand(-world.size / 2 + 2, world.size / 2 - 2);
          const z = rand(-world.size / 2 + 2, world.size / 2 - 2);
@@ -407,7 +407,7 @@
       cloudMat.alpha = 0.8;
       cloudMat.disableLighting = true;
       cloudMat.backFaceCulling = false;
-      const count = 14;
+      const count = 7;
       for (let i = 0; i < count; i++) {
          const cloud = BABYLON.MeshBuilder.CreatePlane("cloud" + i, {
             width: 18 + Math.random() * 14,
@@ -497,7 +497,7 @@
       createTerrain(scene);
       scatterVegetation(scene);
       createCloudLayer(scene);
-      updateEnvironment(0);
+      updateEnvironment(60);
    }
 
    function updateEnvironment(dt) {
@@ -2003,6 +2003,7 @@
       }
       window.MenuBG && window.MenuBG.stop();
       document.getElementById("screen--menu").classList.remove("visible");
+	  document.getElementById("screen--game").classList.add("visible");
       window.HXH.startGame(ch);
    });
 
