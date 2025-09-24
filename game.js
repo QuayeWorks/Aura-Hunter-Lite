@@ -65,7 +65,9 @@
       moonMesh: null,
       hemi: null,
       clouds: [],
-      terrain: null
+      terrain: null,
+      updateAccumulator: 0,
+      updateInterval: 1 / 24
    };
    const SKY_RADIUS = 420;
    const VEC3_UP = new BABYLON.Vector3(0, 1, 0);
@@ -74,6 +76,10 @@
    const GROUND_STICK_THRESHOLD = 0.35;
    const FOOT_CLEARANCE = 0.012;
    const lerp = (a, b, t) => a + (b - a) * t;
+   const ENEMY_ACTIVE_RADIUS = 42;
+   const ENEMY_RENDER_RADIUS = 60;
+   const ENEMY_ACTIVE_RADIUS_SQ = ENEMY_ACTIVE_RADIUS * ENEMY_ACTIVE_RADIUS;
+   const ENEMY_RENDER_RADIUS_SQ = ENEMY_RENDER_RADIUS * ENEMY_RENDER_RADIUS;
 
    function isGroundMesh(mesh) {
       return !!mesh && (mesh === world.ground || world.platforms.includes(mesh));
@@ -440,6 +446,7 @@
       }
       world.platforms = [];
       environment.terrain = null;
+      environment.updateAccumulator = 0;
 
       environment.hemi = new BABYLON.HemisphericLight("hemi", new BABYLON.Vector3(0, 1, 0), scene);
       environment.hemi.intensity = 0.35;
@@ -498,6 +505,14 @@
       scatterVegetation(scene);
       createCloudLayer(scene);
       updateEnvironment(60);
+   }
+
+   function advanceEnvironment(dt) {
+      environment.updateAccumulator += dt;
+      if (environment.updateAccumulator < environment.updateInterval) return;
+      const step = environment.updateAccumulator;
+      environment.updateAccumulator = 0;
+      updateEnvironment(step);
    }
 
    function updateEnvironment(dt) {
@@ -1255,7 +1270,8 @@
          groundNormal: new BABYLON.Vector3(0, 1, 0),
          prevPos: h.root.position.clone(),
          animPhase: 0,
-         attackAnimT: 0
+         attackAnimT: 0,
+         dormant: false
       };
       const meta = h.root.metadata || {};
       meta.parts = h.parts;
@@ -1697,7 +1713,7 @@
          if (state.buffs[k] <= 0) delete state.buffs[k];
       });
 
-      updateEnvironment(dt);
+      advanceEnvironment(dt);
 
       // inputs / abilities
       if (inputOnce["Space"]) startJumpCharge();
@@ -1810,8 +1826,9 @@
             p.prevPos = p.mesh.position.clone();
          }
          for (const e of enemies) {
-            if (!e.alive) continue;
-            if (BABYLON.Vector3.Distance(e.root.position, p.mesh.position) < 0.9 + p.radius * 0.5) {
+            if (!e.alive || !e.root.isEnabled()) continue;
+            const hitRadius = 0.9 + ((p.radius || 0) * 0.5);
+            if (BABYLON.Vector3.Distance(e.root.position, p.mesh.position) < hitRadius) {
                e.hp -= p.dmg;
                p.life.t = 0;
                if (e.hp <= 0) {
@@ -1825,22 +1842,68 @@
       }
 
       // enemies AI
+      const playerPos = playerRoot.position;
       for (const e of enemies) {
          if (!e.alive) continue;
-         const toP2 = playerRoot.position.subtract(e.root.position);
-         toP2.y = 0;
-         const dist2d = toP2.length();
-         if (dist2d > 0.001) {
-            const yaw = Math.atan2(toP2.x, toP2.z);
+         const toPlayer = playerPos.subtract(e.root.position);
+         const distSq = toPlayer.lengthSquared();
+
+         if (distSq > ENEMY_RENDER_RADIUS_SQ) {
+            if (e.root.isEnabled()) e.root.setEnabled(false);
+            e.dormant = true;
+            e.vel.x = 0;
+            e.vel.z = 0;
+            if (Math.abs(e.vel.y) < 0.01) e.vel.y = 0;
+            e.prevPos.copyFrom(e.root.position);
+            if (e.attackAnimT > 0) e.attackAnimT = Math.max(0, e.attackAnimT - dt);
+            continue;
+         }
+
+         if (!e.root.isEnabled()) e.root.setEnabled(true);
+
+         if (distSq > ENEMY_ACTIVE_RADIUS_SQ) {
+            e.dormant = true;
+            e.vel.x *= (1 - Math.min(0.92 * dt, 0.9));
+            e.vel.z *= (1 - Math.min(0.92 * dt, 0.9));
+            if (!e.grounded) {
+               e.vel.y += world.gravityY * dt * 0.5;
+               e.root.moveWithCollisions(new BABYLON.Vector3(0, e.vel.y * dt, 0));
+               const groundDormant = resolveGrounding(e.root, e.vel.y);
+               e.grounded = groundDormant.grounded;
+               if (e.grounded) {
+                  if (groundDormant.correction > 0) {
+                     e.root.position.y += groundDormant.correction;
+                     e.root.computeWorldMatrix(true);
+                  }
+                  if (e.vel.y < 0) e.vel.y = 0;
+               }
+            }
+            e.prevPos.copyFrom(e.root.position);
+            if (e.attackAnimT > 0) e.attackAnimT = Math.max(0, e.attackAnimT - dt);
+            continue;
+         }
+
+         if (e.dormant) {
+            e.prevPos.copyFrom(e.root.position);
+            e.dormant = false;
+         }
+
+         const distXZSq = toPlayer.x * toPlayer.x + toPlayer.z * toPlayer.z;
+         if (distXZSq > 1e-6) {
+            const yaw = Math.atan2(toPlayer.x, toPlayer.z);
             e.root.rotation.y = BABYLON.Scalar.LerpAngle(e.root.rotation.y, yaw, 1 - Math.pow(0.001, dt * 60));
          }
 
+         const dist = Math.sqrt(distSq);
+
          if (!state.timeStop) {
-            const toP = playerRoot.position.subtract(e.root.position);
-            const dist = toP.length();
             if (dist > 1.6) {
-               const dir = toP.normalize();
-               const step = dir.scale(e.speed * dt);
+               if (dist > 1e-4) {
+                  toPlayer.scaleInPlace(1 / dist);
+               } else {
+                  toPlayer.set(0, 0, 0);
+               }
+               const step = toPlayer.scale(e.speed * dt);
                e.vel.y += world.gravityY * dt;
                const motionE = new BABYLON.Vector3(step.x + e.vel.x * dt, e.vel.y * dt, step.z + e.vel.z * dt);
                e.root.moveWithCollisions(motionE);
