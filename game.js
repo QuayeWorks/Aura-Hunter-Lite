@@ -166,6 +166,7 @@
    const TREE_MODEL_FILES = ["tree1.fbx", "tree2.fbx"];
    let treeAssetPromise = null;
    let treeAssetSources = null;
+   let fallbackTreeMaterials = null;
 
    const GameSettings = {
       getTerrainSettings() {
@@ -584,26 +585,108 @@
       return removeTopBlock(idx);
    }
 
+   function getFallbackTreeMaterials(scene) {
+      if (fallbackTreeMaterials) return fallbackTreeMaterials;
+      const trunkMat = new BABYLON.StandardMaterial("fallbackTreeTrunkMat", scene);
+      trunkMat.diffuseColor = new BABYLON.Color3(0.36, 0.22, 0.12);
+      trunkMat.specularColor = BABYLON.Color3.Black();
+      const leavesMat = new BABYLON.StandardMaterial("fallbackTreeLeavesMat", scene);
+      leavesMat.diffuseColor = new BABYLON.Color3(0.18, 0.35, 0.16);
+      leavesMat.specularColor = new BABYLON.Color3(0.05, 0.1, 0.05);
+      leavesMat.emissiveColor = new BABYLON.Color3(0.02, 0.05, 0.02);
+      fallbackTreeMaterials = { trunkMat, leavesMat };
+      return fallbackTreeMaterials;
+   }
+
    async function loadTreeAssets(scene) {
       if (treeAssetSources) return treeAssetSources;
       if (!treeAssetPromise) {
          treeAssetPromise = Promise.all(TREE_MODEL_FILES.map(async (file) => {
-            const container = await BABYLON.SceneLoader.LoadAssetContainerAsync("assets/models/", file, scene);
-            container.meshes.forEach(mesh => {
-               mesh.isPickable = false;
-               mesh.checkCollisions = true;
-            });
-            container.transformNodes.forEach(node => {
-               if (node.rotationQuaternion) {
-                  node.rotation = node.rotationQuaternion.toEulerAngles();
-                  node.rotationQuaternion = null;
-               }
-            });
-            return container;
-         })).then(containers => containers.filter(Boolean));
+            try {
+               const container = await BABYLON.SceneLoader.LoadAssetContainerAsync("assets/models/", file, scene);
+               container.meshes.forEach(mesh => {
+                  mesh.isPickable = false;
+                  mesh.checkCollisions = true;
+               });
+               container.transformNodes.forEach(node => {
+                  if (node.rotationQuaternion) {
+                     node.rotation = node.rotationQuaternion.toEulerAngles();
+                     node.rotationQuaternion = null;
+                  }
+               });
+               return container;
+            } catch (err) {
+               console.warn(`[Trees] Failed to load model ${file}`, err);
+               return null;
+            }
+         })).then(containers => containers.filter(Boolean)).catch(err => {
+            console.warn("[Trees] Failed to load tree assets", err);
+            return [];
+         });
       }
       treeAssetSources = await treeAssetPromise;
+      if (!Array.isArray(treeAssetSources)) {
+         treeAssetSources = [];
+      }
       return treeAssetSources;
+   }
+
+   function createFallbackTree(scene, name, position, scale) {
+      const root = new BABYLON.TransformNode(name, scene);
+      const { trunkMat, leavesMat } = getFallbackTreeMaterials(scene);
+
+      const trunk = BABYLON.MeshBuilder.CreateCylinder(`${name}-trunk`, {
+         height: 4,
+         diameterTop: 0.55,
+         diameterBottom: 0.75
+      }, scene);
+      trunk.material = trunkMat;
+      trunk.parent = root;
+      trunk.position.y = 2;
+
+      const foliage = BABYLON.MeshBuilder.CreateSphere(`${name}-foliage`, {
+         diameterX: 3.2,
+         diameterY: 3.4,
+         diameterZ: 3.2,
+         segments: 2
+      }, scene);
+      foliage.material = leavesMat;
+      foliage.parent = root;
+      foliage.position.y = 4.5;
+
+      const crown = BABYLON.MeshBuilder.CreateSphere(`${name}-crown`, {
+         diameterX: 2.6,
+         diameterY: 2.8,
+         diameterZ: 2.6,
+         segments: 2
+      }, scene);
+      crown.material = leavesMat;
+      crown.parent = root;
+      crown.position.y = 6;
+
+      root.position.copyFrom(position);
+      root.scaling.set(scale, scale, scale);
+
+      const childMeshes = root.getChildMeshes();
+      childMeshes.forEach(mesh => {
+         mesh.isPickable = false;
+         mesh.checkCollisions = true;
+         mesh.computeWorldMatrix(true);
+      });
+
+      let minY = Infinity;
+      childMeshes.forEach(mesh => {
+         const info = mesh.getBoundingInfo();
+         if (!info) return;
+         const min = info.boundingBox.minimumWorld.y;
+         if (min < minY) minY = min;
+      });
+      const offset = Number.isFinite(minY) ? position.y - minY : 0;
+      if (offset !== 0) {
+         root.position.y += offset;
+      }
+
+      return root;
    }
 
    async function scatterVegetation(scene) {
@@ -614,7 +697,7 @@
       environment.trees = [];
 
       const sources = await loadTreeAssets(scene);
-      if (!sources || sources.length === 0) return;
+      const useFallback = !sources || sources.length === 0;
 
       const treeCount = 18;
       const halfX = terrain.halfX;
@@ -632,38 +715,50 @@
          if (hX === null || hZ === null) continue;
          if (Math.abs(h - hX) > 1.6 || Math.abs(h - hZ) > 1.6) continue;
 
-         const template = sources[Math.floor(Math.random() * sources.length)];
-         if (!template) continue;
-         const instance = template.instantiateModelsToScene((name) => `${name}_tree${i}`, false);
          const treeRoot = new BABYLON.TransformNode(`tree${i}`, scene);
          treeRoot.position.set(x, 0, z);
          treeRoot.rotation.y = rand(0, Math.PI * 2);
          const scale = 0.8 + Math.random() * 1.2;
-         treeRoot.scaling.set(scale, scale, scale);
 
-         instance.rootNodes.forEach(node => {
-            node.parent = treeRoot;
-         });
-         instance.animationGroups.forEach(group => {
-            group.stop();
-            group.dispose();
-         });
+         let instance;
+         if (!useFallback) {
+            const template = sources[Math.floor(Math.random() * sources.length)];
+            if (!template) {
+               treeRoot.dispose();
+               continue;
+            }
+            instance = template.instantiateModelsToScene((name) => `${name}_tree${i}`, false);
+            treeRoot.scaling.set(scale, scale, scale);
+            instance.rootNodes.forEach(node => {
+               node.parent = treeRoot;
+            });
+            instance.animationGroups.forEach(group => {
+               group.stop();
+               group.dispose();
+            });
 
-         const childMeshes = treeRoot.getChildMeshes();
-         childMeshes.forEach(mesh => {
-            mesh.isPickable = false;
-            mesh.checkCollisions = true;
-            mesh.computeWorldMatrix(true);
-         });
+            const childMeshes = treeRoot.getChildMeshes();
+            childMeshes.forEach(mesh => {
+               mesh.isPickable = false;
+               mesh.checkCollisions = true;
+               mesh.computeWorldMatrix(true);
+            });
 
-         let minY = Infinity;
-         childMeshes.forEach(mesh => {
-            const info = mesh.getBoundingInfo();
-            if (!info) return;
-            const min = info.boundingBox.minimumWorld.y;
-            if (min < minY) minY = min;
-         });
-         treeRoot.position.y = Number.isFinite(minY) ? h - minY : h;
+            let minY = Infinity;
+            childMeshes.forEach(mesh => {
+               const info = mesh.getBoundingInfo();
+               if (!info) return;
+               const min = info.boundingBox.minimumWorld.y;
+               if (min < minY) minY = min;
+            });
+            treeRoot.position.y = Number.isFinite(minY) ? h - minY : h;
+         } else {
+            treeRoot.dispose();
+            const fallbackRoot = createFallbackTree(scene, `tree${i}`, new BABYLON.Vector3(x, h, z), scale);
+            fallbackRoot.rotation.y = rand(0, Math.PI * 2);
+            environment.trees.push(fallbackRoot);
+            continue;
+         }
 
          environment.trees.push(treeRoot);
       }
