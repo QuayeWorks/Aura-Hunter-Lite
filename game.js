@@ -134,6 +134,9 @@
    const ENEMY_RENDER_RADIUS = 60;
    const ENEMY_ACTIVE_RADIUS_SQ = ENEMY_ACTIVE_RADIUS * ENEMY_ACTIVE_RADIUS;
    const ENEMY_RENDER_RADIUS_SQ = ENEMY_RENDER_RADIUS * ENEMY_RENDER_RADIUS;
+   const BLOODLUST_CONE_COS = Math.cos(Math.PI / 4);
+   const BLOODLUST_RANGE_SQ = 16 * 16;
+   const BLOODLUST_WEAK_HP = 55;
 
    function isGroundMesh(mesh) {
       return !!mesh && (mesh === world.ground || world.platforms.includes(mesh));
@@ -1271,6 +1274,14 @@
       baseNenRegen: 2.0,
       baseHpRegen: 0.0,
 
+      aura: {
+         ten: true,
+         zetsu: false,
+         renActive: false,
+         renCharge: 0,
+         renMul: 1.0
+      },
+
       buffs: {},
       cooldowns: {},
       vel: new BABYLON.Vector3(0, 0, 0),
@@ -1569,6 +1580,13 @@
       // after recompute, fill to full
       state.hp = state.maxHP;
       state.nen = state.nenMax;
+      Object.assign(state.aura, {
+         ten: true,
+         zetsu: false,
+         renActive: false,
+         renCharge: 0,
+         renMul: 1.0
+      });
 
       updateHUD();
       msg("Defeat enemies to trigger the exit portal! Press L to open the Level menu.");
@@ -1800,7 +1818,8 @@
          prevPos: h.root.position.clone(),
          animPhase: 0,
          attackAnimT: 0,
-         dormant: false
+         dormant: false,
+         fearT: 0
       };
       const meta = h.root.metadata || {};
       meta.parts = h.parts;
@@ -1833,11 +1852,82 @@
    }
 
    // ------------ Combat / Abilities ------------
-   function takeDamage(amount) {
-      state.hp = Math.max(0, state.hp - amount);
+   function takeDamage(amount, type = "physical") {
+      let dmg = amount;
+      if (state.aura.ten && type !== "nen") {
+         dmg *= 0.9;
+      }
+      if (state.aura.zetsu && type === "nen") {
+         dmg *= 1.5;
+      }
+      state.hp = Math.max(0, state.hp - dmg);
       updateHealthHud();
       if (state.hp <= 0) {
          msg("You were defeated!");
+      }
+   }
+
+   function updateAura(dt) {
+      const aura = state.aura;
+
+      if (inputOnce["KeyT"]) {
+         if (!aura.ten) {
+            const exitingZetsu = aura.zetsu;
+            aura.ten = true;
+            if (exitingZetsu) {
+               aura.zetsu = false;
+               msg("Ten restored — aura guard re-established.");
+            } else {
+               msg("Ten reinforced.");
+            }
+         } else {
+            aura.ten = false;
+            msg("Ten relaxed.");
+         }
+      }
+
+      if (inputOnce["KeyZ"]) {
+         aura.zetsu = !aura.zetsu;
+         if (aura.zetsu) {
+            aura.ten = false;
+            aura.renActive = false;
+            aura.renCharge = 0;
+            aura.renMul = 1.0;
+            if (state.chargingNen) {
+               state.chargingNen = false;
+            }
+            if (state.nenLight) state.nenLight.intensity = 0.0;
+            msg("Entered Zetsu — aura suppressed.");
+         } else {
+            msg("Exited Zetsu.");
+         }
+      }
+
+      const renSuppressed = aura.zetsu;
+      const holdingRen = !renSuppressed && input["KeyR"];
+      if (holdingRen && state.nen > 0) {
+         aura.renActive = true;
+         aura.renCharge = Math.min(1, aura.renCharge + dt / 1.2);
+      } else {
+         aura.renCharge = Math.max(0, aura.renCharge - dt / 0.6);
+         if (aura.renCharge <= 0.0001) {
+            aura.renCharge = 0;
+            aura.renActive = false;
+         }
+      }
+
+      aura.renMul = aura.renActive ? 1.3 + 0.9 * aura.renCharge : 1.0;
+      if (aura.zetsu) {
+         aura.renMul = 1.0;
+      }
+
+      if (state.nenLight) {
+         if (aura.zetsu) {
+            state.nenLight.intensity = 0.0;
+         } else if (!state.chargingNen) {
+            const glow = aura.renActive ? 0.45 + 0.4 * aura.renCharge : 0.0;
+            state.nenLight.intensity = glow;
+         }
       }
    }
 
@@ -1854,7 +1944,7 @@
       state.attackAnimT = 0.22;
       const range = 2.0;
       let base = 10 + (state.eff.power * 1.5) * (state.ch.nen === "Enhancer" ? 1.25 : 1);
-      const mult = 1.0;
+      const mult = state.aura.renMul || 1.0;
       let dmg = base * mult;
       if (state.buffs.electrify) dmg += 6;
       if (state.buffs.berserk) dmg *= 1.25;
@@ -1964,7 +2054,7 @@
       const life = {
          t: 3.0
       };
-      const dmg = (18 + state.eff.focus * 2.0 * (state.ch.nen === "Emitter" ? 1.35 : 1));
+      const dmg = (18 + state.eff.focus * 2.0 * (state.ch.nen === "Emitter" ? 1.35 : 1)) * state.aura.renMul;
       projectiles.push({
          mesh: orb,
          dir,
@@ -2061,7 +2151,7 @@
                const life = {
                   t: 3.0
                };
-               const dmg = (12 + state.eff.focus * 1.6);
+               const dmg = (12 + state.eff.focus * 1.6) * state.aura.renMul;
                projectiles.push({
                   mesh: orb,
                   dir,
@@ -2266,8 +2356,10 @@
       if (input["ShiftLeft"] || input["ShiftRight"]) dash();
       if (input["KeyE"]) special();
 
+      updateAura(dt);
+
       // Nen charge (hold C)
-      if (input["KeyC"]) {
+      if (input["KeyC"] && !state.aura.zetsu) {
          if (!state.chargingNen) {
             state.chargingNen = true;
             if (state.nenLight) state.nenLight.intensity = 0.8;
@@ -2319,9 +2411,25 @@
          state.groundNormal.copyFrom(VEC3_UP);
       }
 
-      // passive regen
-      state.nen = clamp(state.nen + state.baseNenRegen * dt + (state.chargingNen ? 4.0 * dt : 0), 0, state.nenMax);
-      updateNenHud();
+      // passive regen + aura flow
+      const aura = state.aura;
+      const regenMult = aura.ten ? 0.85 : 1.0;
+      let nenRate = state.baseNenRegen * regenMult;
+      if (state.chargingNen && !aura.zetsu) nenRate += 4.0;
+      let nenDrain = 0;
+      if (!aura.ten && !aura.zetsu) nenDrain += 0.8;
+      if (aura.renActive) nenDrain += 2 + 6 * aura.renCharge;
+      const nenDelta = (nenRate - nenDrain) * dt;
+      const prevNen = state.nen;
+      state.nen = clamp(state.nen + nenDelta, 0, state.nenMax);
+      if (state.nen !== prevNen) {
+         updateNenHud();
+      }
+      if (state.nen <= 0 && aura.renActive) {
+         aura.renActive = false;
+         aura.renCharge = 0;
+         aura.renMul = 1.0;
+      }
       state.hp = clamp(state.hp + state.baseHpRegen * dt, 0, state.maxHP);
       updateHealthHud();
 
@@ -2399,6 +2507,12 @@
 
       // enemies AI
       const playerPos = playerRoot.position;
+      const stealthMult = state.aura.zetsu ? 0.4 : 1.0;
+      const activeRadius = ENEMY_ACTIVE_RADIUS * stealthMult;
+      const activeRadiusSq = activeRadius * activeRadius;
+      const renThreatActive = state.aura.renActive && !state.aura.zetsu;
+      const bloodlustDir = renThreatActive ? playerAimDir() : null;
+      const renFearStrength = renThreatActive ? state.aura.renCharge : 0;
       for (const e of enemies) {
          if (!e.alive) continue;
          TMP_ENEMY_TO_PLAYER.copyFrom(playerPos);
@@ -2418,7 +2532,21 @@
 
          if (!e.root.isEnabled()) e.root.setEnabled(true);
 
-         if (distSq > ENEMY_ACTIVE_RADIUS_SQ) {
+         if (e.fearT > 0) {
+            e.fearT = Math.max(0, e.fearT - dt);
+         }
+         const dist = Math.sqrt(distSq);
+         if (renThreatActive && bloodlustDir && e.hp <= BLOODLUST_WEAK_HP && distSq <= BLOODLUST_RANGE_SQ) {
+            const denom = dist > 1e-5 ? dist : 1e-5;
+            const cos = (-(TMP_ENEMY_TO_PLAYER.x * bloodlustDir.x + TMP_ENEMY_TO_PLAYER.y * bloodlustDir.y + TMP_ENEMY_TO_PLAYER.z * bloodlustDir.z)) / denom;
+            if (cos > BLOODLUST_CONE_COS) {
+               const fearDur = 0.9 + 0.9 * renFearStrength;
+               if (e.fearT < fearDur) e.fearT = fearDur;
+            }
+         }
+         const frightened = e.fearT > 0;
+
+         if (distSq > activeRadiusSq) {
             e.dormant = true;
             e.vel.x *= (1 - Math.min(0.92 * dt, 0.9));
             e.vel.z *= (1 - Math.min(0.92 * dt, 0.9));
@@ -2451,10 +2579,26 @@
             e.root.rotation.y = BABYLON.Scalar.LerpAngle(e.root.rotation.y, yaw, 1 - Math.pow(0.001, dt * 60));
          }
 
-         const dist = Math.sqrt(distSq);
-
          if (!state.timeStop) {
-            if (dist > 1.6) {
+            if (frightened) {
+               if (dist > 1e-4) {
+                  TMP_ENEMY_TO_PLAYER.scaleInPlace(1 / dist);
+               } else {
+                  TMP_ENEMY_TO_PLAYER.set(0, 0, 0);
+               }
+               const fleeSpeed = e.speed * (1.2 + 0.6 * renFearStrength);
+               TMP_ENEMY_TO_PLAYER.scaleInPlace(-fleeSpeed * dt);
+               e.vel.y += world.gravityY * dt;
+               TMP_ENEMY_DELTA.set(
+                  TMP_ENEMY_TO_PLAYER.x + e.vel.x * dt,
+                  e.vel.y * dt,
+                  TMP_ENEMY_TO_PLAYER.z + e.vel.z * dt
+               );
+               e.root.moveWithCollisions(TMP_ENEMY_DELTA);
+               e.vel.x *= (1 - Math.min(0.92 * dt, 0.9));
+               e.vel.z *= (1 - Math.min(0.92 * dt, 0.9));
+               e.attackCd = Math.max(e.attackCd, 0.6);
+            } else if (dist > 1.6) {
                if (dist > 1e-4) {
                   TMP_ENEMY_TO_PLAYER.scaleInPlace(1 / dist);
                } else {
@@ -2475,7 +2619,7 @@
                e.attackCd -= dt;
                if (e.attackCd <= 0) {
                   const dmg = state.buffs.shield ? 6 : 12;
-                  takeDamage(dmg);
+                  takeDamage(dmg, "physical");
                   e.attackCd = 1.2;
                   e.attackAnimT = 0.22;
                }
