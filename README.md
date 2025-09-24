@@ -29,3 +29,4 @@ Serve the folder with any static server:
 python -m http.server -d . 8080
 # or Node (if installed)
 npx http-server -p 8080
+http://localhost:8080.
