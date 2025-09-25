@@ -58,7 +58,242 @@
   let booted = false;
 
   // Animation-preview state
-  const anim = { playing:false, mode:"walk", speed:1.0, grounded:true, phase:0, attackT:0 };
+  const anim = {
+    playing:false,
+    mode:"walk",
+    speed:1.0,
+    grounded:true,
+    phase:0,
+    attackT:0,
+    clipTime:0
+  };
+
+  let animClips = [];
+  const animEditorState = { clipId:null, frameId:null };
+  let animPlayButton = null;
+  let animModeSelect = null;
+  const animUIRefs = { previewSlider:null, frameSelect:null, clipSelect:null };
+
+  function newId(prefix){
+    return `${prefix}_${Math.random().toString(36).slice(2)}_${Date.now().toString(36)}`;
+  }
+
+  function cloneTransforms(src){
+    const wrap = { transforms: deepClone(src || {}) };
+    ensureTransformMap(wrap);
+    return deepClone(wrap.transforms);
+  }
+
+  function loadAnimations(){
+    animClips = [];
+    try {
+      const raw = JSON.parse(localStorage.getItem("hxh.rig.animations") || "null");
+      if (Array.isArray(raw)) animClips = raw.map(normalizeClip).filter(Boolean);
+      else if (raw && Array.isArray(raw.clips)) animClips = raw.clips.map(normalizeClip).filter(Boolean);
+    } catch (err) {
+      console.warn("Failed to parse stored rig animations", err);
+    }
+    if (!animClips.length) {
+      const clip = createClip("New Clip");
+      clip.frames[1].time = clip.length;
+      animClips.push(clip);
+    }
+    ensureClipSelection();
+  }
+
+  function saveAnimationsLocal(){
+    try { localStorage.setItem("hxh.rig.animations", JSON.stringify(animClips)); } catch (_) {}
+  }
+
+  function normalizeClip(raw){
+    if (!raw) return null;
+    const clip = {
+      id: typeof raw.id === "string" && raw.id ? raw.id : newId("clip"),
+      name: (raw.name || "Clip").trim() || "Clip",
+      length: Number(raw.length) > 0 ? Number(raw.length) : 1,
+      loop: raw.loop !== false,
+      frames: []
+    };
+    const frames = Array.isArray(raw.frames) ? raw.frames : [];
+    frames.forEach(f => {
+      const frame = {
+        id: typeof f?.id === "string" && f.id ? f.id : newId("kf"),
+        time: Number(f?.time),
+        transforms: cloneTransforms(f?.transforms)
+      };
+      if (!Number.isFinite(frame.time)) frame.time = 0;
+      frame.time = Math.max(0, frame.time);
+      clip.frames.push(frame);
+    });
+    if (!clip.frames.length) {
+      clip.frames.push({ id:newId("kf"), time:0, transforms: cloneTransforms(params?.transforms || DEF.transforms) });
+      clip.frames.push({ id:newId("kf"), time:clip.length, transforms: cloneTransforms(params?.transforms || DEF.transforms) });
+    }
+    clip.frames.sort((a,b)=>a.time-b.time);
+    return clip;
+  }
+
+  function ensureClipSelection(){
+    if (!animClips.length){
+      animEditorState.clipId = null;
+      animEditorState.frameId = null;
+      return null;
+    }
+    let clip = animClips.find(c=>c.id===animEditorState.clipId);
+    if (!clip) {
+      clip = animClips[0];
+      animEditorState.clipId = clip.id;
+    }
+    if (!clip.frames.length){
+      clip.frames.push({ id:newId("kf"), time:0, transforms: cloneTransforms(params?.transforms || DEF.transforms) });
+    }
+    let frame = clip.frames.find(f=>f.id===animEditorState.frameId);
+    if (!frame){
+      frame = clip.frames[0];
+      animEditorState.frameId = frame?.id || null;
+    }
+    return clip;
+  }
+
+  function currentClip(){
+    return ensureClipSelection();
+  }
+
+  function currentFrame(){
+    const clip = currentClip();
+    if (!clip) return null;
+    const frame = clip.frames.find(f=>f.id===animEditorState.frameId);
+    return frame || clip.frames[0] || null;
+  }
+
+  function createClip(name){
+    const clip = {
+      id: newId("clip"),
+      name: name || "Clip",
+      length: 1,
+      loop: true,
+      frames: [
+        { id:newId("kf"), time:0, transforms: cloneTransforms(params?.transforms || DEF.transforms) },
+        { id:newId("kf"), time:1, transforms: cloneTransforms(params?.transforms || DEF.transforms) }
+      ]
+    };
+    return clip;
+  }
+
+  function duplicateClip(src){
+    const clip = {
+      id: newId("clip"),
+      name: `${src.name || "Clip"} Copy`,
+      length: src.length,
+      loop: src.loop,
+      frames: src.frames.map(f=>({ id:newId("kf"), time:f.time, transforms: cloneTransforms(f.transforms) }))
+    };
+    clip.frames.sort((a,b)=>a.time-b.time);
+    return clip;
+  }
+
+  function sortFrames(clip){
+    clip.frames.sort((a,b)=>a.time-b.time);
+  }
+
+  function sampleClip(clip, time){
+    if (!clip || !clip.frames.length) return null;
+    const frames = clip.frames;
+    if (frames.length === 1) return cloneTransforms(frames[0].transforms);
+    const len = Math.max(clip.length, 0.0001);
+    let t = time;
+    if (clip.loop){
+      t = ((t % len) + len) % len;
+    } else {
+      t = Math.min(len, Math.max(0, t));
+    }
+    let prev = frames[0];
+    let next = frames[frames.length-1];
+    for (let i=0;i<frames.length;i++){
+      const fr = frames[i];
+      if (fr.time >= t){
+        next = fr;
+        prev = frames[Math.max(0, i-1)];
+        break;
+      }
+    }
+    if (t <= frames[0].time) return cloneTransforms(frames[0].transforms);
+    if (t >= frames[frames.length-1].time) return cloneTransforms(frames[frames.length-1].transforms);
+    if (prev === next) return cloneTransforms(prev.transforms);
+    const span = Math.max(0.0001, next.time - prev.time);
+    const k = Math.min(1, Math.max(0, (t - prev.time)/span));
+    const out = {};
+    for (const key of PART_KEYS){
+      const A = prev.transforms?.[key] || t0();
+      const B = next.transforms?.[key] || t0();
+      out[key] = {
+        pos: {
+          x: BABYLON.Scalar.Lerp(A.pos?.x||0, B.pos?.x||0, k),
+          y: BABYLON.Scalar.Lerp(A.pos?.y||0, B.pos?.y||0, k),
+          z: BABYLON.Scalar.Lerp(A.pos?.z||0, B.pos?.z||0, k)
+        },
+        rot: {
+          x: BABYLON.Scalar.Lerp(A.rot?.x||0, B.rot?.x||0, k),
+          y: BABYLON.Scalar.Lerp(A.rot?.y||0, B.rot?.y||0, k),
+          z: BABYLON.Scalar.Lerp(A.rot?.z||0, B.rot?.z||0, k)
+        }
+      };
+    }
+    return out;
+  }
+
+  function applyPoseToNodes(pose){
+    if (!pose) return;
+    for (const key of PART_KEYS){
+      const node = nodes[key];
+      if (!node) continue;
+      const tr = pose[key] || t0();
+      node.position.set(tr.pos.x, tr.pos.y, tr.pos.z);
+      node.rotation.set(d2r(tr.rot.x), d2r(tr.rot.y), d2r(tr.rot.z));
+    }
+  }
+
+  function setAnimMode(value){
+    anim.mode = value;
+    if (animModeSelect){
+      const hasOption = Array.from(animModeSelect.options).some(opt=>opt.value === value);
+      if (hasOption) animModeSelect.value = value;
+    }
+  }
+
+  function syncAnimPlayButton(){
+    if (animPlayButton){
+      animPlayButton.textContent = anim.playing ? "⏸ Pause" : "▶ Play";
+    }
+  }
+
+  function syncPreviewSlider(clip){
+    const slider = animUIRefs.previewSlider;
+    if (!slider) return;
+    if (!clip || clip.id !== animEditorState.clipId) return;
+    const len = Math.max(clip.length, 0.0001);
+    const ratio = Math.min(1, Math.max(0, anim.clipTime / len));
+    slider.value = String(ratio);
+  }
+
+  function rebuildAnimModeOptions(){
+    if (!animModeSelect) return;
+    animModeSelect.querySelectorAll('optgroup[data-custom="1"]').forEach(g=>g.remove());
+    if (!animClips.length) return;
+    const group = document.createElement("optgroup");
+    group.label = "Custom Clips";
+    group.dataset.custom = "1";
+    animClips.forEach(clip => {
+      const opt = document.createElement("option");
+      opt.value = `clip:${clip.id}`;
+      opt.textContent = clip.name || "Clip";
+      if (anim.mode === opt.value) opt.selected = true;
+      group.appendChild(opt);
+    });
+    animModeSelect.appendChild(group);
+    const has = Array.from(group.children).some(opt=>opt.value === anim.mode);
+    if (has) animModeSelect.value = anim.mode;
+  }
 
   function boot(){
     if(booted){ refresh(); return; }
@@ -68,6 +303,7 @@
     try { params = JSON.parse(localStorage.getItem("hxh.rig.params")||"null"); } catch(e){ params=null; }
     if(!params) params = deepClone(DEF);
     ensureTransformMap(params);
+    loadAnimations();
 
     const canvas = document.getElementById("rig-canvas");
     engine = new BABYLON.Engine(canvas, true, { stencil: true });
@@ -107,7 +343,8 @@
     rebuildRig();
     buildForm();
     buildAnimBar();   // <— new: animation controls overlay
-	buildResizablePanel();
+    buildResizablePanel();
+    rebuildAnimModeOptions();
     // simple smoothing of abrupt wheel jumps (lerp to a target)
     let targetRadius = camera.radius;
     scene.onBeforeRenderObservable.add(()=>{
@@ -118,7 +355,7 @@
 
     engine.runRenderLoop(()=>{
       const dt = engine.getDeltaTime() / 1000;
-      if (anim.playing) animateTick(dt);
+      animateTick(dt);
       scene.render();
     });
     window.addEventListener("resize", ()=>engine.resize());
@@ -293,16 +530,44 @@
   function animateTick(dt){
     // reset to your configured pose, then add animation deltas
     applyTransforms();
+
+    const mode = anim.mode || "walk";
+    if (mode.startsWith("clip:")){
+      const clipId = mode.slice(5);
+      const clip = animClips.find(c=>c.id===clipId);
+      if (clip){
+        if (anim.playing){
+          anim.clipTime += dt * Math.max(anim.speed, 0);
+        }
+        const len = Math.max(clip.length, 0.0001);
+        if (clip.loop){
+          anim.clipTime = ((anim.clipTime % len) + len) % len;
+        } else {
+          anim.clipTime = Math.min(len, Math.max(0, anim.clipTime));
+        }
+        const pose = sampleClip(clip, anim.clipTime);
+        applyPoseToNodes(pose);
+        syncPreviewSlider(clip);
+      }
+      return;
+    }
+
     const P = partsForAnim();
+
+    if (!anim.playing){
+      anim.phase = anim.phase || 0;
+      anim.attackT = 0;
+      return;
+    }
 
     // idle walk speed trick
     let spd = anim.speed;
-    if (anim.mode === "idle") spd = 0.15*anim.speed;
-    if (anim.mode === "walk") anim.grounded = true;
-    if (anim.mode === "jump") anim.grounded = false;
+    if (mode === "idle") spd = 0.15*anim.speed;
+    if (mode === "walk") anim.grounded = true;
+    if (mode === "jump") anim.grounded = false;
 
     // auto punch every ~0.8s when "punch" mode
-    if (anim.mode === "punch"){
+    if (mode === "punch"){
       anim.grounded = true;
       if (anim.attackT<=0) anim.attackT = 0.22;
       else anim.attackT = Math.max(0, anim.attackT - dt);
@@ -449,7 +714,353 @@
       xyzRows(`${title} — Rotation (deg)`, key, "rot");
     });
 
+    buildAnimationEditorUI();
     wireActionsRow(); // buttons at the bottom
+
+    function buildAnimationEditorUI(){
+      const clip = currentClip();
+      const frame = currentFrame();
+      const gAnim = group("Animations", "rig-anim-editor");
+      gAnim.classList.add("rig-anim-editor");
+
+      animUIRefs.previewSlider = null;
+      animUIRefs.frameSelect = null;
+      animUIRefs.clipSelect = null;
+
+      const clipRow = document.createElement("div");
+      clipRow.className = "row";
+      const clipLabel = document.createElement("label");
+      clipLabel.textContent = "Clip";
+      const clipSelect = document.createElement("select");
+      clipSelect.id = "rig-anim-clip";
+      animClips.forEach(c => {
+        const opt = document.createElement("option");
+        opt.value = c.id;
+        opt.textContent = c.name || "Clip";
+        if (clip && c.id === clip.id) opt.selected = true;
+        clipSelect.appendChild(opt);
+      });
+      clipSelect.addEventListener("change", ()=>{
+        animEditorState.clipId = clipSelect.value || null;
+        const newClip = ensureClipSelection();
+        animEditorState.frameId = newClip?.frames[0]?.id || null;
+        anim.clipTime = 0;
+        anim.playing = false;
+        syncAnimPlayButton();
+        if (newClip) setAnimMode(`clip:${newClip.id}`);
+        else setAnimMode("walk");
+        rebuildAnimModeOptions();
+        buildForm();
+      });
+      clipRow.appendChild(clipLabel);
+      clipRow.appendChild(clipSelect);
+      gAnim.appendChild(clipRow);
+      animUIRefs.clipSelect = clipSelect;
+
+      const clipBtnRow = document.createElement("div");
+      clipBtnRow.className = "row rig-anim-buttons";
+      clipBtnRow.innerHTML = `
+        <button type="button" id="rig-anim-new" class="secondary">New Clip</button>
+        <button type="button" id="rig-anim-dup" class="secondary">Duplicate</button>
+        <button type="button" id="rig-anim-del" class="secondary">Delete</button>
+        <button type="button" id="rig-anim-import" class="secondary">Import JSON</button>
+        <button type="button" id="rig-anim-export" class="secondary">Export JSON</button>
+        <input type="file" id="rig-anim-file" accept=".json,application/json" style="display:none">
+      `;
+      gAnim.appendChild(clipBtnRow);
+
+      const fileInput = clipBtnRow.querySelector("#rig-anim-file");
+      clipBtnRow.querySelector("#rig-anim-new").onclick = ()=>{
+        const c = createClip(`Clip ${animClips.length+1}`);
+        animClips.push(c);
+        animEditorState.clipId = c.id;
+        animEditorState.frameId = c.frames[0].id;
+        anim.clipTime = 0;
+        anim.playing = false;
+        syncAnimPlayButton();
+        setAnimMode(`clip:${c.id}`);
+        rebuildAnimModeOptions();
+        saveAnimationsLocal();
+        buildForm();
+      };
+      clipBtnRow.querySelector("#rig-anim-dup").onclick = ()=>{
+        if (!clip) return;
+        const dup = duplicateClip(clip);
+        animClips.push(dup);
+        animEditorState.clipId = dup.id;
+        animEditorState.frameId = dup.frames[0]?.id || null;
+        anim.clipTime = 0;
+        anim.playing = false;
+        syncAnimPlayButton();
+        setAnimMode(`clip:${dup.id}`);
+        rebuildAnimModeOptions();
+        saveAnimationsLocal();
+        buildForm();
+      };
+      clipBtnRow.querySelector("#rig-anim-del").onclick = ()=>{
+        if (!clip) return;
+        const idx = animClips.findIndex(c=>c.id===clip.id);
+        if (idx < 0) return;
+        animClips.splice(idx,1);
+        if (!animClips.length) {
+          const nc = createClip("New Clip");
+          animClips.push(nc);
+        }
+        ensureClipSelection();
+        anim.clipTime = 0;
+        anim.playing = false;
+        syncAnimPlayButton();
+        const sel = currentClip();
+        if (sel) setAnimMode(`clip:${sel.id}`);
+        else setAnimMode("walk");
+        rebuildAnimModeOptions();
+        saveAnimationsLocal();
+        buildForm();
+      };
+      clipBtnRow.querySelector("#rig-anim-import").onclick = ()=> fileInput.click();
+      clipBtnRow.querySelector("#rig-anim-export").onclick = ()=>{
+        const blob = new Blob([JSON.stringify({ clips: animClips }, null, 2)], { type:"application/json" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = `rig_animations_${Date.now()}.json`;
+        document.body.appendChild(a);
+        a.click();
+        URL.revokeObjectURL(a.href);
+        a.remove();
+      };
+      fileInput.onchange = async ()=>{
+        const file = fileInput.files?.[0];
+        if (!file) return;
+        try {
+          const text = await file.text();
+          const parsed = JSON.parse(text);
+          const incoming = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.clips) ? parsed.clips : null);
+          if (!incoming) {
+            alert("Invalid animation JSON.");
+          } else {
+            incoming.map(normalizeClip).filter(Boolean).forEach(c=>animClips.push(c));
+            ensureClipSelection();
+            anim.clipTime = 0;
+            anim.playing = false;
+            syncAnimPlayButton();
+            const sel = currentClip();
+            if (sel) setAnimMode(`clip:${sel.id}`);
+            rebuildAnimModeOptions();
+            saveAnimationsLocal();
+            buildForm();
+            alert("Animations imported.");
+          }
+        } catch (err) {
+          console.error(err);
+          alert("Failed to import animations.");
+        } finally {
+          fileInput.value = "";
+        }
+      };
+
+      if (!clip) return;
+
+      const nameRow = document.createElement("div");
+      nameRow.className = "row";
+      const nameLabel = document.createElement("label");
+      nameLabel.textContent = "Name";
+      const nameInput = document.createElement("input");
+      nameInput.type = "text";
+      nameInput.value = clip.name || "Clip";
+      nameInput.addEventListener("input", ()=>{
+        clip.name = nameInput.value || "Clip";
+        rebuildAnimModeOptions();
+        saveAnimationsLocal();
+      });
+      nameRow.appendChild(nameLabel);
+      nameRow.appendChild(nameInput);
+      gAnim.appendChild(nameRow);
+
+      numberRow(gAnim, "Length (s)", ()=>clip.length, v=>{
+        clip.length = Math.max(0.01, Number(v)||0.01);
+        saveAnimationsLocal();
+        syncPreviewSlider(clip);
+      }, 0.05, 0.01, 99);
+
+      const loopRow = document.createElement("div");
+      loopRow.className = "row";
+      const loopLabel = document.createElement("label");
+      loopLabel.textContent = "Loop";
+      const loopInput = document.createElement("input");
+      loopInput.type = "checkbox";
+      loopInput.checked = clip.loop !== false;
+      loopInput.addEventListener("change", ()=>{
+        clip.loop = !!loopInput.checked;
+        saveAnimationsLocal();
+      });
+      loopRow.appendChild(loopLabel);
+      loopRow.appendChild(loopInput);
+      gAnim.appendChild(loopRow);
+
+      const frameRow = document.createElement("div");
+      frameRow.className = "row";
+      const frameLabel = document.createElement("label");
+      frameLabel.textContent = "Keyframe";
+      const frameSelect = document.createElement("select");
+      frameSelect.id = "rig-anim-frame";
+      clip.frames.forEach(f=>{
+        const opt = document.createElement("option");
+        opt.value = f.id;
+        opt.textContent = `${f.time.toFixed(3)}s`;
+        if (frame && frame.id === f.id) opt.selected = true;
+        frameSelect.appendChild(opt);
+      });
+      frameSelect.addEventListener("change", ()=>{
+        animEditorState.frameId = frameSelect.value || null;
+        const fr = currentFrame();
+        if (fr){
+          anim.clipTime = fr.time;
+          anim.playing = false;
+          syncAnimPlayButton();
+          setAnimMode(`clip:${clip.id}`);
+          syncPreviewSlider(clip);
+        }
+        buildForm();
+      });
+      frameRow.appendChild(frameLabel);
+      frameRow.appendChild(frameSelect);
+      gAnim.appendChild(frameRow);
+      animUIRefs.frameSelect = frameSelect;
+
+      const frameBtnRow = document.createElement("div");
+      frameBtnRow.className = "row rig-anim-frame-buttons";
+      frameBtnRow.innerHTML = `
+        <button type="button" id="rig-frame-add" class="secondary">Add Frame</button>
+        <button type="button" id="rig-frame-dup" class="secondary">Duplicate Frame</button>
+        <button type="button" id="rig-frame-del" class="secondary">Delete Frame</button>
+      `;
+      gAnim.appendChild(frameBtnRow);
+
+      frameBtnRow.querySelector("#rig-frame-add").onclick = ()=>{
+        const newFrame = {
+          id: newId("kf"),
+          time: Math.min(clip.length, Math.max(0, anim.clipTime)),
+          transforms: cloneTransforms(params.transforms)
+        };
+        clip.frames.push(newFrame);
+        sortFrames(clip);
+        animEditorState.frameId = newFrame.id;
+        anim.clipTime = newFrame.time;
+        anim.playing = false;
+        syncAnimPlayButton();
+        saveAnimationsLocal();
+        buildForm();
+      };
+      frameBtnRow.querySelector("#rig-frame-dup").onclick = ()=>{
+        if (!frame) return;
+        const dup = {
+          id: newId("kf"),
+          time: frame.time,
+          transforms: cloneTransforms(frame.transforms)
+        };
+        clip.frames.push(dup);
+        sortFrames(clip);
+        animEditorState.frameId = dup.id;
+        anim.clipTime = dup.time;
+        anim.playing = false;
+        syncAnimPlayButton();
+        saveAnimationsLocal();
+        buildForm();
+      };
+      frameBtnRow.querySelector("#rig-frame-del").onclick = ()=>{
+        if (!frame) return;
+        if (clip.frames.length <= 1){
+          alert("A clip must have at least one keyframe.");
+          return;
+        }
+        const idx = clip.frames.findIndex(f=>f.id===frame.id);
+        if (idx >= 0) clip.frames.splice(idx,1);
+        sortFrames(clip);
+        animEditorState.frameId = clip.frames[0]?.id || null;
+        const fr = currentFrame();
+        anim.clipTime = fr ? fr.time : 0;
+        anim.playing = false;
+        syncAnimPlayButton();
+        saveAnimationsLocal();
+        buildForm();
+      };
+
+      const frameTimeRow = document.createElement("div");
+      frameTimeRow.className = "row";
+      const timeLabel = document.createElement("label");
+      timeLabel.textContent = "Frame Time (s)";
+      const timeInput = document.createElement("input");
+      timeInput.type = "number";
+      timeInput.step = "0.01";
+      timeInput.min = "0";
+      timeInput.max = String(clip.length);
+      timeInput.value = frame ? frame.time.toFixed(3) : "0";
+      timeInput.addEventListener("change", ()=>{
+        if (!frame) return;
+        const v = Number(timeInput.value);
+        if (Number.isFinite(v)){
+          frame.time = Math.min(clip.length, Math.max(0, v));
+          sortFrames(clip);
+          anim.clipTime = frame.time;
+          anim.playing = false;
+          syncAnimPlayButton();
+          saveAnimationsLocal();
+          buildForm();
+        }
+      });
+      frameTimeRow.appendChild(timeLabel);
+      frameTimeRow.appendChild(timeInput);
+      gAnim.appendChild(frameTimeRow);
+
+      const poseRow = document.createElement("div");
+      poseRow.className = "row rig-anim-pose";
+      const captureBtn = document.createElement("button");
+      captureBtn.type = "button";
+      captureBtn.className = "secondary";
+      captureBtn.textContent = "Capture from Pose";
+      captureBtn.onclick = ()=>{
+        if (!frame) return;
+        frame.transforms = cloneTransforms(params.transforms);
+        saveAnimationsLocal();
+      };
+      const applyBtn = document.createElement("button");
+      applyBtn.type = "button";
+      applyBtn.className = "secondary";
+      applyBtn.textContent = "Apply to Pose";
+      applyBtn.onclick = ()=>{
+        if (!frame) return;
+        params.transforms = cloneTransforms(frame.transforms);
+        ensureTransformMap(params);
+        saveLocalSilently();
+        refresh();
+        buildForm();
+      };
+      poseRow.appendChild(captureBtn);
+      poseRow.appendChild(applyBtn);
+      gAnim.appendChild(poseRow);
+
+      const previewRow = document.createElement("div");
+      previewRow.className = "row";
+      const previewLabel = document.createElement("label");
+      previewLabel.textContent = "Preview";
+      const preview = document.createElement("input");
+      preview.type = "range";
+      preview.min = "0";
+      preview.max = "1";
+      preview.step = "0.01";
+      const len = Math.max(clip.length, 0.0001);
+      preview.value = String(Math.min(1, Math.max(0, anim.clipTime / len)));
+      preview.addEventListener("input", ()=>{
+        anim.clipTime = Number(preview.value || "0") * len;
+        anim.playing = false;
+        syncAnimPlayButton();
+        setAnimMode(`clip:${clip.id}`);
+      });
+      previewRow.appendChild(previewLabel);
+      previewRow.appendChild(preview);
+      gAnim.appendChild(previewRow);
+      animUIRefs.previewSlider = preview;
+    }
   }
 
   // ---- Actions (reuse existing row; no duplicates) ----
@@ -535,12 +1146,25 @@
     const mode = document.getElementById("anim-mode");
     const spd  = document.getElementById("anim-speed");
 
+    animPlayButton = btn;
+    animModeSelect = mode;
+
     btn.onclick = ()=>{
       anim.playing = !anim.playing;
-      btn.textContent = anim.playing ? "⏸ Pause" : "▶ Play";
+      syncAnimPlayButton();
     };
-    mode.onchange = ()=>{ anim.mode = mode.value; };
+    mode.onchange = ()=>{
+      setAnimMode(mode.value);
+      if (mode.value.startsWith("clip:")){
+        anim.clipTime = 0;
+        anim.playing = false;
+        syncAnimPlayButton();
+      }
+    };
     spd.oninput  = ()=>{ anim.speed = Number(spd.value)||1; };
+
+    syncAnimPlayButton();
+    mode.value = anim.mode;
   }
 
   // ---------- persistence & export ----------
