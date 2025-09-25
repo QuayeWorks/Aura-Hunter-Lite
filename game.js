@@ -376,100 +376,177 @@
          localStorage.setItem(TERRAIN_SETTINGS_KEY, JSON.stringify(settings));
       } catch (err) {}
    }
+	// Precompile terrain layer materials for smooth startup.
+	// Call: await precompileTerrainMaterials(scene) after createTerrain(scene) and before mass instancing (trees, etc).
+	async function precompileTerrainMaterials(scene) {
+	  const terrain = environment.terrain;
+	  if (!terrain || !terrain.layerTemplates) return;
+	  const tasks = [];
+	  for (const tpl of terrain.layerTemplates) {
+		if (tpl && tpl.material && typeof tpl.material.forceCompilationAsync === "function") {
+		  tasks.push(tpl.material.forceCompilationAsync(tpl));
+		}
+	  }
+	  try { await Promise.all(tasks); } catch (e) { /* ignore compilation errors */ }
+	}
 
-   function disposeTerrain() {
-      const terrain = environment.terrain;
-      if (!terrain) return;
-      if (terrain.columns) {
-         terrain.columns.forEach(column => {
-            if (!column) return;
-            column.forEach(block => {
-               if (block) block.dispose();
-            });
-         });
-      }
-      terrain.root?.dispose();
-      environment.terrain = null;
-      world.ground = null;
-   }
+	function disposeTerrain() {
+	  const terrain = environment.terrain;
+	  if (!terrain) return;
 
-   function createTerrain(scene) {
-      disposeTerrain();
-      const settings = environment.terrainSettings = normalizeTerrainSettings(environment.terrainSettings);
-      saveTerrainSettings(settings);
-      const { length, width, cubeSize, layers } = settings;
-      const totalWidth = length * cubeSize;
-      const totalDepth = width * cubeSize;
-      world.size = Math.max(totalWidth, totalDepth);
-      const halfX = totalWidth * 0.5;
-      const halfZ = totalDepth * 0.5;
-      const baseY = -layers * cubeSize;
-      const root = new BABYLON.TransformNode("terrainRoot", scene);
-      const columns = new Array(length * width);
-      const heights = new Uint16Array(length * width);
-      const columnStates = new Array(length * width).fill(false);
-      const centers = new Array(length * width);
-      const layerMaterials = TERRAIN_LAYER_DEFS.map(def => {
-         const mat = new BABYLON.StandardMaterial(`terrain_${def.key}`, scene);
-         const diffuse = new BABYLON.Color3(def.color[0], def.color[1], def.color[2]);
-         const emissive = new BABYLON.Color3(def.emissive[0], def.emissive[1], def.emissive[2]);
-         mat.diffuseColor = diffuse;
-         mat.ambientColor = diffuse.scale(0.45);
-         mat.emissiveColor = emissive;
-         mat.specularColor = BABYLON.Color3.Black();
-         return mat;
-      });
-      const template = BABYLON.MeshBuilder.CreateBox("terrainCubeTemplate", { size: cubeSize }, scene);
-      template.isVisible = false;
-      template.isPickable = false;
-      template.checkCollisions = true;
-      for (let z = 0; z < width; z++) {
-         for (let x = 0; x < length; x++) {
-            const idx = z * length + x;
-            const column = new Array(layers);
-            columns[idx] = column;
-            heights[idx] = layers;
-            const worldX = -halfX + (x + 0.5) * cubeSize;
-            const worldZ = -halfZ + (z + 0.5) * cubeSize;
-            centers[idx] = { x: worldX, z: worldZ };
-            for (let layer = 0; layer < layers; layer++) {
-               const block = template.createInstance(`terrainCube_${x}_${z}_${layer}`);
-               block.parent = root;
-               block.position.set(worldX, baseY + (layer + 0.5) * cubeSize, worldZ);
-               block.material = layerMaterials[Math.min(layer, layerMaterials.length - 1)];
-               block.metadata = {
-                  terrainBlock: {
-                     columnIndex: idx,
-                     layer,
-                     destructible: TERRAIN_LAYER_DEFS[layer]?.destructible ?? true,
-                     destroyed: false
-                  }
-               };
-               block.isPickable = true;
-               block.checkCollisions = true;
-               block.setEnabled(false);
-               column[layer] = block;
-            }
-         }
-      }
-      template.dispose();
-      environment.terrain = {
-         root,
-         columns,
-         heights,
-         centers,
-         columnStates,
-         baseY,
-         cubeSize,
-         colsX: length,
-         colsZ: width,
-         halfX,
-         halfZ,
-         settings: { ...settings },
-         streamAccumulator: 0,
-         streamInterval: 0.25
-      };
-   }
+	  // 1) Dispose all block instances in columns (if present)
+	  if (terrain.columns) {
+		for (const column of terrain.columns) {
+		  if (!column) continue;
+		  for (const block of column) {
+			if (block && !block.isDisposed()) {
+			  try { block.dispose(); } catch (e) { /* ignore */ }
+			}
+		  }
+		}
+	  }
+
+	  // 2) Dispose per-layer templates if they exist (usually parented to root)
+	  if (terrain.layerTemplates) {
+		for (const tpl of terrain.layerTemplates) {
+		  if (tpl && !tpl.isDisposed()) {
+			try { tpl.dispose(); } catch (e) { /* ignore */ }
+		  }
+		}
+	  }
+
+	  // 3) Dispose the terrain root (recursively) to catch any remaining children
+	  if (terrain.root && !terrain.root.isDisposed?.()) {
+		try { terrain.root.dispose(false); } catch (e) { /* ignore */ }
+	  }
+
+	  // 4) Clear references
+	  environment.terrain = null;
+	  world.ground = null;
+	}
+
+
+	function createTerrain(scene) {
+	  disposeTerrain();
+
+	  const settings = environment.terrainSettings = normalizeTerrainSettings(environment.terrainSettings);
+	  saveTerrainSettings(settings);
+
+	  const { length, width, cubeSize, layers } = settings;
+
+	  const totalWidth = length * cubeSize;
+	  const totalDepth = width * cubeSize;
+	  world.size = Math.max(totalWidth, totalDepth);
+
+	  const halfX = totalWidth * 0.5;
+	  const halfZ = totalDepth * 0.5;
+	  const baseY = -layers * cubeSize;
+
+	  const root = new BABYLON.TransformNode("terrainRoot", scene);
+
+	  // Column arrays
+	  const columns = new Array(length * width);
+	  const heights = new Uint16Array(length * width);
+	  const columnStates = new Array(length * width).fill(false);
+	  const centers = new Array(length * width);
+
+	  // Build materials once (unchanged logic)
+	  const layerMaterials = TERRAIN_LAYER_DEFS.map(def => {
+		const mat = new BABYLON.StandardMaterial(`terrain_${def.key}`, scene);
+		const diffuse = new BABYLON.Color3(def.color[0], def.color[1], def.color[2]);
+		const emissive = new BABYLON.Color3(def.emissive[0], def.emissive[1], def.emissive[2]);
+		mat.diffuseColor = diffuse;
+		mat.ambientColor = diffuse.scale(0.45);
+		mat.emissiveColor = emissive;
+		mat.specularColor = BABYLON.Color3.Black();
+		return mat;
+	  });
+
+	  // IMPORTANT CHANGE:
+	  // Create ONE template box PER LAYER, assign the layer's material ONCE,
+	  // and thin-hide the templates. We will instance from these. Do NOT
+	  // assign materials on instances.
+	  const layerTemplates = [];
+	  for (let layer = 0; layer < layers; layer++) {
+		const template = BABYLON.MeshBuilder.CreateBox(`terrainCubeTemplate_L${layer}`, { size: cubeSize }, scene);
+		template.parent = root;
+		// Assign the matching material ONCE to the source mesh
+		const matIndex = Math.min(layer, layerMaterials.length - 1);
+		template.material = layerMaterials[matIndex];
+
+		// Behavior flags to match the previous template
+		template.isVisible = false;          // hide the template
+		template.isPickable = false;
+		template.checkCollisions = true;
+
+		// Keep the template around (DO NOT dispose), but disable its own rendering
+		template.setEnabled(false);
+
+		layerTemplates[layer] = template;
+	  }
+
+	  // Build grid of columns
+	  for (let z = 0; z < width; z++) {
+		for (let x = 0; x < length; x++) {
+		  const idx = z * length + x;
+		  const column = new Array(layers);
+		  columns[idx] = column;
+		  heights[idx] = layers;
+
+		  const worldX = -halfX + (x + 0.5) * cubeSize;
+		  const worldZ = -halfZ + (z + 0.5) * cubeSize;
+		  centers[idx] = { x: worldX, z: worldZ };
+
+		  for (let layer = 0; layer < layers; layer++) {
+			// Create instance from the *layer's* template
+			const source = layerTemplates[layer];
+			const block = source.createInstance(`terrainCube_${x}_${z}_${layer}`);
+			block.parent = root;
+			block.position.set(worldX, baseY + (layer + 0.5) * cubeSize, worldZ);
+
+			// DO NOT set block.material here; instances share their source mesh's material.
+
+			block.metadata = {
+			  terrainBlock: {
+				columnIndex: idx,
+				layer,
+				destructible: TERRAIN_LAYER_DEFS[layer]?.destructible ?? true,
+				destroyed: false
+			  }
+			};
+
+			block.isPickable = true;
+			block.checkCollisions = true;
+			block.setEnabled(false);
+
+			column[layer] = block;
+		  }
+		}
+	  }
+
+	  // NOTE: We intentionally DO NOT dispose the per-layer templates; they are required
+	  // as the source of all instances. They are hidden and disabled, parented to 'root',
+	  // so when 'root' is disposed in disposeTerrain(), they'll be cleaned up correctly.
+
+	  environment.terrain = {
+		root,
+		columns,
+		heights,
+		centers,
+		columnStates,
+		baseY,
+		cubeSize,
+		colsX: length,
+		colsZ: width,
+		halfX,
+		halfZ,
+		settings: { ...settings },
+		streamAccumulator: 0,
+		streamInterval: 0.25,
+		layerTemplates // keep a reference if other systems need access
+	  };
+	}
+
 
    function terrainColumnIndexFromWorld(x, z) {
       const terrain = environment.terrain;
@@ -795,6 +872,7 @@
       environment.moonMesh.isPickable = false;
 
       createTerrain(scene);
+	  await precompileTerrainMaterials(scene);
       await scatterVegetation(scene);
       createCloudLayer(scene);
       updateEnvironment(240);
