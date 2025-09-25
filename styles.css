@@ -488,23 +488,56 @@ legend {
 
 /* Overlay controls on the canvas */
 .rig-animbar {
-	position: absolute;
-	right: .6rem;
-	top: 0.6rem;
-	z-index: 2;
-	display: flex;
-	gap: .5rem;
-	align-items: center;
-	background: #0f1a30cc;
-	border: 1px solid #27355e;
-	border-radius: 10px;
-	padding: .35rem .5rem;
-	backdrop-filter: blur(2px);
+        position: absolute;
+        right: .6rem;
+        top: 0.6rem;
+        z-index: 2;
+        display: flex;
+        gap: .5rem;
+        align-items: center;
+        background: #0f1a30cc;
+        border: 1px solid #27355e;
+        border-radius: 10px;
+        padding: .35rem .5rem;
+        backdrop-filter: blur(2px);
+}
+
+.rig-transform-toolbar {
+        position: absolute;
+        left: .6rem;
+        top: .6rem;
+        z-index: 2;
+        display: flex;
+        align-items: center;
+        gap: .75rem;
+        background: #0f1a30cc;
+        border: 1px solid #27355e;
+        border-radius: 10px;
+        padding: .35rem .6rem;
+        backdrop-filter: blur(2px);
+        color: #d6e4ff;
+}
+
+.rig-transform-toolbar .mode-buttons {
+        display: flex;
+        gap: .35rem;
+}
+
+.rig-transform-toolbar button.active {
+        background: linear-gradient(135deg, #3a9cfc, #55f0ff);
+        color: #0a1021;
+        border-color: #65d0ff;
+        box-shadow: 0 0 10px rgba(86, 213, 255, .35);
+}
+
+.rig-transform-toolbar .mode-hint {
+        font-size: .85rem;
+        color: #9fb3d9;
 }
 
 .rig-animbar .anim-speed input[type="range"] {
-	width: 120px;
-	vertical-align: middle;
+        width: 120px;
+        vertical-align: middle;
 }
 
 .rig-help {
@@ -566,9 +599,306 @@ legend {
 }
 
 .rig-actions {
-	display: flex;
-	gap: .4rem;
-	flex-wrap: wrap;
+        display: flex;
+        gap: .4rem;
+        flex-wrap: wrap;
+}
+
+.rig-selection-card {
+        display: flex;
+        flex-direction: column;
+        gap: .3rem;
+}
+
+.rig-selection-card .selection-name {
+        font-size: 1.1rem;
+        font-weight: 600;
+        color: #e1f1ff;
+}
+
+.rig-selection-card .selection-mode {
+        font-size: .9rem;
+        color: #8ea6cc;
+}
+
+.rig-selection-card .selection-readouts {
+        display: grid;
+        gap: .5rem;
+}
+
+.rig-selection-card [data-kind] {
+        border: 1px solid #233560;
+        border-radius: 8px;
+        padding: .45rem .6rem;
+        transition: border-color .2s, background-color .2s;
+}
+
+.rig-selection-card [data-kind].active {
+        border-color: #4cc8ff;
+        background: rgba(60, 132, 255, .12);
+}
+
+.rig-selection-card [data-kind] h4 {
+        margin: 0 0 .3rem;
+        font-size: .85rem;
+        color: #b7c7e8;
+}
+
+.rig-selection-card .axes {
+        display: flex;
+        gap: .9rem;
+        font-size: .85rem;
+        color: #9fb3d9;
+}
+
+.rig-selection-card .axes b {
+        color: #f0fbff;
+        font-weight: 600;
+}
+
+.rig-selection-card .selection-readouts {
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.rig-anim-launch p {
+        margin: .2rem 0 .6rem;
+        color: #8ea6cc;
+}
+
+#rig-animation-overlay {
+        position: fixed;
+        inset: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        background: rgba(5, 12, 24, .82);
+        z-index: 50;
+        backdrop-filter: blur(4px);
+}
+
+.rig-animation-window {
+        background: #0c1426;
+        border: 1px solid #274068;
+        border-radius: 14px;
+        box-shadow: 0 30px 60px rgba(0,0,0,.45);
+        width: min(1120px, 92vw);
+        max-height: 90vh;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        color: #d6e4ff;
+}
+
+.rig-animation-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: .9rem 1.2rem .7rem;
+        background: linear-gradient(180deg, rgba(33,58,92,.9), rgba(12,20,38,.95));
+        border-bottom: 1px solid #1f3254;
+}
+
+.rig-animation-header h3 {
+        margin: 0;
+        font-size: 1.2rem;
+        letter-spacing: .02em;
+}
+
+.rig-animation-header-controls button {
+        font-size: 1.1rem;
+        background: transparent;
+        border: 1px solid #3c5a8a;
+        color: #9fb3d9;
+        border-radius: 50%;
+        width: 34px;
+        height: 34px;
+        cursor: pointer;
+}
+
+.rig-animation-toolbar {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: .6rem;
+        padding: .8rem 1.2rem;
+        background: rgba(12,20,38,.9);
+        border-bottom: 1px solid #1f3254;
+        align-items: center;
+        font-size: .9rem;
+}
+
+.rig-animation-toolbar label {
+        display: flex;
+        flex-direction: column;
+        gap: .25rem;
+        color: #9fb3d9;
+}
+
+.rig-animation-toolbar select,
+.rig-animation-toolbar input[type="number"] {
+        background: #101b30;
+        border: 1px solid #22385f;
+        border-radius: 6px;
+        color: #e1f1ff;
+        padding: .35rem .4rem;
+}
+
+.rig-animation-toolbar .toolbar-buttons {
+        display: flex;
+        gap: .4rem;
+        flex-wrap: wrap;
+}
+
+.rig-animation-toolbar .speed-slider input[type="range"] {
+        width: 180px;
+}
+
+.rig-animation-body {
+        padding: 1rem 1.2rem;
+        background: #0c1426;
+}
+
+.rig-timeline {
+        position: relative;
+        display: grid;
+        gap: .6rem;
+}
+
+.rig-timeline::before {
+        content: "";
+        position: absolute;
+        left: 80px;
+        right: 0;
+        top: 0;
+        bottom: 0;
+        border-left: 1px solid rgba(120,160,210,.18);
+        pointer-events: none;
+}
+
+.timeline-track {
+        display: grid;
+        grid-template-columns: 80px 1fr;
+        align-items: center;
+        gap: .6rem;
+}
+
+.timeline-label {
+        font-size: .85rem;
+        color: #8ea6cc;
+        text-transform: uppercase;
+        letter-spacing: .08em;
+}
+
+.timeline-track-body {
+        position: relative;
+        height: 56px;
+        background: rgba(20,32,52,.6);
+        border: 1px solid rgba(47,70,110,.8);
+        border-radius: 10px;
+        overflow: hidden;
+}
+
+.timeline-track-body::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background-image: linear-gradient(90deg, rgba(80,120,180,.2) 1px, transparent 1px);
+        background-size: 60px 100%;
+        pointer-events: none;
+}
+
+.timeline-marker {
+        position: absolute;
+        top: 8px;
+        width: 14px;
+        height: 40px;
+        border-radius: 6px;
+        background: linear-gradient(180deg, #58b6ff, #2e5dff);
+        transform: translateX(-50%);
+        border: 1px solid #8ad5ff;
+        cursor: ew-resize;
+        transition: transform .15s, box-shadow .15s;
+        box-shadow: 0 0 10px rgba(60,160,255,.35);
+}
+
+.timeline-marker[data-interp="step"] {
+        background: linear-gradient(180deg, #ffb84d, #f0831a);
+        border-color: #ffc876;
+}
+
+.timeline-marker[data-interp="ease"] {
+        background: linear-gradient(180deg, #79ffac, #28c27d);
+        border-color: #7efbc1;
+}
+
+.timeline-marker.selected {
+        box-shadow: 0 0 15px rgba(120,220,255,.6);
+        transform: translateX(-50%) scale(1.08);
+}
+
+.timeline-marker:active {
+        transform: translateX(-50%) scale(1.1);
+}
+
+.timeline-cursor {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        width: 2px;
+        background: rgba(120,200,255,.8);
+        pointer-events: none;
+}
+
+.rig-animation-footer {
+        display: flex;
+        flex-direction: column;
+        gap: .8rem;
+        padding: .9rem 1.2rem 1.2rem;
+        background: rgba(14,23,40,.95);
+        border-top: 1px solid #1c2f4f;
+}
+
+.frame-controls {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: .6rem;
+        align-items: center;
+}
+
+.frame-controls label {
+        display: flex;
+        flex-direction: column;
+        gap: .25rem;
+        color: #9fb3d9;
+}
+
+.frame-controls select,
+.frame-controls input[type="number"] {
+        background: #101b30;
+        border: 1px solid #243a60;
+        border-radius: 6px;
+        color: #e1f1ff;
+        padding: .35rem .4rem;
+}
+
+.frame-buttons {
+        display: flex;
+        gap: .4rem;
+        flex-wrap: wrap;
+}
+
+.frame-pose-controls {
+        display: flex;
+        gap: .5rem;
+        flex-wrap: wrap;
+}
+
+.rig-animation-window button.primary,
+.rig-animation-window button.secondary {
+        min-width: 0;
+}
+
+body.rig-anim-editor-open {
+        overflow: hidden;
 }
 
 /* Stack on narrow screens */

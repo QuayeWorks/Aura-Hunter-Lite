@@ -21,8 +21,15 @@
       hipR: t0(), legR_thigh: t0(), legR_shin: t0(), legR_foot: t0(),
     }
   };
-  function t0(){ return { pos:{x:0,y:0,z:0}, rot:{x:0,y:0,z:0} }; }
+  function t0(){
+    return {
+      pos:{x:0,y:0,z:0},
+      rot:{x:0,y:0,z:0},
+      scale:{x:1,y:1,z:1}
+    };
+  }
   const d2r = d => d*Math.PI/180;
+  const r2d = r => r*180/Math.PI;
 
   // Deep clone helper
   const deepClone = o => JSON.parse(JSON.stringify(o));
@@ -36,15 +43,45 @@
     "hipR","legR_thigh","legR_shin","legR_foot",
   ];
 
+  const PART_DISPLAY_NAMES = {
+    pelvis: "Pelvis",
+    torsoLower: "Lower Torso",
+    torsoUpper: "Upper Torso",
+    neck: "Neck",
+    head: "Head",
+    shoulderL: "Shoulder L",
+    armL_upper: "Upper Arm L",
+    armL_fore: "Forearm L",
+    armL_hand: "Hand L",
+    shoulderR: "Shoulder R",
+    armR_upper: "Upper Arm R",
+    armR_fore: "Forearm R",
+    armR_hand: "Hand R",
+    hipL: "Hip L",
+    legL_thigh: "Thigh L",
+    legL_shin: "Shin L",
+    legL_foot: "Foot L",
+    hipR: "Hip R",
+    legR_thigh: "Thigh R",
+    legR_shin: "Shin R",
+    legR_foot: "Foot R",
+  };
+
   function ensureTransformMap(p){
     if (!p.transforms || typeof p.transforms !== "object") p.transforms = {};
     for (const k of PART_KEYS){
       const base = p.transforms[k] || {};
       const pos = base.pos || {};
       const rot = base.rot || {};
+      const scale = base.scale || {};
       p.transforms[k] = {
         pos: { x: Number(pos.x)||0, y: Number(pos.y)||0, z: Number(pos.z)||0 },
         rot: { x: Number(rot.x)||0, y: Number(rot.y)||0, z: Number(rot.z)||0 },
+        scale: {
+          x: Number.isFinite(scale.x) ? Number(scale.x) : 1,
+          y: Number.isFinite(scale.y) ? Number(scale.y) : 1,
+          z: Number.isFinite(scale.z) ? Number(scale.z) : 1
+        },
       };
     }
     return p.transforms;
@@ -54,6 +91,7 @@
   let engine, scene, camera;
   let rigRoot = null;      // visible collider (helps reading scale)
   let nodes = {};          // map of TransformNodes keyed by part name
+  let partMeshes = {};     // map part -> meshes for highlighting/picking
   let params = null;       // working params
   let booted = false;
 
@@ -73,6 +111,18 @@
   let animPlayButton = null;
   let animModeSelect = null;
   const animUIRefs = { previewSlider:null, frameSelect:null, clipSelect:null };
+  let animOverlay = null;
+  let animOverlayContent = null;
+  let animTimelineEl = null;
+  let animOverlayOpen = false;
+  let timelineDrag = null;
+
+  let gizmoManager = null;
+  let gizmoMode = "position";
+  let selectedPartKey = null;
+  let selectionInfoRefs = { wrap:null, values:{} };
+  let gizmoDragging = false;
+  let highlightLayer = null;
 
   function newId(prefix){
     return `${prefix}_${Math.random().toString(36).slice(2)}_${Date.now().toString(36)}`;
@@ -82,6 +132,74 @@
     const wrap = { transforms: deepClone(src || {}) };
     ensureTransformMap(wrap);
     return deepClone(wrap.transforms);
+  }
+
+  function registerMeshForPart(key, mesh){
+    if (!mesh) return;
+    mesh.metadata = mesh.metadata || {};
+    mesh.metadata.partKey = key;
+    partMeshes[key] = partMeshes[key] || new Set();
+    partMeshes[key].add(mesh);
+  }
+
+  function clearPartMeshes(){
+    Object.values(partMeshes).forEach(set=>set.clear?.());
+    partMeshes = {};
+  }
+
+  function partLabel(key){
+    return PART_DISPLAY_NAMES[key] || key;
+  }
+
+  function highlightSelection(){
+    if (!highlightLayer) return;
+    highlightLayer.removeAllMeshes();
+    if (!selectedPartKey) return;
+    const meshes = Array.from(partMeshes[selectedPartKey] || []);
+    const tint = BABYLON.Color3.FromHexString(params?.color || DEF.color).scale(1.2);
+    meshes.forEach(mesh=>{
+      if (!mesh || mesh.isDisposed()) return;
+      highlightLayer.addMesh(mesh, tint);
+    });
+  }
+
+  function attachGizmo(){
+    if (!gizmoManager) return;
+    const node = selectedPartKey ? nodes[selectedPartKey] : null;
+    gizmoManager.attachToMesh(node || null);
+    updateGizmoModeState();
+  }
+
+  function setSelectedPart(key){
+    if (selectedPartKey === key) {
+      updateSelectionInfoPanel();
+      return;
+    }
+    selectedPartKey = key;
+    attachGizmo();
+    highlightSelection();
+    updateSelectionInfoPanel();
+  }
+
+  function updateGizmoModeState(){
+    if (!gizmoManager) return;
+    gizmoManager.positionGizmoEnabled = gizmoMode === "position";
+    gizmoManager.rotationGizmoEnabled = gizmoMode === "rotation";
+    gizmoManager.scaleGizmoEnabled = gizmoMode === "scale";
+    if (gizmoManager.gizmos.scaleGizmo){
+      gizmoManager.gizmos.scaleGizmo.uniformScaling = false;
+    }
+    bindGizmoDrag(gizmoManager.gizmos.positionGizmo);
+    bindGizmoDrag(gizmoManager.gizmos.rotationGizmo);
+    bindGizmoDrag(gizmoManager.gizmos.scaleGizmo);
+    updateGizmoModeUI();
+  }
+
+  function setGizmoMode(mode){
+    if (!mode || gizmoMode === mode) return;
+    gizmoMode = mode;
+    updateGizmoModeState();
+    updateSelectionInfoPanel();
   }
 
   function loadAnimations(){
@@ -105,6 +223,52 @@
     try { localStorage.setItem("hxh.rig.animations", JSON.stringify(animClips)); } catch (_) {}
   }
 
+  function refreshTimelineUI(){
+    if (!animOverlayOpen) return;
+    renderTimeline();
+  }
+
+  function refreshCurrentFrameFromPose(){
+    if (!anim.mode || !anim.mode.startsWith("clip:")) return;
+    const clip = currentClip();
+    const frame = currentFrame();
+    if (!clip || !frame || `clip:${clip.id}` !== anim.mode) return;
+    frame.transforms = cloneTransforms(params.transforms);
+    saveAnimationsLocal();
+    refreshTimelineUI();
+  }
+
+  function syncSelectedTransformFromNode(save=true){
+    if (!selectedPartKey) return;
+    ensureTransformMap(params);
+    const node = nodes[selectedPartKey];
+    if (!node) return;
+    const tr = params.transforms[selectedPartKey];
+    tr.pos.x = Number(node.position.x.toFixed(3));
+    tr.pos.y = Number(node.position.y.toFixed(3));
+    tr.pos.z = Number(node.position.z.toFixed(3));
+    tr.rot.x = Number(r2d(node.rotation.x).toFixed(3));
+    tr.rot.y = Number(r2d(node.rotation.y).toFixed(3));
+    tr.rot.z = Number(r2d(node.rotation.z).toFixed(3));
+    tr.scale.x = Number(node.scaling.x.toFixed(3));
+    tr.scale.y = Number(node.scaling.y.toFixed(3));
+    tr.scale.z = Number(node.scaling.z.toFixed(3));
+    if (save) saveLocalSilently();
+    updateSelectionInfoPanel();
+  }
+
+  function bindGizmoDrag(gizmo){
+    if (!gizmo || gizmo.__rigBound) return;
+    gizmo.__rigBound = true;
+    gizmo.onDragStartObservable.add(()=>{ gizmoDragging = true; });
+    gizmo.onDragObservable.add(()=>{ syncSelectedTransformFromNode(false); });
+    gizmo.onDragEndObservable.add(()=>{
+      gizmoDragging = false;
+      syncSelectedTransformFromNode(true);
+      refreshCurrentFrameFromPose();
+    });
+  }
+
   function normalizeClip(raw){
     if (!raw) return null;
     const clip = {
@@ -119,6 +283,7 @@
       const frame = {
         id: typeof f?.id === "string" && f.id ? f.id : newId("kf"),
         time: Number(f?.time),
+        interp: typeof f?.interp === 'string' ? f.interp : 'linear',
         transforms: cloneTransforms(f?.transforms)
       };
       if (!Number.isFinite(frame.time)) frame.time = 0;
@@ -126,8 +291,8 @@
       clip.frames.push(frame);
     });
     if (!clip.frames.length) {
-      clip.frames.push({ id:newId("kf"), time:0, transforms: cloneTransforms(params?.transforms || DEF.transforms) });
-      clip.frames.push({ id:newId("kf"), time:clip.length, transforms: cloneTransforms(params?.transforms || DEF.transforms) });
+      clip.frames.push({ id:newId("kf"), time:0, interp:'linear', transforms: cloneTransforms(params?.transforms || DEF.transforms) });
+      clip.frames.push({ id:newId("kf"), time:clip.length, interp:'linear', transforms: cloneTransforms(params?.transforms || DEF.transforms) });
     }
     clip.frames.sort((a,b)=>a.time-b.time);
     return clip;
@@ -145,7 +310,7 @@
       animEditorState.clipId = clip.id;
     }
     if (!clip.frames.length){
-      clip.frames.push({ id:newId("kf"), time:0, transforms: cloneTransforms(params?.transforms || DEF.transforms) });
+      clip.frames.push({ id:newId("kf"), time:0, interp:'linear', transforms: cloneTransforms(params?.transforms || DEF.transforms) });
     }
     let frame = clip.frames.find(f=>f.id===animEditorState.frameId);
     if (!frame){
@@ -173,8 +338,8 @@
       length: 1,
       loop: true,
       frames: [
-        { id:newId("kf"), time:0, transforms: cloneTransforms(params?.transforms || DEF.transforms) },
-        { id:newId("kf"), time:1, transforms: cloneTransforms(params?.transforms || DEF.transforms) }
+        { id:newId("kf"), time:0, interp:'linear', transforms: cloneTransforms(params?.transforms || DEF.transforms) },
+        { id:newId("kf"), time:1, interp:'linear', transforms: cloneTransforms(params?.transforms || DEF.transforms) }
       ]
     };
     return clip;
@@ -186,7 +351,7 @@
       name: `${src.name || "Clip"} Copy`,
       length: src.length,
       loop: src.loop,
-      frames: src.frames.map(f=>({ id:newId("kf"), time:f.time, transforms: cloneTransforms(f.transforms) }))
+      frames: src.frames.map(f=>({ id:newId("kf"), time:f.time, interp:f.interp || 'linear', transforms: cloneTransforms(f.transforms) }))
     };
     clip.frames.sort((a,b)=>a.time-b.time);
     return clip;
@@ -221,7 +386,13 @@
     if (t >= frames[frames.length-1].time) return cloneTransforms(frames[frames.length-1].transforms);
     if (prev === next) return cloneTransforms(prev.transforms);
     const span = Math.max(0.0001, next.time - prev.time);
-    const k = Math.min(1, Math.max(0, (t - prev.time)/span));
+    let k = Math.min(1, Math.max(0, (t - prev.time)/span));
+    const interpMode = prev.interp || 'linear';
+    if (interpMode === 'step') {
+      k = 0;
+    } else if (interpMode === 'ease') {
+      k = BABYLON.Scalar.SmoothStep(0, 1, k);
+    }
     const out = {};
     for (const key of PART_KEYS){
       const A = prev.transforms?.[key] || t0();
@@ -236,6 +407,11 @@
           x: BABYLON.Scalar.Lerp(A.rot?.x||0, B.rot?.x||0, k),
           y: BABYLON.Scalar.Lerp(A.rot?.y||0, B.rot?.y||0, k),
           z: BABYLON.Scalar.Lerp(A.rot?.z||0, B.rot?.z||0, k)
+        },
+        scale: {
+          x: BABYLON.Scalar.Lerp(A.scale?.x||1, B.scale?.x||1, k),
+          y: BABYLON.Scalar.Lerp(A.scale?.y||1, B.scale?.y||1, k),
+          z: BABYLON.Scalar.Lerp(A.scale?.z||1, B.scale?.z||1, k)
         }
       };
     }
@@ -250,6 +426,7 @@
       const tr = pose[key] || t0();
       node.position.set(tr.pos.x, tr.pos.y, tr.pos.z);
       node.rotation.set(d2r(tr.rot.x), d2r(tr.rot.y), d2r(tr.rot.z));
+      node.scaling.set(tr.scale.x, tr.scale.y, tr.scale.z);
     }
   }
 
@@ -259,6 +436,7 @@
       const hasOption = Array.from(animModeSelect.options).some(opt=>opt.value === value);
       if (hasOption) animModeSelect.value = value;
     }
+    if (animOverlayOpen) renderAnimationEditor();
   }
 
   function syncAnimPlayButton(){
@@ -274,6 +452,7 @@
     const len = Math.max(clip.length, 0.0001);
     const ratio = Math.min(1, Math.max(0, anim.clipTime / len));
     slider.value = String(ratio);
+    renderTimelineCursor();
   }
 
   function rebuildAnimModeOptions(){
@@ -310,6 +489,7 @@
     scene  = new BABYLON.Scene(engine);
     scene.clearColor   = new BABYLON.Color4(0.06, 0.08, 0.12, 1);
     scene.ambientColor = new BABYLON.Color3(0.35,0.35,0.42);
+    highlightLayer = new BABYLON.HighlightLayer("rigSelection", scene);
 
     camera = new BABYLON.ArcRotateCamera("cam", Math.PI/2, 1.1, 8, new BABYLON.Vector3(0,1.1,0), scene);
     camera.attachControl(canvas, true);
@@ -318,8 +498,11 @@
     camera.wheelDeltaPercentage = 0.015;                 // smoother wheel zoom
     camera.pinchDeltaPercentage = 0.015;                 // smoother pinch
     camera.useNaturalPinchZoom = true;
-    const pInput = camera.inputs.attached.pointers; if(pInput && pInput.buttons) pInput.buttons = [2]; // right-drag orbit
-    camera.panningSensibility = 0; window.addEventListener("contextmenu", e=> e.preventDefault());
+    const pInput = camera.inputs.attached.pointers;
+    if (pInput && pInput.buttons) pInput.buttons = [0,1,2];
+    camera.panningSensibility = 1200;
+    camera.panningInertia = 0.7;
+    window.addEventListener("contextmenu", e=> e.preventDefault());
 
     const hemi = new BABYLON.HemisphericLight("hemi", new BABYLON.Vector3(0,1,0), scene); hemi.intensity = 1.0;
     const sun  = new BABYLON.DirectionalLight("sun", new BABYLON.Vector3(-0.5,-1,-0.3), scene);
@@ -343,8 +526,10 @@
     rebuildRig();
     buildForm();
     buildAnimBar();   // <— new: animation controls overlay
+    setupGizmoAndSelectionUI();
     buildResizablePanel();
     rebuildAnimModeOptions();
+    setSelectedPart("pelvis");
     // simple smoothing of abrupt wheel jumps (lerp to a target)
     let targetRadius = camera.radius;
     scene.onBeforeRenderObservable.add(()=>{
@@ -374,6 +559,9 @@
     const mesh = BABYLON.MeshBuilder.CreateBox(key,{width:w,height:h,depth:d},scene);
     mesh.material = mat(hex); mesh.parent = pivot;
     mesh.position.y = -h*0.5;
+    pivot.metadata = pivot.metadata || {};
+    pivot.metadata.partKey = key;
+    registerMeshForPart(key, mesh);
     nodes[key] = pivot;
     return {pivot, mesh};
   }
@@ -383,6 +571,9 @@
     const mesh = BABYLON.MeshBuilder.CreateBox(key,{width:w,height:h,depth:len},scene);
     mesh.material = mat(hex); mesh.parent = pivot;
     mesh.position.y = -h*0.5; mesh.position.z = len*0.5;
+    pivot.metadata = pivot.metadata || {};
+    pivot.metadata.partKey = key;
+    registerMeshForPart(key, mesh);
     nodes[key] = pivot;
     return {pivot, mesh};
   }
@@ -392,6 +583,7 @@
     scene.meshes.slice().forEach(m=>{ if(!["g","beacon"].includes(m.name)) m.dispose(); });
     scene.transformNodes.slice().forEach(t=>{ if(!t.name.startsWith("Axes")) t.dispose(); });
     nodes = {};
+    clearPartMeshes();
 
     const hex = params.color;
 
@@ -413,12 +605,33 @@
     // head pivot (so head has its own transform)
     const headPivot = new BABYLON.TransformNode("head_pivot", scene);
     headPivot.parent = neck.pivot; nodes["head"] = headPivot;
+    headPivot.metadata = headPivot.metadata || {};
+    headPivot.metadata.partKey = "head";
     const head = BABYLON.MeshBuilder.CreateBox("head",{width:params.head.w,height:params.head.h,depth:params.head.d}, scene);
     head.material = mat(hex); head.parent = headPivot; head.position.y = params.head.h*0.5;
+    registerMeshForPart("head", head);
 
     // shoulders anchors
     const shoulderL = new BABYLON.TransformNode("shoulderL", scene); shoulderL.parent = torsoUpper.pivot; nodes["shoulderL"] = shoulderL;
     const shoulderR = new BABYLON.TransformNode("shoulderR", scene); shoulderR.parent = torsoUpper.pivot; nodes["shoulderR"] = shoulderR;
+    shoulderL.metadata = { partKey:"shoulderL" };
+    shoulderR.metadata = { partKey:"shoulderR" };
+
+    const jointMat = (()=>{
+      const m = new BABYLON.StandardMaterial("joint", scene);
+      m.emissiveColor = BABYLON.Color3.FromHexString(hex).scale(0.4);
+      m.alpha = 0.9;
+      return m;
+    })();
+
+    const shoulderSphereL = BABYLON.MeshBuilder.CreateSphere("shoulderL_joint",{diameter:0.12},scene);
+    shoulderSphereL.parent = shoulderL;
+    shoulderSphereL.material = jointMat;
+    registerMeshForPart("shoulderL", shoulderSphereL);
+    const shoulderSphereR = BABYLON.MeshBuilder.CreateSphere("shoulderR_joint",{diameter:0.12},scene);
+    shoulderSphereR.parent = shoulderR;
+    shoulderSphereR.material = jointMat;
+    registerMeshForPart("shoulderR", shoulderSphereR);
 
     // arms
     const a = params.arm;
@@ -435,6 +648,16 @@
     // hips anchors
     const hipL = new BABYLON.TransformNode("hipL", scene); hipL.parent = pelvis.pivot; nodes["hipL"] = hipL;
     const hipR = new BABYLON.TransformNode("hipR", scene); hipR.parent = pelvis.pivot; nodes["hipR"] = hipR;
+    hipL.metadata = { partKey:"hipL" };
+    hipR.metadata = { partKey:"hipR" };
+    const hipSphereL = BABYLON.MeshBuilder.CreateSphere("hipL_joint",{diameter:0.14},scene);
+    hipSphereL.parent = hipL;
+    hipSphereL.material = jointMat;
+    registerMeshForPart("hipL", hipSphereL);
+    const hipSphereR = BABYLON.MeshBuilder.CreateSphere("hipR_joint",{diameter:0.14},scene);
+    hipSphereR.parent = hipR;
+    hipSphereR.material = jointMat;
+    registerMeshForPart("hipR", hipSphereR);
 
     // legs
     const l = params.leg;
@@ -449,6 +672,9 @@
     legR.foot  = footSeg(legR.shin.pivot, "legR_foot", l.footW, l.footH, l.footLen, hex);
 
     applyTransforms(); // pose from params
+    attachGizmo();
+    highlightSelection();
+    updateSelectionInfoPanel();
   }
 
   function applyTransforms(){
@@ -459,6 +685,7 @@
       const tr = T[key];
       node.position.set(tr.pos.x, tr.pos.y, tr.pos.z);
       node.rotation.set(d2r(tr.rot.x), d2r(tr.rot.y), d2r(tr.rot.z));
+      node.scaling.set(tr.scale.x, tr.scale.y, tr.scale.z);
     }
   }
 
@@ -628,6 +855,51 @@
     const form = document.getElementById("rig-form");
     form.innerHTML = "";
 
+    const selectionGroup = document.createElement("div");
+    selectionGroup.className = "group rig-selection-card";
+    selectionGroup.innerHTML = `
+      <h3>Active Selection</h3>
+      <div class="selection-name" id="rig-selection-name">None</div>
+      <div class="selection-mode" id="rig-selection-mode">Move gizmo active</div>
+      <div class="selection-readouts">
+        <div data-kind="position">
+          <h4>Move (mm)</h4>
+          <div class="axes">
+            <span>X: <b data-axis="x">0</b></span>
+            <span>Y: <b data-axis="y">0</b></span>
+            <span>Z: <b data-axis="z">0</b></span>
+          </div>
+        </div>
+        <div data-kind="rotation">
+          <h4>Rotate (°)</h4>
+          <div class="axes">
+            <span>X: <b data-axis="x">0</b></span>
+            <span>Y: <b data-axis="y">0</b></span>
+            <span>Z: <b data-axis="z">0</b></span>
+          </div>
+        </div>
+        <div data-kind="scale">
+          <h4>Scale (×)</h4>
+          <div class="axes">
+            <span>X: <b data-axis="x">1</b></span>
+            <span>Y: <b data-axis="y">1</b></span>
+            <span>Z: <b data-axis="z">1</b></span>
+          </div>
+        </div>
+      </div>
+    `;
+    form.appendChild(selectionGroup);
+    selectionInfoRefs = {
+      wrap: selectionGroup,
+      name: selectionGroup.querySelector('#rig-selection-name'),
+      mode: selectionGroup.querySelector('#rig-selection-mode'),
+      rows: {
+        position: Object.fromEntries(Array.from(selectionGroup.querySelectorAll('[data-kind="position"] [data-axis]')).map(el=>[el.dataset.axis, el])),
+        rotation: Object.fromEntries(Array.from(selectionGroup.querySelectorAll('[data-kind="rotation"] [data-axis]')).map(el=>[el.dataset.axis, el])),
+        scale: Object.fromEntries(Array.from(selectionGroup.querySelectorAll('[data-kind="scale"] [data-axis]')).map(el=>[el.dataset.axis, el])),
+      }
+    };
+
     function group(title, id){
       const g = document.createElement("div"); g.className="group"; if(id) g.id=id;
       const h = document.createElement("h3"); h.textContent = title; h.style.marginTop = "0"; g.appendChild(h);
@@ -673,7 +945,12 @@
     const colorRow = document.createElement("div"); colorRow.className="row";
     colorRow.innerHTML = `<label>Color</label><input id="rig-color" type="color" value="${params.color}">`;
     gCol.appendChild(colorRow);
-    gCol.querySelector("#rig-color").addEventListener("input",(e)=>{ params.color = e.target.value; refresh(); saveLocalSilently(); });
+    gCol.querySelector("#rig-color").addEventListener("input",(e)=>{
+      params.color = e.target.value;
+      refresh();
+      saveLocalSilently();
+      highlightSelection();
+    });
 
     // Sizes
     sizeRows("Pelvis Size", params.pelvis, ["w","h","d"]);
@@ -714,356 +991,24 @@
       xyzRows(`${title} — Rotation (deg)`, key, "rot");
     });
 
-    buildAnimationEditorUI();
+    buildAnimationLaunchCard();
     wireActionsRow(); // buttons at the bottom
+    updateSelectionInfoPanel();
 
-    function buildAnimationEditorUI(){
-      const clip = currentClip();
-      const frame = currentFrame();
-      const gAnim = group("Animations", "rig-anim-editor");
-      gAnim.classList.add("rig-anim-editor");
-
-      animUIRefs.previewSlider = null;
-      animUIRefs.frameSelect = null;
-      animUIRefs.clipSelect = null;
-
-      const clipRow = document.createElement("div");
-      clipRow.className = "row";
-      const clipLabel = document.createElement("label");
-      clipLabel.textContent = "Clip";
-      const clipSelect = document.createElement("select");
-      clipSelect.id = "rig-anim-clip";
-      animClips.forEach(c => {
-        const opt = document.createElement("option");
-        opt.value = c.id;
-        opt.textContent = c.name || "Clip";
-        if (clip && c.id === clip.id) opt.selected = true;
-        clipSelect.appendChild(opt);
-      });
-      clipSelect.addEventListener("change", ()=>{
-        animEditorState.clipId = clipSelect.value || null;
-        const newClip = ensureClipSelection();
-        animEditorState.frameId = newClip?.frames[0]?.id || null;
-        anim.clipTime = 0;
-        anim.playing = false;
-        syncAnimPlayButton();
-        if (newClip) setAnimMode(`clip:${newClip.id}`);
-        else setAnimMode("walk");
-        rebuildAnimModeOptions();
-        buildForm();
-      });
-      clipRow.appendChild(clipLabel);
-      clipRow.appendChild(clipSelect);
-      gAnim.appendChild(clipRow);
-      animUIRefs.clipSelect = clipSelect;
-
-      const clipBtnRow = document.createElement("div");
-      clipBtnRow.className = "row rig-anim-buttons";
-      clipBtnRow.innerHTML = `
-        <button type="button" id="rig-anim-new" class="secondary">New Clip</button>
-        <button type="button" id="rig-anim-dup" class="secondary">Duplicate</button>
-        <button type="button" id="rig-anim-del" class="secondary">Delete</button>
-        <button type="button" id="rig-anim-import" class="secondary">Import JSON</button>
-        <button type="button" id="rig-anim-export" class="secondary">Export JSON</button>
-        <input type="file" id="rig-anim-file" accept=".json,application/json" style="display:none">
+    function buildAnimationLaunchCard(){
+      const g = group("Animation", "rig-anim-launch");
+      g.classList.add("rig-anim-launch");
+      g.innerHTML = `
+        <p>Use the timeline editor to author poses, keyframes, and interpolation curves.</p>
+        <div class="row">
+          <button type="button" id="rig-open-anim" class="primary">Open Animation Editor</button>
+        </div>
       `;
-      gAnim.appendChild(clipBtnRow);
-
-      const fileInput = clipBtnRow.querySelector("#rig-anim-file");
-      clipBtnRow.querySelector("#rig-anim-new").onclick = ()=>{
-        const c = createClip(`Clip ${animClips.length+1}`);
-        animClips.push(c);
-        animEditorState.clipId = c.id;
-        animEditorState.frameId = c.frames[0].id;
-        anim.clipTime = 0;
-        anim.playing = false;
-        syncAnimPlayButton();
-        setAnimMode(`clip:${c.id}`);
-        rebuildAnimModeOptions();
-        saveAnimationsLocal();
-        buildForm();
-      };
-      clipBtnRow.querySelector("#rig-anim-dup").onclick = ()=>{
-        if (!clip) return;
-        const dup = duplicateClip(clip);
-        animClips.push(dup);
-        animEditorState.clipId = dup.id;
-        animEditorState.frameId = dup.frames[0]?.id || null;
-        anim.clipTime = 0;
-        anim.playing = false;
-        syncAnimPlayButton();
-        setAnimMode(`clip:${dup.id}`);
-        rebuildAnimModeOptions();
-        saveAnimationsLocal();
-        buildForm();
-      };
-      clipBtnRow.querySelector("#rig-anim-del").onclick = ()=>{
-        if (!clip) return;
-        const idx = animClips.findIndex(c=>c.id===clip.id);
-        if (idx < 0) return;
-        animClips.splice(idx,1);
-        if (!animClips.length) {
-          const nc = createClip("New Clip");
-          animClips.push(nc);
-        }
-        ensureClipSelection();
-        anim.clipTime = 0;
-        anim.playing = false;
-        syncAnimPlayButton();
-        const sel = currentClip();
-        if (sel) setAnimMode(`clip:${sel.id}`);
-        else setAnimMode("walk");
-        rebuildAnimModeOptions();
-        saveAnimationsLocal();
-        buildForm();
-      };
-      clipBtnRow.querySelector("#rig-anim-import").onclick = ()=> fileInput.click();
-      clipBtnRow.querySelector("#rig-anim-export").onclick = ()=>{
-        const blob = new Blob([JSON.stringify({ clips: animClips }, null, 2)], { type:"application/json" });
-        const a = document.createElement("a");
-        a.href = URL.createObjectURL(blob);
-        a.download = `rig_animations_${Date.now()}.json`;
-        document.body.appendChild(a);
-        a.click();
-        URL.revokeObjectURL(a.href);
-        a.remove();
-      };
-      fileInput.onchange = async ()=>{
-        const file = fileInput.files?.[0];
-        if (!file) return;
-        try {
-          const text = await file.text();
-          const parsed = JSON.parse(text);
-          const incoming = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.clips) ? parsed.clips : null);
-          if (!incoming) {
-            alert("Invalid animation JSON.");
-          } else {
-            incoming.map(normalizeClip).filter(Boolean).forEach(c=>animClips.push(c));
-            ensureClipSelection();
-            anim.clipTime = 0;
-            anim.playing = false;
-            syncAnimPlayButton();
-            const sel = currentClip();
-            if (sel) setAnimMode(`clip:${sel.id}`);
-            rebuildAnimModeOptions();
-            saveAnimationsLocal();
-            buildForm();
-            alert("Animations imported.");
-          }
-        } catch (err) {
-          console.error(err);
-          alert("Failed to import animations.");
-        } finally {
-          fileInput.value = "";
-        }
-      };
-
-      if (!clip) return;
-
-      const nameRow = document.createElement("div");
-      nameRow.className = "row";
-      const nameLabel = document.createElement("label");
-      nameLabel.textContent = "Name";
-      const nameInput = document.createElement("input");
-      nameInput.type = "text";
-      nameInput.value = clip.name || "Clip";
-      nameInput.addEventListener("input", ()=>{
-        clip.name = nameInput.value || "Clip";
-        rebuildAnimModeOptions();
-        saveAnimationsLocal();
-      });
-      nameRow.appendChild(nameLabel);
-      nameRow.appendChild(nameInput);
-      gAnim.appendChild(nameRow);
-
-      numberRow(gAnim, "Length (s)", ()=>clip.length, v=>{
-        clip.length = Math.max(0.01, Number(v)||0.01);
-        saveAnimationsLocal();
-        syncPreviewSlider(clip);
-      }, 0.05, 0.01, 99);
-
-      const loopRow = document.createElement("div");
-      loopRow.className = "row";
-      const loopLabel = document.createElement("label");
-      loopLabel.textContent = "Loop";
-      const loopInput = document.createElement("input");
-      loopInput.type = "checkbox";
-      loopInput.checked = clip.loop !== false;
-      loopInput.addEventListener("change", ()=>{
-        clip.loop = !!loopInput.checked;
-        saveAnimationsLocal();
-      });
-      loopRow.appendChild(loopLabel);
-      loopRow.appendChild(loopInput);
-      gAnim.appendChild(loopRow);
-
-      const frameRow = document.createElement("div");
-      frameRow.className = "row";
-      const frameLabel = document.createElement("label");
-      frameLabel.textContent = "Keyframe";
-      const frameSelect = document.createElement("select");
-      frameSelect.id = "rig-anim-frame";
-      clip.frames.forEach(f=>{
-        const opt = document.createElement("option");
-        opt.value = f.id;
-        opt.textContent = `${f.time.toFixed(3)}s`;
-        if (frame && frame.id === f.id) opt.selected = true;
-        frameSelect.appendChild(opt);
-      });
-      frameSelect.addEventListener("change", ()=>{
-        animEditorState.frameId = frameSelect.value || null;
-        const fr = currentFrame();
-        if (fr){
-          anim.clipTime = fr.time;
-          anim.playing = false;
-          syncAnimPlayButton();
-          setAnimMode(`clip:${clip.id}`);
-          syncPreviewSlider(clip);
-        }
-        buildForm();
-      });
-      frameRow.appendChild(frameLabel);
-      frameRow.appendChild(frameSelect);
-      gAnim.appendChild(frameRow);
-      animUIRefs.frameSelect = frameSelect;
-
-      const frameBtnRow = document.createElement("div");
-      frameBtnRow.className = "row rig-anim-frame-buttons";
-      frameBtnRow.innerHTML = `
-        <button type="button" id="rig-frame-add" class="secondary">Add Frame</button>
-        <button type="button" id="rig-frame-dup" class="secondary">Duplicate Frame</button>
-        <button type="button" id="rig-frame-del" class="secondary">Delete Frame</button>
-      `;
-      gAnim.appendChild(frameBtnRow);
-
-      frameBtnRow.querySelector("#rig-frame-add").onclick = ()=>{
-        const newFrame = {
-          id: newId("kf"),
-          time: Math.min(clip.length, Math.max(0, anim.clipTime)),
-          transforms: cloneTransforms(params.transforms)
-        };
-        clip.frames.push(newFrame);
-        sortFrames(clip);
-        animEditorState.frameId = newFrame.id;
-        anim.clipTime = newFrame.time;
-        anim.playing = false;
-        syncAnimPlayButton();
-        saveAnimationsLocal();
-        buildForm();
-      };
-      frameBtnRow.querySelector("#rig-frame-dup").onclick = ()=>{
-        if (!frame) return;
-        const dup = {
-          id: newId("kf"),
-          time: frame.time,
-          transforms: cloneTransforms(frame.transforms)
-        };
-        clip.frames.push(dup);
-        sortFrames(clip);
-        animEditorState.frameId = dup.id;
-        anim.clipTime = dup.time;
-        anim.playing = false;
-        syncAnimPlayButton();
-        saveAnimationsLocal();
-        buildForm();
-      };
-      frameBtnRow.querySelector("#rig-frame-del").onclick = ()=>{
-        if (!frame) return;
-        if (clip.frames.length <= 1){
-          alert("A clip must have at least one keyframe.");
-          return;
-        }
-        const idx = clip.frames.findIndex(f=>f.id===frame.id);
-        if (idx >= 0) clip.frames.splice(idx,1);
-        sortFrames(clip);
-        animEditorState.frameId = clip.frames[0]?.id || null;
-        const fr = currentFrame();
-        anim.clipTime = fr ? fr.time : 0;
-        anim.playing = false;
-        syncAnimPlayButton();
-        saveAnimationsLocal();
-        buildForm();
-      };
-
-      const frameTimeRow = document.createElement("div");
-      frameTimeRow.className = "row";
-      const timeLabel = document.createElement("label");
-      timeLabel.textContent = "Frame Time (s)";
-      const timeInput = document.createElement("input");
-      timeInput.type = "number";
-      timeInput.step = "0.01";
-      timeInput.min = "0";
-      timeInput.max = String(clip.length);
-      timeInput.value = frame ? frame.time.toFixed(3) : "0";
-      timeInput.addEventListener("change", ()=>{
-        if (!frame) return;
-        const v = Number(timeInput.value);
-        if (Number.isFinite(v)){
-          frame.time = Math.min(clip.length, Math.max(0, v));
-          sortFrames(clip);
-          anim.clipTime = frame.time;
-          anim.playing = false;
-          syncAnimPlayButton();
-          saveAnimationsLocal();
-          buildForm();
-        }
-      });
-      frameTimeRow.appendChild(timeLabel);
-      frameTimeRow.appendChild(timeInput);
-      gAnim.appendChild(frameTimeRow);
-
-      const poseRow = document.createElement("div");
-      poseRow.className = "row rig-anim-pose";
-      const captureBtn = document.createElement("button");
-      captureBtn.type = "button";
-      captureBtn.className = "secondary";
-      captureBtn.textContent = "Capture from Pose";
-      captureBtn.onclick = ()=>{
-        if (!frame) return;
-        frame.transforms = cloneTransforms(params.transforms);
-        saveAnimationsLocal();
-      };
-      const applyBtn = document.createElement("button");
-      applyBtn.type = "button";
-      applyBtn.className = "secondary";
-      applyBtn.textContent = "Apply to Pose";
-      applyBtn.onclick = ()=>{
-        if (!frame) return;
-        params.transforms = cloneTransforms(frame.transforms);
-        ensureTransformMap(params);
-        saveLocalSilently();
-        refresh();
-        buildForm();
-      };
-      poseRow.appendChild(captureBtn);
-      poseRow.appendChild(applyBtn);
-      gAnim.appendChild(poseRow);
-
-      const previewRow = document.createElement("div");
-      previewRow.className = "row";
-      const previewLabel = document.createElement("label");
-      previewLabel.textContent = "Preview";
-      const preview = document.createElement("input");
-      preview.type = "range";
-      preview.min = "0";
-      preview.max = "1";
-      preview.step = "0.01";
-      const len = Math.max(clip.length, 0.0001);
-      preview.value = String(Math.min(1, Math.max(0, anim.clipTime / len)));
-      preview.addEventListener("input", ()=>{
-        anim.clipTime = Number(preview.value || "0") * len;
-        anim.playing = false;
-        syncAnimPlayButton();
-        setAnimMode(`clip:${clip.id}`);
-      });
-      previewRow.appendChild(previewLabel);
-      previewRow.appendChild(preview);
-      gAnim.appendChild(previewRow);
-      animUIRefs.previewSlider = preview;
+      const btn = g.querySelector('#rig-open-anim');
+      if (btn) btn.addEventListener('click', ()=> openAnimationEditor());
     }
-  }
 
-  // ---- Actions (reuse existing row; no duplicates) ----
+
   function wireActionsRow() {
     let actions = document.querySelector('#screen--rig .rig-actions');
     if (!actions) {
@@ -1167,6 +1112,622 @@
     mode.value = anim.mode;
   }
 
+  function buildTransformToolbar(){
+    const wrap = document.querySelector(".rig-canvas-wrap");
+    if (!wrap) return;
+    let toolbar = document.getElementById("rig-transform-toolbar");
+    if (!toolbar){
+      toolbar = document.createElement("div");
+      toolbar.id = "rig-transform-toolbar";
+      toolbar.className = "rig-transform-toolbar";
+      toolbar.innerHTML = `
+        <div class="mode-buttons" role="group" aria-label="Transform modes">
+          <button data-mode="position" class="secondary">Move</button>
+          <button data-mode="rotation" class="secondary">Rotate</button>
+          <button data-mode="scale" class="secondary">Scale</button>
+        </div>
+        <div class="mode-hint" id="rig-transform-hint"></div>
+      `;
+      wrap.appendChild(toolbar);
+      toolbar.querySelectorAll('button[data-mode]').forEach(btn=>{
+        btn.addEventListener('click', ()=>{
+          setGizmoMode(btn.dataset.mode);
+        });
+      });
+    }
+    updateGizmoModeUI();
+    updateSelectionInfoPanel();
+  }
+
+  function updateGizmoModeUI(){
+    const toolbar = document.getElementById("rig-transform-toolbar");
+    if (toolbar){
+      toolbar.querySelectorAll('button[data-mode]').forEach(btn=>{
+        if (btn.dataset.mode === gizmoMode) btn.classList.add('active');
+        else btn.classList.remove('active');
+      });
+      const hint = document.getElementById("rig-transform-hint");
+      if (hint){
+        const modeText = gizmoMode === 'rotation' ? 'Rotate in degrees' : (gizmoMode === 'scale' ? 'Scale per-axis' : 'Move in millimeters');
+        hint.textContent = modeText;
+      }
+    }
+    if (selectionInfoRefs?.wrap){
+      selectionInfoRefs.wrap.querySelectorAll('[data-kind]').forEach(el=>{
+        if (el.dataset.kind === gizmoMode || (gizmoMode === 'position' && el.dataset.kind === 'position')) el.classList.add('active');
+        else el.classList.remove('active');
+      });
+    }
+  }
+
+  function updateSelectionInfoPanel(){
+    if (!selectionInfoRefs?.wrap) return;
+    ensureTransformMap(params);
+    const tr = selectedPartKey ? params?.transforms?.[selectedPartKey] : null;
+    if (selectionInfoRefs.name){
+      selectionInfoRefs.name.textContent = selectedPartKey ? partLabel(selectedPartKey) : 'None';
+    }
+    if (selectionInfoRefs.mode){
+      const modeLabel = gizmoMode === 'rotation' ? 'Rotate gizmo active' : gizmoMode === 'scale' ? 'Scale gizmo active' : 'Move gizmo active';
+      selectionInfoRefs.mode.textContent = modeLabel;
+    }
+    const pos = tr?.pos || {x:0,y:0,z:0};
+    const rot = tr?.rot || {x:0,y:0,z:0};
+    const scale = tr?.scale || {x:1,y:1,z:1};
+    if (selectionInfoRefs.rows){
+      ['x','y','z'].forEach(axis=>{
+        const posEl = selectionInfoRefs.rows.position?.[axis];
+        const rotEl = selectionInfoRefs.rows.rotation?.[axis];
+        const scaleEl = selectionInfoRefs.rows.scale?.[axis];
+        if (posEl) posEl.textContent = pos[axis].toFixed(3);
+        if (rotEl) rotEl.textContent = rot[axis].toFixed(3);
+        if (scaleEl) scaleEl.textContent = scale[axis].toFixed(3);
+      });
+    }
+    updateGizmoModeUI();
+  }
+
+  function setupGizmoAndSelectionUI(){
+    if (gizmoManager) return;
+    buildTransformToolbar();
+    gizmoManager = new BABYLON.GizmoManager(scene);
+    gizmoManager.usePointerToAttachGizmos = false;
+    gizmoManager.clearGizmoOnEmptyPointerEvent = false;
+    gizmoManager.boundingBoxGizmoEnabled = false;
+    updateGizmoModeState();
+
+    bindGizmoDrag(gizmoManager.gizmos.positionGizmo);
+    bindGizmoDrag(gizmoManager.gizmos.rotationGizmo);
+    bindGizmoDrag(gizmoManager.gizmos.scaleGizmo);
+
+    scene.onPointerObservable.add(pointerInfo => {
+      if (pointerInfo.type !== BABYLON.PointerEventTypes.POINTERDOWN) return;
+      const evt = pointerInfo.event;
+      if (evt.button !== 0) return;
+      if (gizmoDragging) return;
+      const pick = pointerInfo.pickInfo;
+      const partKey = pick?.pickedMesh?.metadata?.partKey || pick?.pickedMesh?.parent?.metadata?.partKey;
+      if (!partKey) return;
+      setSelectedPart(partKey);
+    });
+
+    attachGizmo();
+  }
+
+  function ensureAnimationOverlay(){
+    if (animOverlay) return animOverlay;
+    animOverlay = document.createElement('div');
+    animOverlay.id = 'rig-animation-overlay';
+    animOverlay.innerHTML = `
+      <div class="rig-animation-window">
+        <header class="rig-animation-header">
+          <h3>Animation Editor</h3>
+          <div class="rig-animation-header-controls">
+            <button type="button" id="rig-anim-close" aria-label="Close">✕</button>
+          </div>
+        </header>
+        <section class="rig-animation-toolbar">
+          <label>Clip
+            <select id="rig-anim-editor-clip"></select>
+          </label>
+          <div class="toolbar-buttons">
+            <button type="button" id="rig-anim-editor-new" class="secondary">New</button>
+            <button type="button" id="rig-anim-editor-dup" class="secondary">Duplicate</button>
+            <button type="button" id="rig-anim-editor-del" class="secondary">Delete</button>
+            <button type="button" id="rig-anim-editor-import" class="secondary">Import</button>
+            <button type="button" id="rig-anim-editor-export" class="secondary">Export</button>
+            <input type="file" id="rig-anim-editor-file" accept=".json,application/json" hidden>
+          </div>
+          <label>Length (s)
+            <input id="rig-anim-editor-length" type="number" min="0.01" step="0.05">
+          </label>
+          <label class="loop-toggle"><input id="rig-anim-editor-loop" type="checkbox"> Loop</label>
+          <label class="speed-slider">Preview Position
+            <input id="rig-anim-preview" type="range" min="0" max="1" step="0.002">
+          </label>
+        </section>
+        <section class="rig-animation-body">
+          <div class="rig-timeline" id="rig-timeline">
+            <div class="timeline-track" data-kind="position">
+              <div class="timeline-label">Position</div>
+              <div class="timeline-track-body"></div>
+            </div>
+            <div class="timeline-track" data-kind="rotation">
+              <div class="timeline-label">Rotation</div>
+              <div class="timeline-track-body"></div>
+            </div>
+            <div class="timeline-track" data-kind="scale">
+              <div class="timeline-label">Scale</div>
+              <div class="timeline-track-body"></div>
+            </div>
+            <div class="timeline-cursor" id="rig-timeline-cursor"></div>
+          </div>
+        </section>
+        <section class="rig-animation-footer">
+          <div class="frame-controls">
+            <label>Keyframe
+              <select id="rig-anim-editor-frame"></select>
+            </label>
+            <label>Time (s)
+              <input id="rig-anim-editor-time" type="number" step="0.01" min="0">
+            </label>
+            <label>Interpolation
+              <select id="rig-anim-editor-interp">
+                <option value="linear">Linear</option>
+                <option value="ease">Ease</option>
+                <option value="step">Step</option>
+              </select>
+            </label>
+            <div class="frame-buttons">
+              <button type="button" id="rig-anim-editor-add" class="secondary">Add</button>
+              <button type="button" id="rig-anim-editor-dup-frame" class="secondary">Duplicate</button>
+              <button type="button" id="rig-anim-editor-del-frame" class="secondary">Delete</button>
+            </div>
+          </div>
+          <div class="frame-pose-controls">
+            <button type="button" id="rig-anim-editor-capture" class="secondary">Capture Current Pose</button>
+            <button type="button" id="rig-anim-editor-apply" class="secondary">Apply Keyframe Pose</button>
+          </div>
+        </section>
+      </div>
+    `;
+    document.body.appendChild(animOverlay);
+    animOverlayContent = animOverlay.querySelector('.rig-animation-window');
+    animTimelineEl = animOverlay.querySelector('#rig-timeline');
+    if (animOverlayContent) animOverlayContent.tabIndex = -1;
+
+    animOverlay.querySelector('#rig-anim-close').addEventListener('click', ()=>closeAnimationEditor());
+    animOverlay.addEventListener('click', e=>{ if (e.target === animOverlay) closeAnimationEditor(); });
+
+    const fileInput = animOverlay.querySelector('#rig-anim-editor-file');
+    if (fileInput){
+      fileInput.addEventListener('change', async ()=>{
+        const file = fileInput.files?.[0];
+        if (!file) return;
+        try {
+          const text = await file.text();
+          const parsed = JSON.parse(text);
+          const incoming = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.clips) ? parsed.clips : null);
+          if (!incoming) {
+            alert('Invalid animation JSON');
+          } else {
+            incoming.map(normalizeClip).filter(Boolean).forEach(c=>animClips.push(c));
+            ensureClipSelection();
+            saveAnimationsLocal();
+            rebuildAnimModeOptions();
+            renderAnimationEditor();
+          }
+        } catch (err) {
+          console.error(err);
+          alert('Failed to import animations.');
+        } finally {
+          fileInput.value = '';
+        }
+      });
+    }
+
+    const slider = animOverlay.querySelector('#rig-anim-preview');
+    if (slider){
+      slider.addEventListener('input', ()=>{
+        anim.clipTime = Number(slider.value || '0') * Math.max(currentClip()?.length || 1, 0.0001);
+        anim.playing = false;
+        syncAnimPlayButton();
+        setAnimMode(currentClip() ? `clip:${currentClip().id}` : 'walk');
+        renderTimelineCursor();
+      });
+      animUIRefs.previewSlider = slider;
+    }
+
+    animOverlay.querySelector('#rig-anim-editor-new').addEventListener('click', ()=>{
+      const c = createClip(`Clip ${animClips.length+1}`);
+      animClips.push(c);
+      animEditorState.clipId = c.id;
+      animEditorState.frameId = c.frames[0]?.id || null;
+      anim.clipTime = 0;
+      anim.playing = false;
+      syncAnimPlayButton();
+      rebuildAnimModeOptions();
+      saveAnimationsLocal();
+      renderAnimationEditor();
+    });
+
+    animOverlay.querySelector('#rig-anim-editor-dup').addEventListener('click', ()=>{
+      const clip = currentClip();
+      if (!clip) return;
+      const copy = duplicateClip(clip);
+      animClips.push(copy);
+      animEditorState.clipId = copy.id;
+      animEditorState.frameId = copy.frames[0]?.id || null;
+      anim.clipTime = 0;
+      anim.playing = false;
+      syncAnimPlayButton();
+      rebuildAnimModeOptions();
+      saveAnimationsLocal();
+      renderAnimationEditor();
+    });
+
+    animOverlay.querySelector('#rig-anim-editor-del').addEventListener('click', ()=>{
+      const clip = currentClip();
+      if (!clip) return;
+      if (!confirm(`Delete animation clip "${clip.name}"?`)) return;
+      animClips = animClips.filter(c=>c.id !== clip.id);
+      ensureClipSelection();
+      const sel = currentClip();
+      if (sel) setAnimMode(`clip:${sel.id}`); else setAnimMode('walk');
+      anim.clipTime = 0;
+      anim.playing = false;
+      syncAnimPlayButton();
+      rebuildAnimModeOptions();
+      saveAnimationsLocal();
+      renderAnimationEditor();
+    });
+
+    animOverlay.querySelector('#rig-anim-editor-export').addEventListener('click', ()=>{
+      const payload = { clips: animClips.map(c=>({
+        id: c.id,
+        name: c.name,
+        length: c.length,
+        loop: c.loop,
+        frames: c.frames.map(f=>({ id:f.id, time:f.time, interp:f.interp, transforms:f.transforms }))
+      })) };
+      const blob = new Blob([JSON.stringify(payload,null,2)], {type:'application/json'});
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `rig_animations_${Date.now()}.json`;
+      document.body.appendChild(a);
+      a.click();
+      URL.revokeObjectURL(a.href);
+      a.remove();
+    });
+
+    animOverlay.querySelector('#rig-anim-editor-import').addEventListener('click', ()=>{
+      const input = animOverlay.querySelector('#rig-anim-editor-file');
+      if (input) input.click();
+    });
+
+    animOverlay.querySelector('#rig-anim-editor-add').addEventListener('click', ()=>{
+      const clip = currentClip();
+      if (!clip) return;
+      const newFrame = {
+        id: newId('kf'),
+        time: Math.min(clip.length, Math.max(0, anim.clipTime)),
+        interp: 'linear',
+        transforms: cloneTransforms(params.transforms)
+      };
+      clip.frames.push(newFrame);
+      sortFrames(clip);
+      animEditorState.frameId = newFrame.id;
+      anim.clipTime = newFrame.time;
+      anim.playing = false;
+      syncAnimPlayButton();
+      saveAnimationsLocal();
+      renderAnimationEditor();
+    });
+
+    animOverlay.querySelector('#rig-anim-editor-dup-frame').addEventListener('click', ()=>{
+      const clip = currentClip();
+      const frame = currentFrame();
+      if (!clip || !frame) return;
+      const copy = {
+        id: newId('kf'),
+        time: frame.time,
+        interp: frame.interp,
+        transforms: cloneTransforms(frame.transforms)
+      };
+      clip.frames.push(copy);
+      sortFrames(clip);
+      animEditorState.frameId = copy.id;
+      saveAnimationsLocal();
+      renderAnimationEditor();
+    });
+
+    animOverlay.querySelector('#rig-anim-editor-del-frame').addEventListener('click', ()=>{
+      const clip = currentClip();
+      const frame = currentFrame();
+      if (!clip || !frame) return;
+      if (clip.frames.length <= 1) {
+        alert('Keep at least one keyframe.');
+        return;
+      }
+      clip.frames = clip.frames.filter(f=>f.id !== frame.id);
+      sortFrames(clip);
+      animEditorState.frameId = clip.frames[0]?.id || null;
+      saveAnimationsLocal();
+      renderAnimationEditor();
+    });
+
+    animOverlay.querySelector('#rig-anim-editor-capture').addEventListener('click', ()=>{
+      const frame = currentFrame();
+      if (!frame) return;
+      frame.transforms = cloneTransforms(params.transforms);
+      saveAnimationsLocal();
+      renderAnimationEditor();
+    });
+
+    animOverlay.querySelector('#rig-anim-editor-apply').addEventListener('click', ()=>{
+      const frame = currentFrame();
+      if (!frame) return;
+      params.transforms = cloneTransforms(frame.transforms);
+      ensureTransformMap(params);
+      saveLocalSilently();
+      refresh();
+      buildForm();
+      renderAnimationEditor();
+    });
+
+    const frameTimeInput = animOverlay.querySelector('#rig-anim-editor-time');
+    if (frameTimeInput){
+      frameTimeInput.addEventListener('change', ()=>{
+        const clip = currentClip();
+        const frame = currentFrame();
+        if (!clip || !frame) return;
+        const v = Number(frameTimeInput.value);
+        if (Number.isFinite(v)){
+          frame.time = Math.min(clip.length, Math.max(0, v));
+          sortFrames(clip);
+          anim.clipTime = frame.time;
+          anim.playing = false;
+          syncAnimPlayButton();
+          saveAnimationsLocal();
+          renderAnimationEditor();
+        }
+      });
+    }
+
+    const interpSelect = animOverlay.querySelector('#rig-anim-editor-interp');
+    if (interpSelect){
+      interpSelect.addEventListener('change', ()=>{
+        const frame = currentFrame();
+        if (!frame) return;
+        frame.interp = interpSelect.value || 'linear';
+        saveAnimationsLocal();
+        renderTimeline();
+      });
+    }
+
+    animOverlay.querySelector('#rig-anim-editor-frame').addEventListener('change', ()=>{
+      animEditorState.frameId = animOverlay.querySelector('#rig-anim-editor-frame').value || null;
+      const frame = currentFrame();
+      if (frame){
+        anim.clipTime = frame.time;
+        anim.playing = false;
+        syncAnimPlayButton();
+      }
+      renderAnimationEditor();
+    });
+
+    animOverlay.querySelector('#rig-anim-editor-clip').addEventListener('change', ()=>{
+      animEditorState.clipId = animOverlay.querySelector('#rig-anim-editor-clip').value || null;
+      const clip = ensureClipSelection();
+      animEditorState.frameId = clip?.frames[0]?.id || null;
+      anim.clipTime = 0;
+      anim.playing = false;
+      syncAnimPlayButton();
+      if (clip) setAnimMode(`clip:${clip.id}`); else setAnimMode('walk');
+      rebuildAnimModeOptions();
+      saveAnimationsLocal();
+      renderAnimationEditor();
+    });
+
+    animOverlay.querySelector('#rig-anim-editor-length').addEventListener('change', ()=>{
+      const clip = currentClip();
+      if (!clip) return;
+      const v = Number(animOverlay.querySelector('#rig-anim-editor-length').value);
+      if (Number.isFinite(v) && v > 0){
+        clip.length = v;
+        saveAnimationsLocal();
+        renderAnimationEditor();
+      }
+    });
+
+    animOverlay.querySelector('#rig-anim-editor-loop').addEventListener('change', ()=>{
+      const clip = currentClip();
+      if (!clip) return;
+      clip.loop = !!animOverlay.querySelector('#rig-anim-editor-loop').checked;
+      saveAnimationsLocal();
+    });
+
+    animOverlay.addEventListener('keydown', e=>{
+      if (e.key === 'Escape') closeAnimationEditor();
+    });
+
+    return animOverlay;
+  }
+
+  function openAnimationEditor(){
+    ensureAnimationOverlay();
+    animOverlay.style.display = 'flex';
+    animOverlayOpen = true;
+    document.body.classList.add('rig-anim-editor-open');
+    renderAnimationEditor();
+    animOverlayContent?.focus();
+  }
+
+  function closeAnimationEditor(){
+    if (!animOverlay) return;
+    animOverlay.style.display = 'none';
+    animOverlayOpen = false;
+    document.body.classList.remove('rig-anim-editor-open');
+    if (timelineDrag){
+      window.removeEventListener('mousemove', onTimelineMove);
+      timelineDrag = null;
+    }
+  }
+
+  function renderAnimationEditor(){
+    ensureAnimationOverlay();
+    const clip = ensureClipSelection();
+    const frame = currentFrame();
+
+    const clipSelect = animOverlay.querySelector('#rig-anim-editor-clip');
+    if (clipSelect){
+      clipSelect.innerHTML = '';
+      animClips.forEach(c=>{
+        const opt = document.createElement('option');
+        opt.value = c.id;
+        opt.textContent = c.name || 'Clip';
+        if (clip && c.id === clip.id) opt.selected = true;
+        clipSelect.appendChild(opt);
+      });
+      animUIRefs.clipSelect = clipSelect;
+    }
+
+    const frameSelect = animOverlay.querySelector('#rig-anim-editor-frame');
+    if (frameSelect){
+      frameSelect.innerHTML = '';
+      if (clip){
+        clip.frames.forEach(f=>{
+          const opt = document.createElement('option');
+          opt.value = f.id;
+          opt.textContent = `${f.time.toFixed(3)}s`;
+          if (frame && frame.id === f.id) opt.selected = true;
+          frameSelect.appendChild(opt);
+        });
+      }
+      animUIRefs.frameSelect = frameSelect;
+    }
+
+    const lengthInput = animOverlay.querySelector('#rig-anim-editor-length');
+    if (lengthInput) lengthInput.value = clip ? clip.length : 1;
+
+    const loopInput = animOverlay.querySelector('#rig-anim-editor-loop');
+    if (loopInput) loopInput.checked = clip?.loop !== false;
+
+    const timeInput = animOverlay.querySelector('#rig-anim-editor-time');
+    if (timeInput) timeInput.value = frame ? frame.time.toFixed(3) : 0;
+
+    const interpSelect = animOverlay.querySelector('#rig-anim-editor-interp');
+    if (interpSelect) interpSelect.value = frame?.interp || 'linear';
+
+    const slider = animOverlay.querySelector('#rig-anim-preview');
+    if (slider && clip){
+      const len = Math.max(clip.length, 0.0001);
+      slider.value = String(Math.min(1, Math.max(0, anim.clipTime / len)));
+    }
+    if (slider) animUIRefs.previewSlider = slider;
+
+    renderTimeline();
+  }
+
+  function renderTimeline(){
+    ensureAnimationOverlay();
+    const clip = currentClip();
+    if (!animTimelineEl) return;
+    const tracks = animTimelineEl.querySelectorAll('.timeline-track');
+    tracks.forEach(track=>{
+      const body = track.querySelector('.timeline-track-body');
+      if (!body) return;
+      body.innerHTML = '';
+      if (!clip) return;
+      clip.frames.forEach(frame=>{
+        const marker = document.createElement('div');
+        marker.className = 'timeline-marker';
+        marker.dataset.frameId = frame.id;
+        marker.title = `${frame.time.toFixed(3)}s (${frame.interp || 'linear'})`;
+        const ratio = clip.length <= 0 ? 0 : frame.time / clip.length;
+        marker.style.left = `${Math.max(0, Math.min(1, ratio)) * 100}%`;
+        if (frame.id === animEditorState.frameId) marker.classList.add('selected');
+        marker.dataset.interp = frame.interp || 'linear';
+        marker.addEventListener('mousedown', evt=>startTimelineDrag(evt, frame));
+        marker.addEventListener('click', evt=>{
+          evt.stopPropagation();
+          animEditorState.frameId = frame.id;
+          anim.clipTime = frame.time;
+          anim.playing = false;
+          syncAnimPlayButton();
+          renderAnimationEditor();
+        });
+        body.appendChild(marker);
+      });
+      if (!body.dataset.dblwired){
+        body.dataset.dblwired = '1';
+        body.addEventListener('dblclick', evt=>{
+          const rect = body.getBoundingClientRect();
+          const clip = currentClip();
+          if (!clip) return;
+          const ratio = (evt.clientX - rect.left) / rect.width;
+          const t = Math.min(clip.length, Math.max(0, ratio * clip.length));
+          const newFrame = { id:newId('kf'), time:t, interp:'linear', transforms: cloneTransforms(params.transforms) };
+          clip.frames.push(newFrame);
+          sortFrames(clip);
+          animEditorState.frameId = newFrame.id;
+          anim.clipTime = t;
+          anim.playing = false;
+          syncAnimPlayButton();
+          saveAnimationsLocal();
+          renderAnimationEditor();
+        });
+      }
+    });
+    renderTimelineCursor();
+  }
+
+  function renderTimelineCursor(){
+    const cursor = animOverlay?.querySelector('#rig-timeline-cursor');
+    const clip = currentClip();
+    if (!cursor || !clip){
+      if (cursor) cursor.style.display = 'none';
+      return;
+    }
+    cursor.style.display = 'block';
+    const ratio = clip.length <= 0 ? 0 : anim.clipTime / clip.length;
+    cursor.style.left = `${Math.max(0, Math.min(1, ratio)) * 100}%`;
+  }
+
+  function startTimelineDrag(evt, frame){
+    const clip = currentClip();
+    if (!clip) return;
+    evt.preventDefault();
+    timelineDrag = { frame, clip, originX: evt.clientX, baseTime: frame.time };
+    window.addEventListener('mousemove', onTimelineMove);
+    window.addEventListener('mouseup', endTimelineDrag, { once:true });
+  }
+
+  function onTimelineMove(evt){
+    if (!timelineDrag) return;
+    const clip = timelineDrag.clip;
+    const trackBody = animTimelineEl?.querySelector('.timeline-track-body');
+    if (!trackBody || !clip) return;
+    const rect = trackBody.getBoundingClientRect();
+    const ratio = (evt.clientX - rect.left) / rect.width;
+    const t = Math.min(clip.length, Math.max(0, ratio * clip.length));
+    timelineDrag.frame.time = t;
+    sortFrames(clip);
+    anim.clipTime = t;
+    anim.playing = false;
+    syncAnimPlayButton();
+    renderTimeline();
+    const timeInput = animOverlay?.querySelector('#rig-anim-editor-time');
+    if (timeInput) timeInput.value = timelineDrag.frame.time.toFixed(3);
+  }
+
+  function endTimelineDrag(){
+    if (!timelineDrag) return;
+    saveAnimationsLocal();
+    timelineDrag = null;
+    window.removeEventListener('mousemove', onTimelineMove);
+  }
+
   // ---------- persistence & export ----------
   function saveLocalSilently(){ try{ localStorage.setItem("hxh.rig.params", JSON.stringify(params)); }catch(_){} }
   function saveLocal(){ saveLocalSilently(); alert("Saved this rig to your browser (localStorage)."); }
@@ -1214,13 +1775,16 @@
     if (T){
       for (const key of PART_KEYS){
         const n = T.querySelector(key); if (!n) continue;
-        const tr = out.transforms[key];
-        tr.pos.x = parseFloatAttr(n,"posX",tr.pos.x);
-        tr.pos.y = parseFloatAttr(n,"posY",tr.pos.y);
-        tr.pos.z = parseFloatAttr(n,"posZ",tr.pos.z);
-        tr.rot.x = parseFloatAttr(n,"rotX",tr.rot.x);
-        tr.rot.y = parseFloatAttr(n,"rotY",tr.rot.y);
-        tr.rot.z = parseFloatAttr(n,"rotZ",tr.rot.z);
+      const tr = out.transforms[key];
+      tr.pos.x = parseFloatAttr(n,"posX",tr.pos.x);
+      tr.pos.y = parseFloatAttr(n,"posY",tr.pos.y);
+      tr.pos.z = parseFloatAttr(n,"posZ",tr.pos.z);
+      tr.rot.x = parseFloatAttr(n,"rotX",tr.rot.x);
+      tr.rot.y = parseFloatAttr(n,"rotY",tr.rot.y);
+      tr.rot.z = parseFloatAttr(n,"rotZ",tr.rot.z);
+      tr.scale.x = parseFloatAttr(n,"scaleX",tr.scale.x);
+      tr.scale.y = parseFloatAttr(n,"scaleY",tr.scale.y);
+      tr.scale.z = parseFloatAttr(n,"scaleZ",tr.scale.z);
       }
     }
     return out;
@@ -1231,7 +1795,7 @@
     function attrs(obj){ return Object.entries(obj).map(([k,v])=>`${k}="${Number(v).toFixed(3)}"`).join(" "); }
     function tnode(key){
       const tr = p.transforms[key] || t0();
-      return `    <${key} posX="${tr.pos.x.toFixed(3)}" posY="${tr.pos.y.toFixed(3)}" posZ="${tr.pos.z.toFixed(3)}" rotX="${tr.rot.x.toFixed(3)}" rotY="${tr.rot.y.toFixed(3)}" rotZ="${tr.rot.z.toFixed(3)}" />`;
+      return `    <${key} posX="${tr.pos.x.toFixed(3)}" posY="${tr.pos.y.toFixed(3)}" posZ="${tr.pos.z.toFixed(3)}" rotX="${tr.rot.x.toFixed(3)}" rotY="${tr.rot.y.toFixed(3)}" rotZ="${tr.rot.z.toFixed(3)}" scaleX="${tr.scale.x.toFixed(3)}" scaleY="${tr.scale.y.toFixed(3)}" scaleZ="${tr.scale.z.toFixed(3)}" />`;
     }
     const xml =
 `<?xml version="1.0" encoding="UTF-8"?>
