@@ -98,9 +98,9 @@
    };
 
    const TERRAIN_LAYER_DEFS = [
-      { key: "bedrock", color: [0.42, 0.42, 0.46], emissive: [0.08, 0.08, 0.09], destructible: false },
-      { key: "dirt", color: [0.43, 0.29, 0.15], emissive: [0.06, 0.04, 0.02], destructible: true },
-      { key: "grass", color: [0.2, 0.45, 0.2], emissive: [0.04, 0.14, 0.04], destructible: true }
+      { key: "bedrock", color: [0.5, 0.5, 0.56], emissive: [0.14, 0.14, 0.16], destructible: false },
+      { key: "dirt", color: [0.5, 0.34, 0.2], emissive: [0.1, 0.06, 0.03], destructible: true },
+      { key: "grass", color: [0.32, 0.62, 0.3], emissive: [0.1, 0.22, 0.1], destructible: true }
    ];
 
    const defaultTerrainSettings = {
@@ -163,9 +163,6 @@
       updateInterval: 1 / 24
    };
 
-   const TREE_MODEL_FILES = ["tree1.fbx", "tree2.fbx"];
-   let treeAssetPromise = null;
-   let treeAssetSources = null;
    let fallbackTreeMaterials = null;
 
    const GameSettings = {
@@ -400,8 +397,11 @@
       const centers = new Array(length * width);
       const layerMaterials = TERRAIN_LAYER_DEFS.map(def => {
          const mat = new BABYLON.StandardMaterial(`terrain_${def.key}`, scene);
-         mat.diffuseColor = new BABYLON.Color3(def.color[0], def.color[1], def.color[2]);
-         mat.emissiveColor = new BABYLON.Color3(def.emissive[0], def.emissive[1], def.emissive[2]);
+         const diffuse = new BABYLON.Color3(def.color[0], def.color[1], def.color[2]);
+         const emissive = new BABYLON.Color3(def.emissive[0], def.emissive[1], def.emissive[2]);
+         mat.diffuseColor = diffuse;
+         mat.ambientColor = diffuse.scale(0.45);
+         mat.emissiveColor = emissive;
          mat.specularColor = BABYLON.Color3.Black();
          return mat;
       });
@@ -598,39 +598,6 @@
       return fallbackTreeMaterials;
    }
 
-   async function loadTreeAssets(scene) {
-      if (treeAssetSources) return treeAssetSources;
-      if (!treeAssetPromise) {
-         treeAssetPromise = Promise.all(TREE_MODEL_FILES.map(async (file) => {
-            try {
-               const container = await BABYLON.SceneLoader.LoadAssetContainerAsync("assets/models/", file, scene);
-               container.meshes.forEach(mesh => {
-                  mesh.isPickable = false;
-                  mesh.checkCollisions = true;
-               });
-               container.transformNodes.forEach(node => {
-                  if (node.rotationQuaternion) {
-                     node.rotation = node.rotationQuaternion.toEulerAngles();
-                     node.rotationQuaternion = null;
-                  }
-               });
-               return container;
-            } catch (err) {
-               console.warn(`[Trees] Failed to load model ${file}`, err);
-               return null;
-            }
-         })).then(containers => containers.filter(Boolean)).catch(err => {
-            console.warn("[Trees] Failed to load tree assets", err);
-            return [];
-         });
-      }
-      treeAssetSources = await treeAssetPromise;
-      if (!Array.isArray(treeAssetSources)) {
-         treeAssetSources = [];
-      }
-      return treeAssetSources;
-   }
-
    function createFallbackTree(scene, name, position, scale) {
       const root = new BABYLON.TransformNode(name, scene);
       const { trunkMat, leavesMat } = getFallbackTreeMaterials(scene);
@@ -696,9 +663,6 @@
       environment.trees.forEach(tree => tree.dispose());
       environment.trees = [];
 
-      const sources = await loadTreeAssets(scene);
-      const useFallback = !sources || sources.length === 0;
-
       const treeCount = 18;
       const halfX = terrain.halfX;
       const halfZ = terrain.halfZ;
@@ -715,52 +679,10 @@
          if (hX === null || hZ === null) continue;
          if (Math.abs(h - hX) > 1.6 || Math.abs(h - hZ) > 1.6) continue;
 
-         const treeRoot = new BABYLON.TransformNode(`tree${i}`, scene);
-         treeRoot.position.set(x, 0, z);
-         treeRoot.rotation.y = rand(0, Math.PI * 2);
          const scale = 0.8 + Math.random() * 1.2;
-
-         let instance;
-         if (!useFallback) {
-            const template = sources[Math.floor(Math.random() * sources.length)];
-            if (!template) {
-               treeRoot.dispose();
-               continue;
-            }
-            instance = template.instantiateModelsToScene((name) => `${name}_tree${i}`, false);
-            treeRoot.scaling.set(scale, scale, scale);
-            instance.rootNodes.forEach(node => {
-               node.parent = treeRoot;
-            });
-            instance.animationGroups.forEach(group => {
-               group.stop();
-               group.dispose();
-            });
-
-            const childMeshes = treeRoot.getChildMeshes();
-            childMeshes.forEach(mesh => {
-               mesh.isPickable = false;
-               mesh.checkCollisions = true;
-               mesh.computeWorldMatrix(true);
-            });
-
-            let minY = Infinity;
-            childMeshes.forEach(mesh => {
-               const info = mesh.getBoundingInfo();
-               if (!info) return;
-               const min = info.boundingBox.minimumWorld.y;
-               if (min < minY) minY = min;
-            });
-            treeRoot.position.y = Number.isFinite(minY) ? h - minY : h;
-         } else {
-            treeRoot.dispose();
-            const fallbackRoot = createFallbackTree(scene, `tree${i}`, new BABYLON.Vector3(x, h, z), scale);
-            fallbackRoot.rotation.y = rand(0, Math.PI * 2);
-            environment.trees.push(fallbackRoot);
-            continue;
-         }
-
-         environment.trees.push(treeRoot);
+         const fallbackRoot = createFallbackTree(scene, `tree${i}`, new BABYLON.Vector3(x, h, z), scale);
+         fallbackRoot.rotation.y = rand(0, Math.PI * 2);
+         environment.trees.push(fallbackRoot);
       }
    }
 
@@ -2211,6 +2133,10 @@
       if (cdActive("meleehit")) return;
       setCooldown("meleehit", COOLDOWNS.meleehit);
       state.attackAnimT = 0.22;
+      const forward = playerForward();
+      if (forward.lengthSquared() > 0.0001) {
+         playerRoot.rotation.y = Math.atan2(forward.x, forward.z);
+      }
       const range = 2.0;
       let base = 10 + (state.eff.power * 1.5) * (state.ch.nen === "Enhancer" ? 1.25 : 1);
       const mult = state.aura.renMul || 1.0;
