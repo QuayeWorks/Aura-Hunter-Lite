@@ -28,6 +28,20 @@
       }
    };
 
+   // Babylon exposes the wrap constant as WRAP_ADDRESSMODE (without the "ING").
+   // Some older snippets – including the new ground material introduced in this
+   // branch – referenced WRAP_ADDRESSING_MODE instead, leaving the property
+   // undefined and breaking texture tiling. Mirror the constant so both names
+   // resolve to the same value regardless of which alias downstream code uses.
+   if (BABYLON?.Texture) {
+      const tex = BABYLON.Texture;
+      const wrap = tex.WRAP_ADDRESSMODE ?? tex.WRAP_ADDRESSING_MODE;
+      if (wrap !== undefined) {
+         if (tex.WRAP_ADDRESSMODE === undefined) tex.WRAP_ADDRESSMODE = wrap;
+         if (tex.WRAP_ADDRESSING_MODE === undefined) tex.WRAP_ADDRESSING_MODE = wrap;
+      }
+   }
+
    const HUD_BAR_EPS = 0.0025;
    const COOLDOWN_UI_INTERVAL = 1 / 30;
    const hudState = {
