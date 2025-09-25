@@ -1822,4 +1822,5 @@ ${PART_KEYS.map(tnode).join("\n")}
 
   // public
   window.RigEditor = { boot };
+}
 })();
