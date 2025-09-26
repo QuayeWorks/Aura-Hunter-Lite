@@ -23,6 +23,225 @@
     nenblast:{active:false,pct:-1}, special:{active:false,pct:-1}, dash:{active:false,pct:-1}
   }};
 
+  const CHARACTER_STORAGE_KEY = "hxh.character";
+  const TERRAIN_SETTINGS_KEY = "hxh-terrain-settings";
+  const DEFAULT_STATS = { power:4, agility:3, focus:3 };
+
+  let gameActive = false;
+  let hasActiveCharacter = false;
+  let lastCharacter = null;
+  let resumeAvailable = false;
+
+  function allScreens(){ return Array.from(document.querySelectorAll(".screen")); }
+  function showScreen(id){
+    const target = document.getElementById(id);
+    if (!target) return;
+    allScreens().forEach(s=>{ if (s) s.classList.toggle("visible", s===target); });
+  }
+
+  function isGameScreenVisible(){ return document.getElementById("screen--game")?.classList.contains("visible"); }
+
+  function loadStoredCharacter(){
+    try {
+      const raw = localStorage.getItem(CHARACTER_STORAGE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? parsed : null;
+    } catch { return null; }
+  }
+
+  function loadStoredTerrainSettings(){
+    try {
+      const raw = localStorage.getItem(TERRAIN_SETTINGS_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") {
+        environment.terrainSettings = { ...environment.terrainSettings, ...parsed };
+      }
+    } catch {}
+  }
+
+  function updateResumeButton(){
+    resumeAvailable = hasActiveCharacter || !!lastCharacter;
+    if (window.hud?.btnResume) window.hud.btnResume.hidden = !resumeAvailable;
+  }
+
+  function applyCharacterToState(ch={}){
+    const stats = { ...DEFAULT_STATS, ...(ch.stats||{}) };
+    const safeName = (ch.name || "Hunter").trim() || "Hunter";
+    const safeClan = (ch.clan || "Wanderer").trim();
+    const nen = ch.nen || "Enhancer";
+    const color = ch.color || "#00ffcc";
+
+    const next = {
+      name: safeName,
+      clan: safeClan,
+      nen,
+      color,
+      stats,
+      species: ch.species || state.ch?.species
+    };
+
+    state.ch = { ...state.ch, ...next };
+    state.eff = {
+      power: Number(stats.power)||0,
+      agility: Number(stats.agility)||0,
+      focus: Number(stats.focus)||0
+    };
+
+    const hpBase = 110;
+    const nenBase = 90;
+    state.maxHP = Math.round(hpBase + state.eff.power * 18);
+    state.hp = state.maxHP;
+    state.nenMax = Math.round(nenBase + state.eff.focus * 22);
+    state.nen = state.nenMax;
+    state.cooldowns = {};
+    state.buffs = {};
+    window.progress = window.progress || { level:1, xp:0, unspent:0 };
+    updateHUD?.();
+  }
+
+  function stopGameLoop(){ gameActive = false; }
+  function startGameLoop(){ gameActive = true; }
+
+  function resumeGame(){
+    if (!hasActiveCharacter) {
+      const saved = lastCharacter || loadStoredCharacter();
+      if (saved) {
+        lastCharacter = saved;
+        applyCharacterToState(saved);
+        hasActiveCharacter = true;
+      } else {
+        return;
+      }
+    }
+    showScreen("screen--game");
+    window.MenuBG?.stop?.();
+    window.hud?.pauseOverlay?.classList?.remove("visible");
+    startGameLoop();
+    updateResumeButton();
+  }
+
+  function pauseGame(){
+    if (!isGameScreenVisible() || !gameActive) return;
+    stopGameLoop();
+    window.hud?.pauseOverlay?.classList?.add("visible");
+  }
+
+  function exitToMenu(){
+    stopGameLoop();
+    window.hud?.pauseOverlay?.classList?.remove("visible");
+    showScreen("screen--menu");
+    window.MenuBG?.start?.();
+    updateResumeButton();
+  }
+
+  function openCreator(){
+    stopGameLoop();
+    showScreen("screen--creator");
+    window.MenuBG?.stop?.();
+  }
+
+  function openSettings(){
+    stopGameLoop();
+    populateSettingsForm();
+    showScreen("screen--settings");
+    window.MenuBG?.stop?.();
+  }
+
+  function openRig(){
+    stopGameLoop();
+    showScreen("screen--rig");
+    window.MenuBG?.stop?.();
+  }
+
+  function startGame(ch){
+    if (ch && typeof ch === "object") {
+      lastCharacter = JSON.parse(JSON.stringify(ch));
+    } else if (!lastCharacter) {
+      lastCharacter = loadStoredCharacter();
+    }
+    const data = lastCharacter || ch || {};
+    applyCharacterToState(data);
+    hasActiveCharacter = true;
+    updateResumeButton();
+    resumeGame();
+  }
+
+  function populateSettingsForm(){
+    const form = document.getElementById("settings-form");
+    if (!form) return;
+    const settings = environment.terrainSettings || {};
+    const setVal = (id, value)=>{
+      const el = form.querySelector(`#${id}`);
+      if (el && value !== undefined && value !== null) el.value = value;
+    };
+    setVal("settings-length", settings.length ?? "");
+    setVal("settings-width", settings.width ?? "");
+    setVal("settings-cube", settings.cubeSize ?? "");
+    setVal("settings-radius", settings.activeRadius ?? "");
+    setVal("settings-max-trees", settings.maxTrees ?? "");
+  }
+
+  function readNumberInput(form, id, parser=parseFloat){
+    const el = form.querySelector(`#${id}`);
+    if (!el) return undefined;
+    const v = parser(el.value);
+    return Number.isFinite(v) ? v : undefined;
+  }
+
+  function applyTerrainSettings(values={}){
+    environment.terrainSettings = { ...environment.terrainSettings, ...values };
+    if (!window.scene) return;
+    try {
+      if (typeof createTerrain === "function") createTerrain(scene);
+      if (typeof Spawns?.reset === "function") Spawns.reset();
+      if (typeof Spawns?.update === "function") Spawns.update(scene);
+      if (typeof updateTerrainStreaming === "function") {
+        const zero = window.BABYLON?.Vector3?.Zero?.() || { x:0, y:0, z:0 };
+        const origin = window.playerRoot?.position || zero;
+        updateTerrainStreaming(origin, 0, true);
+      }
+    } catch (err) {
+      console.error("Failed to apply terrain settings", err);
+    }
+  }
+
+  function handleSettingsSubmit(e){
+    e.preventDefault();
+    const form = e.currentTarget;
+    if (!(form instanceof HTMLFormElement)) return;
+    const next = {};
+    const length = readNumberInput(form, "settings-length", Number);
+    const width = readNumberInput(form, "settings-width", Number);
+    const cube = readNumberInput(form, "settings-cube", parseFloat);
+    const radius = readNumberInput(form, "settings-radius", Number);
+    const maxTrees = readNumberInput(form, "settings-max-trees", Number);
+    if (length !== undefined) next.length = length;
+    if (width !== undefined) next.width = width;
+    if (cube !== undefined) next.cubeSize = cube;
+    if (radius !== undefined) next.activeRadius = radius;
+    if (maxTrees !== undefined) next.maxTrees = maxTrees;
+    applyTerrainSettings(next);
+    populateSettingsForm();
+    exitToMenu();
+  }
+
+  function bindMenuUI(){
+    document.getElementById("btn-new")?.addEventListener("click", openCreator);
+    document.getElementById("btn-settings")?.addEventListener("click", openSettings);
+    document.getElementById("btn-rig")?.addEventListener("click", openRig);
+    document.getElementById("settings-cancel")?.addEventListener("click", exitToMenu);
+    document.getElementById("settings-form")?.addEventListener("submit", handleSettingsSubmit);
+    document.getElementById("btn-cancel")?.addEventListener("click", ()=>{ stopGameLoop(); updateResumeButton(); });
+
+    window.hud?.btnResume?.addEventListener("click", resumeGame);
+    window.hud?.btnResumeGame?.addEventListener("click", resumeGame);
+    window.hud?.btnExit?.addEventListener("click", exitToMenu);
+
+    populateSettingsForm();
+  }
+
   // World & env
   window.world = { size:100, gravityY:-28, ground:null, platforms:[] };
   window.environment = {
@@ -42,7 +261,14 @@
   // Input
   const input = {}, inputOnce = {}, inputUp = {};
   function bindInput(){
-    window.addEventListener("keydown",(e)=>{ if(!input[e.code]) inputOnce[e.code]=true; input[e.code]=true; });
+    window.addEventListener("keydown",(e)=>{
+      if(!input[e.code]) inputOnce[e.code]=true;
+      input[e.code]=true;
+      if (e.code === "Escape"){
+        if (window.hud?.pauseOverlay?.classList?.contains("visible")) resumeGame();
+        else if (isGameScreenVisible()) pauseGame();
+      }
+    });
     window.addEventListener("keyup",(e)=>{ input[e.code]=false; inputUp[e.code]=true; });
     window.addEventListener("wheel",(e)=>{ input["WheelDelta"]=(input["WheelDelta"]||0)+e.deltaY; }, {passive:true});
 	// C + LMB = Ko strike
@@ -159,6 +385,12 @@ function updateProjectiles(dt){
 
 
   function tick(dt){
+    if (!gameActive){
+      for (const k in inputOnce) delete inputOnce[k];
+      for (const k in inputUp) delete inputUp[k];
+      return;
+    }
+
     // Inputs
     Nen.handleInputs(input, inputOnce, dt);
 
@@ -189,14 +421,28 @@ function updateProjectiles(dt){
 
   function boot(){
     const canvas = document.getElementById("renderCanvas");
+    loadStoredTerrainSettings();
     bindInput();
+    bindMenuUI();
+    lastCharacter = loadStoredCharacter();
+    updateResumeButton();
     setupBabylon(canvas);
     // hooks (Q/E/Shift)
     window.addEventListener("keydown",(e)=>{
+      if (!gameActive) return;
       if (e.code==="KeyQ") Combat.blast();
       if (e.code==="KeyE") Combat.special();
     });
   }
+
+  window.HXH = window.HXH || {};
+  Object.assign(window.HXH, {
+    startGame,
+    resumeGame,
+    pauseGame,
+    exitToMenu,
+    loadSavedCharacter: loadStoredCharacter
+  });
 
   document.addEventListener("DOMContentLoaded", boot);
 })();
