@@ -8,7 +8,7 @@
     const c = BABYLON.Color3.FromHexString(colorHex);
     const mat = new BABYLON.StandardMaterial("menuSil", scene);
     mat.emissiveColor = c.scale(0.7);
-    mat.diffuseColor = c.scale(0.08);
+    mat.diffuseColor  = c.scale(0.08);
     mat.specularColor = BABYLON.Color3.Black();
 
     const root = new BABYLON.TransformNode("menuRig", scene);
@@ -29,13 +29,13 @@
 
     const shL = new BABYLON.TransformNode("shL",scene); shL.parent = tu; shL.position.set(-.62,.5,0);
     const shR = new BABYLON.TransformNode("shR",scene); shR.parent = tu; shR.position.set(.62,.5,0);
-    const uaL = seg(shL,.25,.55,.25,0); const faL = seg(uaL,.22,.55,.22,0); seg(faL,.22,.22,.22,0);
-    const uaR = seg(shR,.25,.55,.25,0); const faR = seg(uaR,.22,.55,.22,0); seg(faR,.22,.22,.22,0);
+    seg(shL,.25,.55,.25,0); seg(shL,.22,.55,.22,0); seg(shL,.22,.22,.22,0);
+    seg(shR,.25,.55,.25,0); seg(shR,.22,.55,.22,0); seg(shR,.22,.22,.22,0);
 
     const hipL = new BABYLON.TransformNode("hipL",scene); hipL.parent = pelvis; hipL.position.set(-.33,-.12,0);
     const hipR = new BABYLON.TransformNode("hipR",scene); hipR.parent = pelvis; hipR.position.set(.33,-.12,0);
-    const thL = seg(hipL,.30,.65,.30,0); const shL2 = seg(thL,.27,.65,.27,0); seg(shL2,.32,.18,.38,0);
-    const thR = seg(hipR,.30,.65,.30,0); const shR2 = seg(thR,.27,.65,.27,0); seg(shR2,.32,.18,.38,0);
+    seg(hipL,.30,.65,.30,0); seg(hipL,.27,.65,.27,0); seg(hipL,.32,.18,.38,0);
+    seg(hipR,.30,.65,.30,0); seg(hipR,.27,.65,.27,0); seg(hipR,.32,.18,.38,0);
 
     root.position.set(0,0,0);
     return root;
@@ -82,18 +82,15 @@
       const box = BABYLON.MeshBuilder.CreateBox("c"+i,{size: 0.6 + Math.random()*0.8}, scene);
       box.position.set(Math.cos(a)*d, y, Math.sin(a)*d);
       const m = new BABYLON.StandardMaterial("cm"+i, scene);
-      const hue = 0.52 + Math.random()*0.08;
       m.emissiveColor = BABYLON.Color3.FromHexString("#0ff").scale(0.8);
       m.diffuseColor = m.emissiveColor.scale(0.1);
       box.material = m;
       cubes.push({mesh:box, r:a, d, y, s: 0.3 + Math.random()*0.8});
     }
 
-    // idle humanoid silhouette
+    // idle humanoid + aura
     const rig = createHumanoidSilhouette("#0ef");
     rig.position.y = .2;
-
-    // aura
     const aura = BABYLON.MeshBuilder.CreateSphere("aura",{diameter: 3.2, segments: 12}, scene);
     const am = new BABYLON.StandardMaterial("am", scene);
     am.emissiveColor = BABYLON.Color3.FromHexString("#0ef").scale(0.35);
@@ -101,12 +98,9 @@
 
     loop = scene.onBeforeRenderObservable.add(()=>{
       const dt = engine.getDeltaTime()/1000; t += dt;
-
-      // slow orbit + breathing zoom
       camera.alpha += dt*0.12;
       camera.radius = 18 + Math.sin(t*0.5)*1.4;
 
-      // float cubes
       cubes.forEach((c,i)=>{
         c.r += dt*(0.05 + c.s*0.06);
         const y = c.y + Math.sin(t*1.8 + i)*0.35;
@@ -114,27 +108,17 @@
         c.mesh.rotation.y += dt*(0.3 + c.s*0.5);
       });
 
-      // aura pulse
-      aura.scaling.setAll(1 + Math.sin(t*2.2)*0.05);
-      am.alpha = 0.10 + 0.05*Math.sin(t*2.0);
+      aura.scaling.setAll(1 + Math.sin(t*1.7)*0.035 + 0.04);
+      aura.material.alpha = 0.10 + (Math.sin(t*2.2)*0.03 + 0.05);
     });
 
     engine.runRenderLoop(()=> scene.render());
-    window.addEventListener("resize", onResize);
+    window.addEventListener("resize", ()=> engine.resize());
   }
 
-  function onResize(){ try{ engine && engine.resize(); }catch{} }
+  function stop(){ if (!scene) return; try{ engine.stopRenderLoop(); }catch{} }
+  function start(){ if (!scene) build(); else engine.runRenderLoop(()=> scene.render()); }
 
-  function dispose(){
-    window.removeEventListener("resize", onResize);
-    if(scene && loop){ scene.onBeforeRenderObservable.remove(loop); loop=null; }
-    try{ engine && engine.stopRenderLoop(); }catch{}
-    try{ engine && engine.dispose(); }catch{}
-    engine = scene = camera = glow = null;
-  }
-
-  window.MenuBG = {
-    start(){ if(!engine) build(); },
-    stop(){ dispose(); }
-  };
+  document.addEventListener("DOMContentLoaded", build);
+  window.MenuBG = { start, stop };
 })();

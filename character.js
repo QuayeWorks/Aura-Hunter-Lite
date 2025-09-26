@@ -1,7 +1,6 @@
 // character.js — creator wired to #screen--creator and cc-* fields
 (function () {
   const MAX_POINTS = 10;
-
   function $(sel, root=document) { return root.querySelector(sel); }
 
   function loadRigColor() {
@@ -16,7 +15,7 @@
 
   function boot() {
     const screen = document.getElementById("screen--creator");
-    if (!screen) return; // creator not present yet
+    if (!screen) return;
 
     const form   = $("#creator-form", screen);
     const nameEl = $("#cc-name", screen);
@@ -27,22 +26,16 @@
     const pEl = $("#cc-power", screen);
     const aEl = $("#cc-agility", screen);
     const fEl = $("#cc-focus", screen);
-    const remWrap = $("#points-remaining", screen);
     const remNum  = $("#points-remaining b", screen);
     const cancel  = $("#btn-cancel", screen);
 
-    // default color from rig if user didn't pick
     if (colEl && !colEl.dataset.userTouched) {
       colEl.value = loadRigColor();
       colEl.addEventListener("input", ()=> colEl.dataset.userTouched = "1");
       const ready = window.HXH?.rigReady;
-      if (ready && typeof ready.then === "function") {
-        ready.then(() => {
-          if (colEl && !colEl.dataset.userTouched) {
-            colEl.value = loadRigColor();
-          }
-        }).catch(() => {});
-      }
+      if (ready?.then) ready.then(() => {
+        if (colEl && !colEl.dataset.userTouched) colEl.value = loadRigColor();
+      }).catch(()=>{});
     }
 
     function clamp01(x,min,max){ return Math.min(max, Math.max(min, x)); }
@@ -55,25 +48,20 @@
     function sync() {
       const n = nums();
       if (remNum) remNum.textContent = String(MAX_POINTS - n.sum);
-      // hard cap: if sum > MAX_POINTS, reduce the last edited field
     }
-
     function onNumberInput(e){
       const el = e.target;
       el.value = String(clamp01(parseInt(el.value||"0",10)||0, 0, MAX_POINTS));
       let {p,a,f,sum} = nums();
       if (sum > MAX_POINTS) {
-        // subtract overflow from the edited field
         const over = sum - MAX_POINTS;
         el.value = String(clamp01((parseInt(el.value,10)||0) - over, 0, MAX_POINTS));
       }
       sync();
     }
-
     [pEl,aEl,fEl].forEach(el => el && el.addEventListener("input", onNumberInput));
 
     cancel?.addEventListener("click", () => {
-      // back to menu, restart menu bg
       document.querySelectorAll(".screen").forEach(s=>s.classList.remove("visible"));
       document.getElementById("screen--menu")?.classList.add("visible");
       window.MenuBG?.start();
@@ -82,10 +70,7 @@
     form?.addEventListener("submit", (e) => {
       e.preventDefault();
       const {p,a,f,sum} = nums();
-      if (sum !== MAX_POINTS) {
-        alert(`Please allocate exactly ${MAX_POINTS} points (you have ${MAX_POINTS - sum} remaining).`);
-        return;
-      }
+      if (sum !== MAX_POINTS) { alert(`Please allocate exactly ${MAX_POINTS} points.`); return; }
       const ch = {
         name: (nameEl?.value || "Hunter").trim(),
         clan: (clanEl?.value || "Wanderer").trim(),
@@ -95,17 +80,15 @@
       };
       try { localStorage.setItem("hxh.character", JSON.stringify(ch)); } catch {}
 
-      // go to game
       document.querySelectorAll(".screen").forEach(s=>s.classList.remove("visible"));
       document.getElementById("screen--game")?.classList.add("visible");
       window.MenuBG?.stop();
-      window.HXH?.startGame(ch);
+      window.HXH?.startGame?.(ch);
     });
 
-    // initial sync
     sync();
   }
 
   document.addEventListener("DOMContentLoaded", boot);
-  window.CharacterUI = { boot }; // call again when showing the creator screen
+  window.CharacterUI = { boot };
 })();
