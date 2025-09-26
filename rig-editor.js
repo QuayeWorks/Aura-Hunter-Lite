@@ -94,6 +94,27 @@
 
     // Deep clone helper
     const deepClone = o => JSON.parse(JSON.stringify(o));
+    let gizmoMgr, selectedKey = null;
+    const UNIT_POS = 1000; // meters->mm readout multiplier if needed; keep as 1 for 1:1 units
+	
+	let outlinedMesh = null;
+
+	function meshForPart(key){
+	  // we named each visible box exactly as the part key
+	  return scene.getMeshByName(key) || null;
+	}
+
+	function setOutline(mesh){
+	  // clear old
+	  if (outlinedMesh && !outlinedMesh.isDisposed()){
+		outlinedMesh.renderOutline = false;
+	  }
+	  outlinedMesh = mesh || null;
+	  if (!outlinedMesh) return;
+	  outlinedMesh.renderOutline = true;
+	  outlinedMesh.outlineWidth = 0.03;
+	  outlinedMesh.outlineColor = BABYLON.Color3.FromHexString("#ff4d6d"); // red
+	}
 
 
     const K = { // animation store
@@ -120,15 +141,19 @@
     ];
 
     // Mark non-pickable décor (call this once after you create grid/floor/etc.)
-    function markDecorUnpickable() {
-        scene.meshes.forEach(m => {
-            const n = (m.name || "").toLowerCase();
-            // ignore grid/floor/axes/etc.
-            if (n.includes("grid") || n.includes("floor") || n.includes("ground") || n.includes("axis")) {
-                m.isPickable = false;
-            }
-        });
-    }
+	function markDecorUnpickable() {
+	  scene.meshes.forEach(m => {
+		const n = (m.name || "").toLowerCase();
+		if (
+		  n === "g" || n === "collider" ||         // <- these two block picking
+		  n.includes("grid") || n.includes("floor") ||
+		  n.includes("ground") || n.includes("axis")
+		) {
+		  m.isPickable = false;
+		}
+	  });
+	}
+
 
     // Given a picked mesh, resolve which part-key it belongs to
     function findPartKeyFromMesh(mesh) {
@@ -181,8 +206,7 @@
     let nodes = {}; // map of TransformNodes keyed by part name
     let params = null; // working params
     let booted = false;
-    let gizmoMgr, selectedKey = null;
-    const UNIT_POS = 1000; // meters->mm readout multiplier if needed; keep as 1 for 1:1 units
+
 
     // Animation-preview state
     const anim = {
@@ -458,6 +482,9 @@
         camera.pinchDeltaPercentage = 0.015;
         camera.useNaturalPinchZoom = true;
 
+		// Ensure pan is enabled at the camera level (not only on the pointer input)
+		camera.panningSensibility = 1000; // lower = more sensitive; >0 enables panning
+
         // Configure pointer input for rotate (left) + pan (right)
         const pInput = camera.inputs.attached.pointers;
         if (pInput) {
@@ -495,6 +522,7 @@
             grid.color1 = new BABYLON.Color3(0.35, 0.8, 1);
             grid.color2 = new BABYLON.Color3(0.05, 0.07, 0.1);
             ground.material = grid;
+			ground.isPickable = false;  // prevent ray picks on the ground
         } catch {}
 
         // orientation helpers
@@ -549,7 +577,11 @@
                     // ignore gizmo meshes and décor
                     if (nm.includes("gizmo")) return false;
                     if (nm.includes("grid") || nm.includes("floor") || nm.includes("ground") || nm.includes("axis")) return false;
-                    return true;
+                    // ignore gizmo meshes and décor
+					if (nm.includes("gizmo")) return false;
+					if (nm === "g" || nm === "collider") return false;
+					if (nm.includes("grid") || nm.includes("floor") || nm.includes("ground") || nm.includes("axis")) return false;
+					return true;
                 }
             );
             if (!pick || !pick.hit || !pick.pickedMesh) return;
@@ -595,6 +627,7 @@
         const pivot = nodes[key];
         if (!pivot) return;
         gizmoMgr.attachToMesh(pivot); // works with TransformNode
+		setOutline(meshForPart(key));         // outline the actual visible mesh
         updateToolbar();
     }
 
@@ -603,6 +636,10 @@
         gizmoMgr.rotationGizmoEnabled = (mode === "rotate");
         gizmoMgr.scaleGizmoEnabled = (mode === "scale");
         if (mode === "select") gizmoMgr.attachToMesh(null);
+		if (mode === "select") {
+		  gizmoMgr.attachToMesh(null);
+		  setOutline(null);
+		}
         updateToolbar(mode);
     }
 
@@ -769,6 +806,7 @@
         cm.diffuseColor = new BABYLON.Color3(0.1, 0.2, 0.25);
         cm.alpha = 0.25;
         rigRoot.material = cm;
+		rigRoot.isPickable = false; // do not let collider intercept clicks
 
         // torso chain
         const pelvis = segY(rigRoot, "pelvis", params.pelvis.w, params.pelvis.h, params.pelvis.d, hex);
