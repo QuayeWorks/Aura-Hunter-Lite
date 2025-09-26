@@ -19,10 +19,10 @@
         <h1>Hunter × Hunter: Nen Trials</h1>
         <p class="lead">Create your hunter, choose your Nen type, and fight in a 3D world.</p>
         <div class="btn-row">
-          <button id="btn-resume" class="primary" hidden>Resume</button>
-          <button id="btn-new" class="success">New Game</button>
-          <button id="btn-settings" class="secondary">Settings</button>
-          <button id="btn-rig" class="secondary">Rig Editor (limbs &amp; offsets)</button>
+          <button type="button" id="btn-resume" class="primary" hidden>Resume</button>
+          <button type="button" id="btn-new" class="success">New Game</button>
+          <button type="button" id="btn-settings" class="secondary">Settings</button>
+          <button type="button" id="btn-rig" class="secondary">Rig Editor (limbs &amp; offsets)</button>
         </div>
         <details class="small">
           <summary>Controls</summary>
@@ -115,24 +115,24 @@
         <div id="mobile-joystick" aria-label="Move"><div id="mobile-joystick-thumb"></div></div>
         <div class="mobile-buttons" aria-label="Touch controls">
           <div class="mobile-btn-row">
-            <button id="mc-blast" class="mobile-btn small" aria-label="Nen Blast">Blast</button>
-            <button id="mc-special" class="mobile-btn small" aria-label="Special Ability">Special</button>
+            <button type="button" id="mc-blast" class="mobile-btn small" aria-label="Nen Blast">Blast</button>
+            <button type="button" id="mc-special" class="mobile-btn small" aria-label="Special Ability">Special</button>
           </div>
           <div class="mobile-btn-row">
-            <button id="mc-dash" class="mobile-btn" aria-label="Dash">Dash</button>
-            <button id="mc-jump" class="mobile-btn" aria-label="Jump">Jump</button>
+            <button type="button" id="mc-dash" class="mobile-btn" aria-label="Dash">Dash</button>
+            <button type="button" id="mc-jump" class="mobile-btn" aria-label="Jump">Jump</button>
           </div>
           <div class="mobile-btn-row">
-            <button id="mc-nen" class="mobile-btn small" aria-label="Charge Nen">Charge</button>
-            <button id="mc-attack" class="mobile-btn primary" aria-label="Attack">Attack</button>
+            <button type="button" id="mc-nen" class="mobile-btn small" aria-label="Charge Nen">Charge</button>
+            <button type="button" id="mc-attack" class="mobile-btn primary" aria-label="Attack">Attack</button>
           </div>
         </div>
       </div>
       <div id="pause-overlay" class="overlay">
         <div class="panel">
           <h2>Paused</h2>
-          <button id="btn-resume-game" class="success">Resume</button>
-          <button id="btn-exit" class="secondary">Exit to Menu</button>
+          <button type="button" id="btn-resume-game" class="success">Resume</button>
+          <button type="button" id="btn-exit" class="secondary">Exit to Menu</button>
         </div>
       </div>
       <div id="level-overlay" class="overlay">
@@ -142,9 +142,9 @@
           <div class="grid-2">
             <div>
               <h3>Allocate Points</h3>
-              <div class="stat-row">Power <button data-stat="power" class="plus">+</button><span id="s-power">0</span></div>
-              <div class="stat-row">Agility <button data-stat="agility" class="plus">+</button><span id="s-agility">0</span></div>
-              <div class="stat-row">Focus <button data-stat="focus" class="plus">+</button><span id="s-focus">0</span></div>
+              <div class="stat-row">Power <button type="button" data-stat="power" class="plus">+</button><span id="s-power">0</span></div>
+              <div class="stat-row">Agility <button type="button" data-stat="agility" class="plus">+</button><span id="s-agility">0</span></div>
+              <div class="stat-row">Focus <button type="button" data-stat="focus" class="plus">+</button><span id="s-focus">0</span></div>
             </div>
             <div>
               <h3>Effects</h3>
@@ -155,7 +155,7 @@
               </ul>
             </div>
           </div>
-          <div class="row-right"><button id="lv-close" class="secondary">Close</button></div>
+          <div class="row-right"><button type="button" id="lv-close" class="secondary">Close</button></div>
         </div>
       </div>
     </div>
@@ -167,19 +167,19 @@
           <canvas id="rig-canvas"></canvas>
           <div id="rig-toolbar" class="rig-toolbar">
             <div class="btns">
-              <button id="tb-select" class="secondary" title="Select (S)">Select</button>
-              <button id="tb-move"   class="secondary" title="Move (W)">Move</button>
-              <button id="tb-rotate" class="secondary" title="Rotate (E)">Rotate</button>
-              <button id="tb-scale"  class="secondary" title="Scale (R)">Scale</button>
-              <button id="tb-anim"   class="secondary" title="Toggle Animation Panel">Anim</button>
+              <button type="button" id="tb-select" class="secondary" title="Select (S)">Select</button>
+              <button type="button" id="tb-move"   class="secondary" title="Move (W)">Move</button>
+              <button type="button" id="tb-rotate" class="secondary" title="Rotate (E)">Rotate</button>
+              <button type="button" id="tb-scale"  class="secondary" title="Scale (R)">Scale</button>
+              <button type="button" id="tb-anim"   class="secondary" title="Toggle Animation Panel">Anim</button>
             </div>
             <div class="actions">
-              <button id="rig-reset"        class="secondary">Reset Sizes &amp; Pose</button>
-              <button id="rig-zero"         class="secondary">Zero Pose</button>
-              <button id="rig-save-local"   class="secondary">Save to Browser</button>
-              <button id="rig-import"       class="secondary">Import XML</button>
-              <button id="rig-export"       class="primary">Export XML</button>
-              <button id="rig-exit"         class="success">Back</button>
+              <button type="button" id="rig-reset"        class="secondary">Reset Sizes &amp; Pose</button>
+              <button type="button" id="rig-zero"         class="secondary">Zero Pose</button>
+              <button type="button" id="rig-save-local"   class="secondary">Save to Browser</button>
+              <button type="button" id="rig-import"       class="secondary">Import XML</button>
+              <button type="button" id="rig-export"       class="primary">Export XML</button>
+              <button type="button" id="rig-exit"         class="success">Back</button>
               <input type="file" id="rig-file" accept=".xml" hidden />
             </div>
             <div class="readout">
@@ -195,8 +195,8 @@
             <div class="an-row">
               <label>Time <input id="an-time" type="range" min="0" max="2" step="0.01" /></label>
               <span id="an-time-readout">0.000s</span>
-              <button id="an-play">▶</button>
-              <button id="an-stop">■</button>
+              <button type="button" id="an-play">▶</button>
+              <button type="button" id="an-stop">■</button>
               <label>Len <input id="an-length" type="number" min="0.25" max="20" step="0.05" value="2" /></label>
               <label>FPS <input id="an-fps" type="number" min="6" max="120" step="1" value="30" /></label>
             </div>
@@ -219,15 +219,14 @@
                   <option value="easeInOut">Ease In/Out</option>
                 </select>
               </label>
-              <button id="an-add">Add Key</button>
-              <button id="an-del">Del Key</button>
+              <button type="button" id="an-add">Add Key</button>
+              <button type="button" id="an-del">Del Key</button>
             </div>
             <div id="an-timeline" class="timeline"></div>
           </div>
 
           <div class="rig-help">Left-drag orbit • Right-drag pan • Wheel zoom • Click a limb to select</div>
         </div>
-        <!-- Right panel is intentionally removed; CSS/grid collapses it -->
         <div class="rig-resizer" hidden></div>
         <aside class="rig-panel" hidden></aside>
       </div>
