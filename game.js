@@ -112,9 +112,9 @@
    };
 
    const TERRAIN_LAYER_DEFS = [
-      { key: "bedrock", color: [0.5, 0.5, 0.56], emissive: [0.14, 0.14, 0.16], destructible: false },
-      { key: "dirt", color: [0.5, 0.34, 0.2], emissive: [0.1, 0.06, 0.03], destructible: true },
-      { key: "grass", color: [0.32, 0.62, 0.3], emissive: [0.1, 0.22, 0.1], destructible: true }
+      { key: "bedrock", color: [0.5, 0.5, 0.56], emissive: [0.14, 0.14, 0.16], destructible: false, thickness: 1 },
+      { key: "dirt", color: [0.5, 0.34, 0.2], emissive: [0.1, 0.06, 0.03], destructible: true, thickness: 1 },
+      { key: "grass", color: [0.32, 0.62, 0.3], emissive: [0.1, 0.22, 0.1], destructible: true, thickness: 0.25 }
    ];
 
    const defaultTerrainSettings = {
@@ -123,7 +123,8 @@
       cubeSize: 1.2,
       activeRadius: 48,
       streamingPadding: 6,
-      layers: TERRAIN_LAYER_DEFS.length
+      layers: TERRAIN_LAYER_DEFS.length,
+      maxTrees: 18
    };
 
    const TERRAIN_SETTINGS_KEY = "hxh-terrain-settings";
@@ -140,6 +141,7 @@
       if (typeof next.cubeSize === "number") out.cubeSize = clampSetting(next.cubeSize, 0.5, 4, defaultTerrainSettings.cubeSize);
       if (typeof next.activeRadius === "number") out.activeRadius = clampSetting(next.activeRadius, 6, 300, defaultTerrainSettings.activeRadius);
       if (typeof next.streamingPadding === "number") out.streamingPadding = clampSetting(next.streamingPadding, 2, 60, defaultTerrainSettings.streamingPadding);
+      if (typeof next.maxTrees === "number") out.maxTrees = Math.round(clampSetting(next.maxTrees, 0, 400, defaultTerrainSettings.maxTrees));
       out.layers = TERRAIN_LAYER_DEFS.length;
       return out;
    }
@@ -171,6 +173,7 @@
       hemi: null,
       clouds: [],
       trees: [],
+      treeColumns: [],
       terrain: null,
       terrainSettings: { ...savedTerrainSettings },
       updateAccumulator: 0,
@@ -232,6 +235,16 @@
       const meta = mesh.metadata;
       if (meta && meta.terrainBlock && !meta.terrainBlock.destroyed && mesh.isEnabled && mesh.isEnabled()) return true;
       return world.platforms.includes(mesh);
+   }
+
+   function isTreeMesh(mesh) {
+      if (!mesh || typeof mesh.isDisposed === "function" && mesh.isDisposed()) return false;
+      const entry = mesh.metadata?.treePart;
+      return !!entry && !entry.destroyed;
+   }
+
+   function isGroundOrTreeMesh(mesh) {
+      return isGroundMesh(mesh) || isTreeMesh(mesh);
    }
 
    function resolveGrounding(mesh, velY) {
@@ -376,144 +389,199 @@
          localStorage.setItem(TERRAIN_SETTINGS_KEY, JSON.stringify(settings));
       } catch (err) {}
    }
+	// Precompile terrain layer materials for smooth startup.
+	// Call: await precompileTerrainMaterials(scene) after createTerrain(scene) and before mass instancing (trees, etc).
+	async function precompileTerrainMaterials(scene) {
+	  const terrain = environment.terrain;
+	  if (!terrain || !terrain.layerTemplates) return;
+	  const tasks = [];
+	  for (const tpl of terrain.layerTemplates) {
+		if (tpl && tpl.material && typeof tpl.material.forceCompilationAsync === "function") {
+		  tasks.push(tpl.material.forceCompilationAsync(tpl));
+		}
+	  }
+	  try { await Promise.all(tasks); } catch (e) { /* ignore compilation errors */ }
+	}
 
-   function disposeTerrain() {
-  const terrain = environment.terrain;
-  if (!terrain) return;
+       function disposeTerrain() {
+         const terrain = environment.terrain;
+         if (!terrain) return;
 
-  // 1) Dispose all block instances in columns (if present)
-  if (terrain.columns) {
-    for (const column of terrain.columns) {
-      if (!column) continue;
-      for (const block of column) {
-        if (block && !block.isDisposed?.()) {
-          try { block.dispose(); } catch { /* ignore */ }
-        }
-      }
-    }
-  }
+         clearTrees();
 
-  // 2) Dispose per-layer templates if they exist
-  if (terrain.layerTemplates) {
-    for (const tpl of terrain.layerTemplates) {
-      if (tpl && !tpl.isDisposed?.()) {
-        try { tpl.dispose(); } catch { /* ignore */ }
-      }
-    }
-  }
+         // 1) Dispose all block instances in columns (if present)
+         if (terrain.columns) {
+		for (const column of terrain.columns) {
+		  if (!column) continue;
+		  for (const block of column) {
+			if (block && !block.isDisposed()) {
+			  try { block.dispose(); } catch (e) { /* ignore */ }
+			}
+		  }
+		}
+	  }
 
-  // 3) Dispose the terrain root (recursively) to catch remaining children
-  if (terrain.root && !terrain.root.isDisposed?.()) {
-    try { terrain.root.dispose(false); } catch { /* ignore */ }
-  }
+	  // 2) Dispose per-layer templates if they exist (usually parented to root)
+	  if (terrain.layerTemplates) {
+		for (const tpl of terrain.layerTemplates) {
+		  if (tpl && !tpl.isDisposed()) {
+			try { tpl.dispose(); } catch (e) { /* ignore */ }
+		  }
+		}
+	  }
 
-  // 4) Clear references
-  environment.terrain = null;
-  world.ground = null;
-}
+	  // 3) Dispose the terrain root (recursively) to catch any remaining children
+	  if (terrain.root && !terrain.root.isDisposed?.()) {
+		try { terrain.root.dispose(false); } catch (e) { /* ignore */ }
+	  }
 
-   function createTerrain(scene) {
-  disposeTerrain();
+	  // 4) Clear references
+	  environment.terrain = null;
+	  world.ground = null;
+	}
 
-  const settings = environment.terrainSettings = normalizeTerrainSettings(environment.terrainSettings);
-  saveTerrainSettings(settings);
 
-  const { length, width, cubeSize, layers } = settings;
+	function createTerrain(scene) {
+	  disposeTerrain();
 
-  const totalWidth = length * cubeSize;
-  const totalDepth = width * cubeSize;
-  world.size = Math.max(totalWidth, totalDepth);
+	  const settings = environment.terrainSettings = normalizeTerrainSettings(environment.terrainSettings);
+	  saveTerrainSettings(settings);
 
-  const halfX = totalWidth * 0.5;
-  const halfZ = totalDepth * 0.5;
-  const baseY = -layers * cubeSize;
+          const { length, width, cubeSize, layers } = settings;
 
-  const root = new BABYLON.TransformNode("terrainRoot", scene);
-
-  // Column arrays
-  const columns = new Array(length * width);
-  const heights = new Uint16Array(length * width);
-  const columnStates = new Array(length * width).fill(false);
-  const centers = new Array(length * width);
-
-  // Build materials once
-  const layerMaterials = TERRAIN_LAYER_DEFS.map(def => {
-    const mat = new BABYLON.StandardMaterial(`terrain_${def.key}`, scene);
-    const diffuse = new BABYLON.Color3(def.color[0], def.color[1], def.color[2]);
-    const emissive = new BABYLON.Color3(def.emissive[0], def.emissive[1], def.emissive[2]);
-    mat.diffuseColor = diffuse;
-    mat.ambientColor = diffuse.scale(0.45);
-    mat.emissiveColor = emissive;
-    mat.specularColor = BABYLON.Color3.Black();
-    return mat;
-  });
-
-  // One hidden template per layer with the layer's material
-  const layerTemplates = [];
-  for (let layer = 0; layer < layers; layer++) {
-    const template = BABYLON.MeshBuilder.CreateBox(`terrainCubeTemplate_L${layer}`, { size: cubeSize }, scene);
-    template.parent = root;
-    const matIndex = Math.min(layer, layerMaterials.length - 1);
-    template.material = layerMaterials[matIndex];
-    template.isVisible = false;
-    template.isPickable = false;
-    template.checkCollisions = true;
-    template.setEnabled(false);
-    layerTemplates[layer] = template;
-  }
-
-  // Build grid of columns by instancing from templates
-  for (let z = 0; z < width; z++) {
-    for (let x = 0; x < length; x++) {
-      const idx = z * length + x;
-      const column = new Array(layers);
-      columns[idx] = column;
-      heights[idx] = layers;
-
-      const worldX = -halfX + (x + 0.5) * cubeSize;
-      const worldZ = -halfZ + (z + 0.5) * cubeSize;
-      centers[idx] = { x: worldX, z: worldZ };
-
-      for (let layer = 0; layer < layers; layer++) {
-        const source = layerTemplates[layer];
-        const block = source.createInstance(`terrainCube_${x}_${z}_${layer}`);
-        block.parent = root;
-        block.position.set(worldX, baseY + (layer + 0.5) * cubeSize, worldZ);
-        // Note: do not set block.material on instances
-        block.metadata = {
-          terrainBlock: {
-            columnIndex: idx,
-            layer,
-            destructible: TERRAIN_LAYER_DEFS[layer]?.destructible ?? true,
-            destroyed: false
+          const layerThicknesses = new Array(layers);
+          const layerOffsets = new Array(layers);
+          let totalLayerHeight = 0;
+          for (let layer = 0; layer < layers; layer++) {
+                const def = TERRAIN_LAYER_DEFS[layer] || {};
+                const thickness = cubeSize * (def.thickness ?? 1);
+                layerOffsets[layer] = totalLayerHeight;
+                layerThicknesses[layer] = thickness;
+                totalLayerHeight += thickness;
           }
-        };
-        block.isPickable = true;
-        block.checkCollisions = true;
-        block.setEnabled(false);
-        column[layer] = block;
-      }
-    }
-  }
 
-  environment.terrain = {
-    root,
-    columns,
-    heights,
-    centers,
-    columnStates,
-    baseY,
-    cubeSize,
-    colsX: length,
-    colsZ: width,
-    halfX,
-    halfZ,
-    settings: { ...settings },
-    streamAccumulator: 0,
-    streamInterval: 0.25,
-    layerTemplates
-  };
-}
+          const totalWidth = length * cubeSize;
+          const totalDepth = width * cubeSize;
+          world.size = Math.max(totalWidth, totalDepth);
+
+          const halfX = totalWidth * 0.5;
+          const halfZ = totalDepth * 0.5;
+          const baseY = -totalLayerHeight;
+
+          const root = new BABYLON.TransformNode("terrainRoot", scene);
+
+          // Column arrays
+          const columns = new Array(length * width);
+          const heights = new Float32Array(length * width);
+          const columnStates = new Array(length * width).fill(false);
+          const centers = new Array(length * width);
+
+          // Build materials once (unchanged logic)
+          const layerMaterials = TERRAIN_LAYER_DEFS.map(def => {
+		const mat = new BABYLON.StandardMaterial(`terrain_${def.key}`, scene);
+		const diffuse = new BABYLON.Color3(def.color[0], def.color[1], def.color[2]);
+		const emissive = new BABYLON.Color3(def.emissive[0], def.emissive[1], def.emissive[2]);
+		mat.diffuseColor = diffuse;
+		mat.ambientColor = diffuse.scale(0.45);
+		mat.emissiveColor = emissive;
+		mat.specularColor = BABYLON.Color3.Black();
+		return mat;
+	  });
+
+	  // IMPORTANT CHANGE:
+	  // Create ONE template box PER LAYER, assign the layer's material ONCE,
+	  // and thin-hide the templates. We will instance from these. Do NOT
+	  // assign materials on instances.
+	  const layerTemplates = [];
+          for (let layer = 0; layer < layers; layer++) {
+                const template = BABYLON.MeshBuilder.CreateBox(`terrainCubeTemplate_L${layer}`, {
+                      width: cubeSize,
+                      depth: cubeSize,
+                      height: layerThicknesses[layer]
+                }, scene);
+                template.parent = root;
+                // Assign the matching material ONCE to the source mesh
+                const matIndex = Math.min(layer, layerMaterials.length - 1);
+                template.material = layerMaterials[matIndex];
+
+		// Behavior flags to match the previous template
+		template.isVisible = false;          // hide the template
+		template.isPickable = false;
+		template.checkCollisions = true;
+
+		// Keep the template around (DO NOT dispose), but disable its own rendering
+		template.setEnabled(false);
+
+		layerTemplates[layer] = template;
+	  }
+
+	  // Build grid of columns
+	  for (let z = 0; z < width; z++) {
+		for (let x = 0; x < length; x++) {
+                  const idx = z * length + x;
+                  const column = new Array(layers);
+                  columns[idx] = column;
+                  heights[idx] = totalLayerHeight;
+
+                  const worldX = -halfX + (x + 0.5) * cubeSize;
+                  const worldZ = -halfZ + (z + 0.5) * cubeSize;
+                  centers[idx] = { x: worldX, z: worldZ };
+
+                  for (let layer = 0; layer < layers; layer++) {
+                        // Create instance from the *layer's* template
+                        const source = layerTemplates[layer];
+                        const block = source.createInstance(`terrainCube_${x}_${z}_${layer}`);
+                        block.parent = root;
+                        const layerHeight = layerThicknesses[layer];
+                        const offsetY = layerOffsets[layer] + layerHeight * 0.5;
+                        block.position.set(worldX, baseY + offsetY, worldZ);
+
+                        // DO NOT set block.material here; instances share their source mesh's material.
+
+                        block.metadata = {
+                          terrainBlock: {
+				columnIndex: idx,
+				layer,
+				destructible: TERRAIN_LAYER_DEFS[layer]?.destructible ?? true,
+				destroyed: false
+			  }
+			};
+
+			block.isPickable = true;
+			block.checkCollisions = true;
+			block.setEnabled(false);
+
+			column[layer] = block;
+                  }
+                }
+          }
+
+          // NOTE: We intentionally DO NOT dispose the per-layer templates; they are required
+          // as the source of all instances. They are hidden and disabled, parented to 'root',
+          // so when 'root' is disposed in disposeTerrain(), they'll be cleaned up correctly.
+
+          environment.terrain = {
+                root,
+                columns,
+                heights,
+                centers,
+                columnStates,
+                baseY,
+                cubeSize,
+                colsX: length,
+                colsZ: width,
+                halfX,
+                halfZ,
+                totalHeight: totalLayerHeight,
+                layerOffsets,
+                layerThicknesses,
+                settings: { ...settings },
+                streamAccumulator: 0,
+                streamInterval: 0.25,
+                layerTemplates // keep a reference if other systems need access
+          };
+        }
+
 
    function terrainColumnIndexFromWorld(x, z) {
       const terrain = environment.terrain;
@@ -532,9 +600,9 @@
       if (!terrain) return null;
       const idx = terrainColumnIndexFromWorld(x, z);
       if (idx < 0) return null;
-      const layers = terrain.heights[idx];
-      if (!layers) return terrain.baseY;
-      return terrain.baseY + layers * terrain.cubeSize;
+      const height = terrain.heights[idx];
+      if (!Number.isFinite(height) || height <= 0) return terrain.baseY;
+      return terrain.baseY + height;
    }
 
    function enableTerrainColumn(column) {
@@ -581,11 +649,13 @@
          if (distSq <= activeSq) {
             if (!columnStates[i]) {
                enableTerrainColumn(column);
+               setTreeColumnEnabled(i, true);
                columnStates[i] = true;
             }
          } else if (distSq >= inactiveSq) {
             if (columnStates[i]) {
                disableTerrainColumn(column);
+               setTreeColumnEnabled(i, false);
                columnStates[i] = false;
             }
          }
@@ -593,13 +663,16 @@
    }
 
    function recomputeColumnHeight(column) {
+      const terrain = environment.terrain;
+      if (!terrain) return 0;
       let height = 0;
       for (let layer = 0; layer < column.length; layer++) {
          const block = column[layer];
          if (!block) continue;
          const meta = block.metadata?.terrainBlock;
          if (meta && !meta.destroyed) {
-            height = layer + 1;
+            const top = terrain.layerOffsets[layer] + terrain.layerThicknesses[layer];
+            if (top > height) height = top;
          }
       }
       return height;
@@ -641,6 +714,102 @@
       const idx = terrainColumnIndexFromWorld(point.x, point.z);
       if (idx < 0) return false;
       return removeTopBlock(idx);
+   }
+
+   function clearTrees() {
+      if (environment.trees.length) {
+         const entries = environment.trees.slice();
+         for (const entry of entries) {
+            if (entry && !entry.destroyed) {
+               destroyTree(entry);
+            }
+         }
+      }
+      environment.trees = [];
+      environment.treeColumns = [];
+   }
+
+   function setTreeEntryEnabled(entry, enabled) {
+      if (!entry || entry.destroyed) return;
+      if (entry.root && typeof entry.root.setEnabled === "function") {
+         entry.root.setEnabled(enabled);
+      }
+      if (entry.meshes) {
+         for (const mesh of entry.meshes) {
+            if (!mesh || typeof mesh.isDisposed === "function" && mesh.isDisposed()) continue;
+            if (typeof mesh.setEnabled === "function") mesh.setEnabled(enabled);
+            mesh.checkCollisions = !!enabled;
+            mesh.isPickable = !!enabled;
+         }
+      }
+   }
+
+   function setTreeColumnEnabled(columnIndex, enabled) {
+      if (!environment.treeColumns) return;
+      const list = environment.treeColumns[columnIndex];
+      if (!list) return;
+      for (const entry of list) {
+         setTreeEntryEnabled(entry, enabled);
+      }
+   }
+
+   function destroyTree(entry) {
+      if (!entry || entry.destroyed) return false;
+      entry.destroyed = true;
+      if (entry.meshes) {
+         for (const mesh of entry.meshes) {
+            if (!mesh || typeof mesh.isDisposed === "function" && mesh.isDisposed()) continue;
+            if (mesh.metadata && mesh.metadata.treePart === entry) {
+               delete mesh.metadata.treePart;
+            }
+         }
+      }
+      if (entry.root && entry.root.metadata && entry.root.metadata.tree === entry) {
+         delete entry.root.metadata.tree;
+      }
+      if (entry.root) {
+         try {
+            entry.root.dispose();
+         } catch (e) {
+            /* ignore */
+         }
+      }
+      if (environment.treeColumns) {
+         const columnList = environment.treeColumns[entry.columnIndex];
+         if (columnList) {
+            const idx = columnList.indexOf(entry);
+            if (idx >= 0) columnList.splice(idx, 1);
+            if (columnList.length === 0) environment.treeColumns[entry.columnIndex] = undefined;
+         }
+      }
+      const globalIdx = environment.trees.indexOf(entry);
+      if (globalIdx >= 0) environment.trees.splice(globalIdx, 1);
+      entry.columnIndex = -1;
+      entry.root = null;
+      entry.meshes = null;
+      return true;
+   }
+
+   function destroyTreeByMesh(mesh) {
+      if (!mesh) return false;
+      const entry = mesh.metadata?.treePart;
+      if (!entry) return false;
+      return destroyTree(entry);
+   }
+
+   function getTerrainLayerTopForColumn(columnIndex, layerIndex) {
+      const terrain = environment.terrain;
+      if (!terrain) return null;
+      if (columnIndex < 0 || columnIndex >= terrain.columns.length) return null;
+      if (layerIndex < 0 || layerIndex >= terrain.layerOffsets.length) return null;
+      const column = terrain.columns[columnIndex];
+      if (!column) return null;
+      const block = column[layerIndex];
+      if (!block) return null;
+      const meta = block.metadata?.terrainBlock;
+      if (!meta || meta.destroyed) return null;
+      const offset = terrain.layerOffsets[layerIndex] + terrain.layerThicknesses[layerIndex];
+      return terrain.baseY + offset;
    }
 
    function getFallbackTreeMaterials(scene) {
@@ -718,15 +887,22 @@
       const terrain = environment.terrain;
       if (!terrain) return;
 
-      environment.trees.forEach(tree => tree.dispose());
-      environment.trees = [];
+      clearTrees();
 
-      const treeCount = 18;
+      const maxTreesSetting = Math.max(0, Math.round(terrain.settings?.maxTrees ?? defaultTerrainSettings.maxTrees));
+      if (maxTreesSetting <= 0) {
+         return;
+      }
+
+      environment.treeColumns = new Array(terrain.columns.length);
+
       const halfX = terrain.halfX;
       const halfZ = terrain.halfZ;
       if (halfX <= 6 || halfZ <= 6) return;
 
-      for (let i = 0; i < treeCount; i++) {
+      const attempts = Math.max(maxTreesSetting * 4, maxTreesSetting * 2 + 8);
+      let spawned = 0;
+      for (let attempt = 0; attempt < attempts && spawned < maxTreesSetting; attempt++) {
          const x = rand(-halfX + 6, halfX - 6);
          const z = rand(-halfZ + 6, halfZ - 6);
          if (Math.sqrt(x * x + z * z) < 6) continue;
@@ -737,10 +913,33 @@
          if (hX === null || hZ === null) continue;
          if (Math.abs(h - hX) > 1.6 || Math.abs(h - hZ) > 1.6) continue;
 
+         const columnIndex = terrainColumnIndexFromWorld(x, z);
+         if (columnIndex < 0) continue;
+         const dirtTop = getTerrainLayerTopForColumn(columnIndex, 1);
+         if (dirtTop === null) continue;
+
          const scale = 0.8 + Math.random() * 1.2;
-         const fallbackRoot = createFallbackTree(scene, `tree${i}`, new BABYLON.Vector3(x, h, z), scale);
+         const fallbackRoot = createFallbackTree(scene, `tree${spawned}`, new BABYLON.Vector3(x, dirtTop, z), scale);
          fallbackRoot.rotation.y = rand(0, Math.PI * 2);
-         environment.trees.push(fallbackRoot);
+         const childMeshes = fallbackRoot.getChildMeshes();
+         const entry = {
+            root: fallbackRoot,
+            columnIndex,
+            meshes: childMeshes,
+            destroyed: false
+         };
+         fallbackRoot.metadata = { ...(fallbackRoot.metadata || {}), tree: entry };
+         for (const mesh of childMeshes) {
+            if (!mesh.metadata) mesh.metadata = {};
+            mesh.metadata.treePart = entry;
+            mesh.isPickable = true;
+            mesh.checkCollisions = true;
+         }
+         if (!environment.treeColumns[columnIndex]) environment.treeColumns[columnIndex] = [];
+         environment.treeColumns[columnIndex].push(entry);
+         environment.trees.push(entry);
+         setTreeEntryEnabled(entry, !!terrain.columnStates[columnIndex]);
+         spawned++;
       }
    }
 
@@ -775,6 +974,7 @@
 
    async function setupEnvironment(scene) {
       reseedEnvironment();
+      clearTrees();
       environment.sky?.dispose();
       environment.sunMesh?.dispose();
       environment.moonMesh?.dispose();
@@ -839,6 +1039,7 @@
       environment.moonMesh.isPickable = false;
 
       createTerrain(scene);
+	  await precompileTerrainMaterials(scene);
       await scatterVegetation(scene);
       createCloudLayer(scene);
       updateEnvironment(240);
@@ -2733,12 +2934,14 @@
          if (stepLen > 0.0001) {
             const rayDir = moveVec.clone();
             rayDir.normalize();
-            const pick = scene.pickWithRay(new BABYLON.Ray(from, rayDir, stepLen), isGroundMesh);
+            const pick = scene.pickWithRay(new BABYLON.Ray(from, rayDir, stepLen), isGroundOrTreeMesh);
             if (pick && pick.hit) collision = pick;
          }
          if (collision) {
             if (collision.pickedMesh && collision.pickedMesh.metadata?.terrainBlock) {
                removeTerrainBlockFromMesh(collision.pickedMesh);
+            } else if (collision.pickedMesh && destroyTreeByMesh(collision.pickedMesh)) {
+               // tree destroyed
             } else if (collision.pickedPoint) {
                removeTerrainCubeAtPoint(collision.pickedPoint);
             }
@@ -3027,6 +3230,7 @@
    const inputWidth = document.getElementById("settings-width");
    const inputCube = document.getElementById("settings-cube");
    const inputRadius = document.getElementById("settings-radius");
+   const inputMaxTrees = document.getElementById("settings-max-trees");
    const btnCancel = document.getElementById("settings-cancel");
 
    function populate() {
@@ -3035,6 +3239,7 @@
       if (inputWidth) inputWidth.value = settings.width ?? "";
       if (inputCube) inputCube.value = settings.cubeSize ?? "";
       if (inputRadius) inputRadius.value = settings.activeRadius ?? "";
+      if (inputMaxTrees) inputMaxTrees.value = settings.maxTrees ?? "";
    }
 
    function showSettings() {
@@ -3061,7 +3266,8 @@
          length: inputLength ? parseInt(inputLength.value, 10) : undefined,
          width: inputWidth ? parseInt(inputWidth.value, 10) : undefined,
          cubeSize: inputCube ? parseFloat(inputCube.value) : undefined,
-         activeRadius: inputRadius ? parseFloat(inputRadius.value) : undefined
+         activeRadius: inputRadius ? parseFloat(inputRadius.value) : undefined,
+         maxTrees: inputMaxTrees ? parseInt(inputMaxTrees.value, 10) : undefined
       };
       window.GameSettings?.setTerrainSettings?.(next);
       returnToMenu();
