@@ -11,26 +11,7 @@ anthropomorphic Mechanic
 On killing a target, a anthropomorphic has a 25% chance to absorb one of the victim’s abilities and gain a portion of their strength.
 
 
-Fix left clicking not attacking. Also fix the punches so the animations extend the arms out by 90% more.
-
-I have added tree1.fbx and tree2.fbx in the assets/models folder. Pleas use these as the trees instead of generating random ones from now on. Also no loger generate grass.
-
-Core Aura Economy (always on)
-
-Aura leak: if not in Ten or Zetsu, Nen slowly leaks (–0.8/s).
-
-Ten (T toggle): seals leaks, +10% DR vs non-Nen hits; slight nen regen penalty (–15%).
-
-Zetsu (Z toggle): no aura leak, +stealth (enemies’ aggro range –60%), no aura guard (take +50% Nen damage).
-
-Ren (hold R): ramps aura output; +30–120% attack/ability power while held, drains nen (2→8/s). Suppressed by Zetsu/Ten rules below.
-
-Emotion/Threat: holding Ren + aiming at enemies emits bloodlust cone; weak mobs hesitate/flee.
-
-Update in tick(dt): apply leak/regen, DR, stealth, and state.aura.renMul.
-
-
-Four Major + Advanced Techniques
+Lets add Four Major + Advanced Techniques
 1) Gyo (Focus) – Eyes
 
 Input: G toggle (drains 0.6/s).
@@ -177,5 +158,3 @@ Half-Awakened NPCs: can feel aura → react to bloodlust but can’t see aura (f
 Water Divination at creation to pick/confirm type (mini shader + quick outcomes).
 
 Dual-Affinity trait (rare): learn adjacent type nodes 20% faster.
-
-If you want, I can turn any subset of these into concrete patches against your current game.js (e.g., Ten/Zetsu/Ren + Gyo/En + Ko/Ken/Ryu first), with input bindings, HUD chips, and the per-tick math ready to paste.

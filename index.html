@@ -2,50 +2,57 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Aura Hunter Lite</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Aura × Hunter: Lite</title>
     <link rel="stylesheet" href="styles.css" />
-    <!-- Babylon core + GUI + materials -->
+    <!-- Babylon.js (core + GUI + materials library for grid) -->
     <script src="https://cdn.babylonjs.com/babylon.js"></script>
     <script src="https://cdn.babylonjs.com/gui/babylon.gui.min.js"></script>
     <script src="https://cdn.babylonjs.com/materialsLibrary/babylonjs.materials.min.js"></script>
     <script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
-  </head>
-  <body>
-    <!-- ========= MENU ========= -->
+  </head><body>
+    <!-- ========== MENU ========== -->
     <div id="screen--menu" class="screen visible">
-      <div class="menu-bg"><canvas id="menu-canvas"></canvas></div>
+      <!-- Background animation -->
+      <div class="menu-bg">
+        <canvas id="menu-canvas"></canvas>
+      </div>
+      <!-- Foreground UI -->
       <div class="menu-contents">
-        <h1>Hunter × Hunter: Nen Trials</h1>
-        <p class="lead">Create your hunter, choose your Nen type, and fight in a 3D world.</p>
+        <h1>Aura × Hunter: Lite</h1>
+        <p class="lead">Create your hunter, choose your Nen type, and play.</p>
         <div class="btn-row">
-          <button type="button" id="btn-resume" class="primary" hidden>Resume</button>
-          <button type="button" id="btn-new" class="success">New Game</button>
-          <button type="button" id="btn-settings" class="secondary">Settings</button>
-          <button type="button" id="btn-rig" class="secondary">Rig Editor (limbs &amp; offsets)</button>
+          <button id="btn-resume" class="primary" hidden>Resume</button>
+          <button id="btn-new" class="success">New Game</button>
+          <button id="btn-settings" class="secondary">Settings</button>
+          <button id="btn-rig" class="secondary">Rig Editor (limbs &amp; offsets)</button>
         </div>
         <details class="small">
           <summary>Controls</summary>
-          <p>WASD move, Space jump, right-drag orbit, Q/E abilities, Shift dash.</p>
+          <p>WASD to move, Space to jump (hold to charge), Mouse Right-drag to orbit, Q / E abilities, Shift to dash.</p>
         </details>
       </div>
     </div>
-
-    <!-- ========= SETTINGS ========= -->
+    <!-- ========== SETTINGS ========== -->
     <div id="screen--settings" class="screen">
       <div class="panel panel-wide">
         <h2>Terrain &amp; Performance Settings</h2>
         <form id="settings-form" class="settings-form">
           <div class="grid-2">
-            <label>Terrain Length (cubes) <input type="number" id="settings-length" min="8" max="256" step="1" required /></label>
-            <label>Terrain Width (cubes)  <input type="number" id="settings-width"  min="8" max="256" step="1" required /></label>
+            <label>Terrain Length (cubes) <input type="number" id="settings-length" min="8" max="256" step="1" required />
+            </label>
+            <label>Terrain Width (cubes) <input type="number" id="settings-width" min="8" max="256" step="1" required />
+            </label>
           </div>
           <div class="grid-2">
-            <label>Cube Size (world units) <input type="number" id="settings-cube" min="0.5" max="4" step="0.1" required /></label>
-            <label>Active Radius (lag reduction) <input type="number" id="settings-radius" min="6" max="200" step="1" required /></label>
+            <label>Cube Size (world units) <input type="number" id="settings-cube" min="0.5" max="4" step="0.1" required />
+            </label>
+            <label>Active Radius (lag reduction) <input type="number" id="settings-radius" min="6" max="200" step="1" required />
+            </label>
           </div>
-          <label>Max Trees (performance cap) <input type="number" id="settings-max-trees" min="0" max="400" step="1" required /></label>
-          <p class="small muted">Only cubes within the active radius are visible and collidable.</p>
+          <label>Max Trees (performance cap) <input type="number" id="settings-max-trees" min="0" max="400" step="1" required />
+          </label>
+          <p class="small muted">Only cubes within the active radius are visible and collidable. Increase the radius for longer draw distances at the cost of performance.</p>
           <div class="row-right">
             <button type="button" id="settings-cancel" class="secondary">Cancel</button>
             <button type="submit" class="primary">Save</button>
@@ -53,32 +60,41 @@
         </form>
       </div>
     </div>
-
-    <!-- ========= CREATOR ========= -->
+    <!-- ========== CHARACTER CREATOR ========== -->
     <div id="screen--creator" class="screen">
       <div class="panel panel-wide">
         <h2>Character Creator</h2>
         <form id="creator-form">
           <div class="grid-2">
-            <label>Hunter Name <input required type="text" id="cc-name" maxlength="24" placeholder="Gon, Killua, You..." /></label>
-            <label>Clan / Origin <input type="text" id="cc-clan" maxlength="24" placeholder="Whale Island, Phantom..." /></label>
+            <label>Hunter Name <input required type="text" id="cc-name" maxlength="24" placeholder="Gon, Killua, You..." />
+            </label>
+            <label>Clan / Origin <input type="text" id="cc-clan" maxlength="24" placeholder="Whale Island, Phantom..." />
+            </label>
           </div>
-          <label> Nen Type
-            <select id="cc-nen">
-              <option>Enhancer</option><option>Emitter</option><option>Transmuter</option>
-              <option>Conjurer</option><option>Manipulator</option><option>Specialist</option>
+          <label> Nen Type <select id="cc-nen">
+              <option>Enhancer</option>
+              <option>Emitter</option>
+              <option>Transmuter</option>
+              <option>Conjurer</option>
+              <option>Manipulator</option>
+              <option>Specialist</option>
             </select>
           </label>
-          <label> Theme Color <input type="color" id="cc-color" value="#00ffcc" /></label>
+          <label> Theme Color <input type="color" id="cc-color" value="#00ffcc" />
+          </label>
           <fieldset>
             <legend>Distribute 10 Stat Points</legend>
             <div class="grid-3">
-              <label>Power   <input type="number" id="cc-power"   min="0" max="10" value="4"></label>
-              <label>Agility <input type="number" id="cc-agility" min="0" max="10" value="3"></label>
-              <label>Focus   <input type="number" id="cc-focus"   min="0" max="10" value="3"></label>
+              <label>Power <input type="number" id="cc-power" min="0" max="10" value="4">
+              </label>
+              <label>Agility <input type="number" id="cc-agility" min="0" max="10" value="3">
+              </label>
+              <label>Focus <input type="number" id="cc-focus" min="0" max="10" value="3">
+              </label>
             </div>
-            <p class="small">Power = melee; Agility = speed/dash; Focus = nen dmg/cooldowns.</p>
-            <p id="points-remaining">Points remaining: <b>0</b></p>
+            <p class="small">Power = melee damage; Agility = move speed &amp; dash; Focus = nen damage &amp; cooldowns.</p>
+            <p id="points-remaining">Points remaining: <b>0</b>
+            </p>
           </fieldset>
           <div class="row-right">
             <button type="button" id="btn-cancel" class="secondary">Cancel</button>
@@ -87,10 +103,10 @@
         </form>
       </div>
     </div>
-
-    <!-- ========= GAME ========= -->
+    <!-- ========== GAME ========== -->
     <div id="screen--game" class="screen">
-      <canvas id="renderCanvas" tabindex="0"></canvas>
+      <canvas id="game-canvas" tabindex="0"></canvas>
+      <!-- HUD -->
       <div id="hud">
         <div class="hud-left">
           <div id="hud-name"></div>
@@ -98,12 +114,18 @@
           <div id="hud-level"></div>
         </div>
         <div class="hud-right">
-          <div class="bar small" id="hud-xpbar"><span></span></div>
-          <div id="hud-health" class="bar"><span></span></div>
-          <div id="hud-nenbar" class="bar alt"><span></span></div>
+          <div class="bar small" id="hud-xpbar">
+            <span></span>
+          </div>
+          <div id="hud-health" class="bar">
+            <span></span>
+          </div>
+          <div id="hud-nenbar" class="bar alt">
+            <span></span>
+          </div>
         </div>
         <div id="hud-bottom">
-          <div id="hud-message" aria-live="polite"></div>
+          <div id="hud-message"></div>
           <div id="cooldowns">
             <div class="cd" id="cd-q">Q</div>
             <div class="cd" id="cd-e">E</div>
@@ -111,75 +133,95 @@
           </div>
         </div>
       </div>
+      <!-- Mobile controls (shown on touch devices) -->
       <div id="mobile-controls">
-        <div id="mobile-joystick" aria-label="Move"><div id="mobile-joystick-thumb"></div></div>
+        <div id="mobile-joystick" aria-label="Move">
+          <div id="mobile-joystick-thumb"></div>
+        </div>
         <div class="mobile-buttons" aria-label="Touch controls">
           <div class="mobile-btn-row">
-            <button type="button" id="mc-blast" class="mobile-btn small" aria-label="Nen Blast">Blast</button>
-            <button type="button" id="mc-special" class="mobile-btn small" aria-label="Special Ability">Special</button>
+            <button id="mc-blast" class="mobile-btn small" aria-label="Nen Blast">Blast</button>
+            <button id="mc-special" class="mobile-btn small" aria-label="Special Ability">Special</button>
           </div>
           <div class="mobile-btn-row">
-            <button type="button" id="mc-dash" class="mobile-btn" aria-label="Dash">Dash</button>
-            <button type="button" id="mc-jump" class="mobile-btn" aria-label="Jump">Jump</button>
+            <button id="mc-dash" class="mobile-btn" aria-label="Dash">Dash</button>
+            <button id="mc-jump" class="mobile-btn" aria-label="Jump">Jump</button>
           </div>
           <div class="mobile-btn-row">
-            <button type="button" id="mc-nen" class="mobile-btn small" aria-label="Charge Nen">Charge</button>
-            <button type="button" id="mc-attack" class="mobile-btn primary" aria-label="Attack">Attack</button>
+            <button id="mc-nen" class="mobile-btn small" aria-label="Charge Nen">Charge</button>
+            <button id="mc-attack" class="mobile-btn primary" aria-label="Attack">Attack</button>
           </div>
         </div>
       </div>
+      <!-- Pause -->
       <div id="pause-overlay" class="overlay">
         <div class="panel">
           <h2>Paused</h2>
-          <button type="button" id="btn-resume-game" class="success">Resume</button>
-          <button type="button" id="btn-exit" class="secondary">Exit to Menu</button>
+          <button id="btn-resume" class="success">Resume</button>
+          <button id="btn-exit" class="secondary">Exit to Menu</button>
         </div>
       </div>
+      <!-- Level Up -->
       <div id="level-overlay" class="overlay">
         <div class="panel panel-wide">
           <h2>Level Up</h2>
-          <p>Level: <b id="lv-cur"></b> &nbsp; | &nbsp; Unspent Points: <b id="lv-unspent"></b></p>
+          <p>Level: <b id="lv-cur"></b> &nbsp; | &nbsp; Unspent Points: <b id="lv-unspent"></b>
+          </p>
           <div class="grid-2">
             <div>
               <h3>Allocate Points</h3>
-              <div class="stat-row">Power <button type="button" data-stat="power" class="plus">+</button><span id="s-power">0</span></div>
-              <div class="stat-row">Agility <button type="button" data-stat="agility" class="plus">+</button><span id="s-agility">0</span></div>
-              <div class="stat-row">Focus <button type="button" data-stat="focus" class="plus">+</button><span id="s-focus">0</span></div>
+              <div class="stat-row">Power <button data-stat="power" class="plus">+</button>
+                <span id="s-power">0</span>
+              </div>
+              <div class="stat-row">Agility <button data-stat="agility" class="plus">+</button>
+                <span id="s-agility">0</span>
+              </div>
+              <div class="stat-row">Focus <button data-stat="focus" class="plus">+</button>
+                <span id="s-focus">0</span>
+              </div>
             </div>
             <div>
               <h3>Effects</h3>
               <ul class="small">
-                <li><b>Power</b>: +Max HP, +Melee Damage, small regen</li>
-                <li><b>Agility</b>: +Speed, +Dash, ↓Dash cooldown, +Jump</li>
-                <li><b>Focus</b>: +Nen Max/Regen, ↑Nen damage, ↓Cooldowns</li>
+                <li>
+                  <b>Power</b>: +Max HP, +Melee Damage, +small HP regen
+                </li>
+                <li>
+                  <b>Agility</b>: +Move speed, +Dash power, ↓Dash cooldown, +jump
+                </li>
+                <li>
+                  <b>Focus</b>: +Max Nen, +Nen regen, ↑Nen damage, ↓ability cooldowns
+                </li>
               </ul>
             </div>
           </div>
-          <div class="row-right"><button type="button" id="lv-close" class="secondary">Close</button></div>
+          <div class="row-right">
+            <button id="lv-close" class="secondary">Close</button>
+          </div>
         </div>
       </div>
     </div>
-
-    <!-- ========= RIG EDITOR ========= -->
+    <!-- ========== RIG EDITOR (TOP-LEVEL SIBLING) ========== -->
     <div id="screen--rig" class="screen">
       <div class="rig-layout">
         <div class="rig-canvas-wrap">
           <canvas id="rig-canvas"></canvas>
+          <!-- NEW: transform toolbar (gizmo modes + readouts) -->
           <div id="rig-toolbar" class="rig-toolbar">
             <div class="btns">
-              <button type="button" id="tb-select" class="secondary" title="Select (S)">Select</button>
-              <button type="button" id="tb-move"   class="secondary" title="Move (W)">Move</button>
-              <button type="button" id="tb-rotate" class="secondary" title="Rotate (E)">Rotate</button>
-              <button type="button" id="tb-scale"  class="secondary" title="Scale (R)">Scale</button>
-              <button type="button" id="tb-anim"   class="secondary" title="Toggle Animation Panel">Anim</button>
+              <button id="tb-select" class="secondary" title="Select (S)">Select</button>
+              <button id="tb-move" class="secondary" title="Move (W)">Move</button>
+              <button id="tb-rotate" class="secondary" title="Rotate (E)">Rotate</button>
+              <button id="tb-scale" class="secondary" title="Scale (R)">Scale</button>
             </div>
+            <!-- NEW: actions row under the gizmo buttons -->
             <div class="actions">
-              <button type="button" id="rig-reset"        class="secondary">Reset Sizes &amp; Pose</button>
-              <button type="button" id="rig-zero"         class="secondary">Zero Pose</button>
-              <button type="button" id="rig-save-local"   class="secondary">Save to Browser</button>
-              <button type="button" id="rig-import"       class="secondary">Import XML</button>
-              <button type="button" id="rig-export"       class="primary">Export XML</button>
-              <button type="button" id="rig-exit"         class="success">Back</button>
+              <button id="rig-reset" class="secondary">Reset Sizes &amp; Pose</button>
+              <button id="rig-zero" class="secondary">Zero Pose</button>
+              <button id="rig-save-local" class="secondary">Save to Browser</button>
+              <button id="rig-import" class="secondary">Import XML</button>
+              <button id="rig-export" class="primary">Export XML</button>
+              <button id="rig-exit" class="success">Back</button>
               <input type="file" id="rig-file" accept=".xml" hidden />
             </div>
             <div class="readout">
@@ -189,63 +231,64 @@
               <span id="sel-scl">SX 1.00 | SY 1.00 | SZ 1.00</span>
             </div>
           </div>
-
-          <!-- Animation pane (hidden by default, toggled by .anim-open class) -->
-          <div id="anim-panel">
-            <div class="an-row">
-              <label>Time <input id="an-time" type="range" min="0" max="2" step="0.01" /></label>
-              <span id="an-time-readout">0.000s</span>
-              <button type="button" id="an-play">▶</button>
-              <button type="button" id="an-stop">■</button>
-              <label>Len <input id="an-length" type="number" min="0.25" max="20" step="0.05" value="2" /></label>
-              <label>FPS <input id="an-fps" type="number" min="6" max="120" step="1" value="30" /></label>
-            </div>
-            <div class="an-row">
-              <label>Track
-                <select id="an-track"></select>
-              </label>
-              <label>Channel
+          <!-- NEW: animation editor panel -->
+          <div id="anim-panel" class="anim-panel">
+            <div class="anim-top">
+              <div class="left">
+                <button id="an-play" class="secondary" title="Space">▶</button>
+                <button id="an-stop" class="secondary">⏹</button>
+                <input id="an-time" type="range" min="0" max="2" step="0.001" value="0" />
+                <span id="an-time-readout">0.000s</span>
+              </div>
+              <div class="right">
+                <label>Length <input id="an-length" type="number" min="0.25" max="20" step="0.05" value="2.0" /> s </label>
+                <label>FPS <input id="an-fps" type="number" min="6" max="120" step="1" value="30" />
+                </label>
+                <select id="an-track">
+                  <!-- filled by JS with body parts -->
+                </select>
                 <select id="an-channel">
                   <option value="pos">Position</option>
                   <option value="rot">Rotation</option>
                   <option value="scl">Scale</option>
                 </select>
-              </label>
-              <label>Ease
-                <select id="an-ease">
+                <button id="an-add" class="primary">Add Key</button>
+                <button id="an-del" class="secondary">Delete Key</button>
+              </div>
+            </div>
+            <div id="an-timeline" class="timeline"></div>
+            <div class="curve-row">
+              <label>Interpolation <select id="an-ease">
                   <option value="linear">Linear</option>
                   <option value="easeIn">Ease In</option>
                   <option value="easeOut">Ease Out</option>
-                  <option value="easeInOut">Ease In/Out</option>
+                  <option value="easeInOut">Ease In-Out</option>
                 </select>
               </label>
-              <button type="button" id="an-add">Add Key</button>
-              <button type="button" id="an-del">Del Key</button>
             </div>
-            <div id="an-timeline" class="timeline"></div>
           </div>
-
-          <div class="rig-help">Left-drag orbit • Right-drag pan • Wheel zoom • Click a limb to select</div>
+          <!-- UPDATED help text -->
+          <div class="rig-help">Left-drag: orbit • Right-drag: pan • Wheel: zoom</div>
         </div>
-        <div class="rig-resizer" hidden></div>
-        <aside class="rig-panel" hidden></aside>
       </div>
     </div>
-
-    <!-- Scripts (order matters, all deferred) -->
-    <script src="utils-world.js" defer></script>
-    <script src="rig-factory.js" defer></script>
-    <script src="items-and-crafting.js" defer></script>
-    <script src="spawns.js" defer></script>
-    <script src="region-manager.js" defer></script>
-    <script src="nen-core.js" defer></script>
-    <script src="combat.js" defer></script>
-    <script src="ko-ken-ryu.js" defer></script>
-    <script src="hud.js" defer></script>
-    <script src="vows-and-specializations.js" defer></script>
+    <!-- Scripts (load after markup so handlers can bind safely) -->
     <script src="game.js" defer></script>
     <script src="character.js" defer></script>
     <script src="rig-editor.js" defer></script>
     <script src="menu-bg.js" defer></script>
-  </body>
+  
+  <!-- Modularized helpers (load after Babylon) -->
+  <script src="world-utils.js"></script>
+  <script src="rig-definitions.js"></script>
+  <script src="items-and-crafting.js"></script>
+  <script src="spawns.js"></script>
+  <script src="region-manager.js"></script>
+  <script src="nen-core.js"></script>
+  <script src="nen-advanced.js"></script>
+  <script src="nen-combat.js"></script>
+  <script src="hud.js"></script>
+  <script src="enemies.js"></script>
+
+</body>
 </html>
