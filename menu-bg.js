@@ -1,124 +1,313 @@
-// menu-bg.js — neon grid + floating cubes + idle humanoid silhouette
-(function(){
-  let engine, scene, camera, glow, loop, canvas;
+// menu-bg.js — God Throne BG (hardcoded poses, no XML), throne x3, crisp, camera pan
+(function(){ 
+  let engine, scene, camera, glow, canvas;
+  let orbs = [];
   let t = 0;
+  let camTarget;
+  let manualCam = false; // toggled with 'P'
 
-  function createHumanoidSilhouette(colorHex="#0ef"){
-    const scene = camera.getScene();
+  // --- Hardcoded poses generated from your uploaded XMLs ---
+// === Hardcoded poses (degrees) ===
+// === Hardcoded poses (degrees) ===
+const POSE_SITTING = {
+  pelvis:      { pos:{x:0.000, y:1.190, z:0.000}, rot:{x:0.000,   y:0.000,   z:0.000} },
+  torsoLower:  { pos:{x:0.000, y:0.450, z:0.000}, rot:{x:6.276,   y:0.000,   z:0.000} },
+  torsoUpper:  { pos:{x:0.000, y:0.710, z:0.000}, rot:{x:3.627,   y:0.000,   z:0.000} },
+  neck:        { pos:{x:0.000, y:0.250, z:-0.000},rot:{x:350.746, y:0.000,   z:0.000} },
+  head:        { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:347.458, y:0.000,   z:0.000} },
+  shoulderL:   { pos:{x:-0.650,y:0.000, z:0.000}, rot:{x:0.000,   y:180.000, z:0.000} },
+  armL_upper:  { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:30.295,  y:7.416,   z:0.396} },
+  armL_fore:   { pos:{x:0.000, y:-0.750,z:0.000}, rot:{x:41.116,  y:360.000, z:360.000} },
+  armL_hand:   { pos:{x:0.000, y:-0.710,z:0.000}, rot:{x:0.000,   y:0.000,   z:0.000} },
+  shoulderR:   { pos:{x:0.650, y:0.000, z:0.000}, rot:{x:0.000,   y:180.000, z:0.000} },
+  armR_upper:  { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:30.892,  y:0.000,   z:3.297} },
+  armR_fore:   { pos:{x:0.000, y:-0.750,z:0.000}, rot:{x:30.963,  y:360.000, z:360.000} },
+  armR_hand:   { pos:{x:0.000, y:-0.710,z:0.000}, rot:{x:0.000,   y:0.000,   z:0.000} },
+  hipL:        { pos:{x:-0.250,y:-0.350,z:0.000}, rot:{x:0.000,   y:0.000,   z:0.000} },
+  legL_thigh:  { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:270.392, y:0.000,   z:0.000} },
+  legL_shin:   { pos:{x:0.000, y:-1.050,z:0.000}, rot:{x:76.031,  y:0.000,   z:0.000} },
+  legL_foot:   { pos:{x:0.000, y:-0.880,z:-0.210},rot:{x:0.000,   y:0.000,   z:0.000} },
+  hipR:        { pos:{x:0.250, y:-0.350,z:0.000}, rot:{x:0.000,   y:0.000,   z:0.000} },
+  legR_thigh:  { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:270.257, y:180.000, z:180.000} },
+  legR_shin:   { pos:{x:0.000, y:-1.050,z:-0.000},rot:{x:80.248,  y:360.000, z:360.000} },
+  legR_foot:   { pos:{x:0.000, y:-0.880,z:-0.210},rot:{x:0.000,   y:0.000,   z:0.000} },
+};
+
+const POSE_KNEELING = {
+  pelvis:      { pos:{x:0.000, y:1.190, z:0.000}, rot:{x:0.000,   y:0.000,   z:0.000} },
+  torsoLower:  { pos:{x:0.000, y:0.450, z:0.000}, rot:{x:6.415,   y:0.000,   z:0.000} },
+  torsoUpper:  { pos:{x:0.000, y:0.710, z:0.000}, rot:{x:4.947,   y:0.000,   z:0.000} },
+  neck:        { pos:{x:0.000, y:0.250, z:-0.000},rot:{x:8.795,   y:0.000,   z:0.000} },
+  head:        { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:11.552,  y:0.000,   z:0.000} },
+  shoulderL:   { pos:{x:-0.650,y:0.000, z:0.000}, rot:{x:0.000,   y:180.000, z:0.000} },
+  armL_upper:  { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:18.888,  y:45.723,  z:18.365} },
+  armL_fore:   { pos:{x:0.000, y:-0.750,z:-0.000},rot:{x:57.918,  y:0.000,   z:0.000} },
+  armL_hand:   { pos:{x:0.000, y:-0.710,z:0.000}, rot:{x:0.000,   y:0.000,   z:0.000} },
+  shoulderR:   { pos:{x:0.650, y:0.000, z:0.000}, rot:{x:0.000,   y:180.000, z:0.000} },
+  armR_upper:  { pos:{x:0.000, y:0.000, z:-0.000},rot:{x:40.926,  y:354.287, z:9.413} },
+  armR_fore:   { pos:{x:0.000, y:-0.750,z:0.000}, rot:{x:360.000, y:0.000,   z:30.251} },
+  armR_hand:   { pos:{x:0.000, y:-0.710,z:0.000}, rot:{x:0.000,   y:0.000,   z:0.000} },
+  hipL:        { pos:{x:-0.250,y:-0.350,z:0.000}, rot:{x:0.000,   y:0.000,   z:0.000} },
+  legL_thigh:  { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:272.397, y:360.000, z:0.000} },
+  legL_shin:   { pos:{x:0.000, y:-1.050,z:-0.000},rot:{x:87.414,  y:0.000,   z:0.000} },
+  legL_foot:   { pos:{x:0.000, y:-0.880,z:-0.210},rot:{x:0.000,   y:0.000,   z:0.000} },
+  hipR:        { pos:{x:0.250, y:-0.350,z:0.000}, rot:{x:0.000,   y:0.000,   z:0.000} },
+  legR_thigh:  { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:19.925,  y:359.247, z:359.930} },
+  legR_shin:   { pos:{x:0.000, y:-1.050,z:0.000}, rot:{x:87.258,  y:180.000, z:180.000} },
+  legR_foot:   { pos:{x:0.000, y:-0.880,z:-0.210},rot:{x:0.000,   y:0.000,   z:0.000} },
+};
+
+  // --- Rig defaults (same as your XML sizes) ---
+  const RIG_KEY = "hxh.rig.params";
+  function currentRig(){
+    try{ if (window.HXH && typeof window.HXH.getRig === "function") return window.HXH.getRig(); }catch{}
+    try{ const j = localStorage.getItem(RIG_KEY); if (j) return JSON.parse(j); }catch{}
+    return {
+      color: "#804a00",
+      pelvis: { w: 0.850, h: 0.350, d: 0.520 },
+      torsoLower: { w: 0.900, h: 0.450, d: 0.550 },
+      torsoUpper: { w: 0.950, h: 0.710, d: 0.550 },
+      neck: { w: 0.250, h: 0.250, d: 0.250 },
+      head: { w: 0.450, h: 0.500, d: 0.450 },
+      arm: { upperW: 0.340, upperD: 0.340, upperLen: 0.750, foreW: 0.300, foreD: 0.270, foreLen: 0.700, handLen: 0.250 },
+      leg: { thighW: 0.450, thighD: 0.500, thighLen: 1.050, shinW: 0.330, shinD: 0.430, shinLen: 0.880, footW: 0.320, footH: 0.210, footLen: 0.750 },
+      transforms: {
+        pelvis:      { pos:{x:0.000, y:1.190, z:0.000}, rot:{x:0, y:0, z:0} },
+        torsoLower:  { pos:{x:0.000, y:0.450, z:0.000}, rot:{x:0, y:0, z:0} },
+        torsoUpper:  { pos:{x:0.000, y:0.710, z:0.000}, rot:{x:0, y:0, z:0} },
+        neck:        { pos:{x:0.000, y:0.250, z:0.000}, rot:{x:0, y:0, z:0} },
+        head:        { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:0, y:0, z:0} },
+        shoulderL:   { pos:{x:-0.650,y:0.000, z:0.000}, rot:{x:0, y:180, z:0} },
+        armL_upper:  { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:0, y:0, z:0} },
+        armL_fore:   { pos:{x:0.000, y:-0.750,z:0.000}, rot:{x:0, y:0, z:0} },
+        armL_hand:   { pos:{x:0.000, y:-0.710,z:0.000}, rot:{x:0, y:0, z:0} },
+        shoulderR:   { pos:{x:0.650, y:0.000, z:0.000}, rot:{x:0, y:180, z:0} },
+        armR_upper:  { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:0, y:0, z:0} },
+        armR_fore:   { pos:{x:0.000, y:-0.750,z:0.000}, rot:{x:0, y:0, z:0} },
+        armR_hand:   { pos:{x:0.000, y:-0.710,z:0.000}, rot:{x:0, y:0, z:0} },
+        hipL:        { pos:{x:-0.250,y:-0.350,z:0.000}, rot:{x:0, y:0, z:0} },
+        legL_thigh:  { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:0, y:0, z:0} },
+        legL_shin:   { pos:{x:0.000, y:-1.050,z:0.000}, rot:{x:0, y:0, z:0} },
+        legL_foot:   { pos:{x:0.000, y:-0.880,z:-0.210}, rot:{x:0, y:0, z:0} },
+        hipR:        { pos:{x:0.250, y:-0.350,z:0.000}, rot:{x:0, y:0, z:0} },
+        legR_thigh:  { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:0, y:0, z:0} },
+        legR_shin:   { pos:{x:0.000, y:-1.050,z:0.000}, rot:{x:0, y:0, z:0} },
+        legR_foot:   { pos:{x:0.000, y:-0.880,z:-0.210}, rot:{x:0, y:0, z:0} },
+      }
+    };
+  }
+
+  // --- Materials ---
+  function goldMaterial(name, scene, emissiveScale=0.7){
+    const m = new BABYLON.PBRMaterial(name, scene);
+    m.albedoColor = new BABYLON.Color3(1.0, 0.85, 0.35);
+    m.metallic = 1.0; m.roughness = 0.25;
+    m.emissiveColor = new BABYLON.Color3(0.2, 0.25, 0.25).scale(emissiveScale);
+    return m;
+  }
+  function lightMat(name, scene, intensity=1.0){
+    const m = new BABYLON.StandardMaterial(name, scene);
+    m.emissiveColor = new BABYLON.Color3(1,1,1).scale(intensity);
+    m.diffuseColor = BABYLON.Color3.Black();
+    m.specularColor = BABYLON.Color3.Black();
+    return m;
+  }
+
+  // --- Humanoid constructor with namePrefix (for unique nodes) ---
+  function buildHumanoid(rig, scene, colorHex="#ffffff", emissive=0.9, namePrefix=""){
+    const root = new BABYLON.TransformNode(namePrefix+"rigRoot", scene);
+    const N=(n)=> namePrefix+n;
     const c = BABYLON.Color3.FromHexString(colorHex);
-    const mat = new BABYLON.StandardMaterial("menuSil", scene);
-    mat.emissiveColor = c.scale(0.7);
-    mat.diffuseColor  = c.scale(0.08);
-    mat.specularColor = BABYLON.Color3.Black();
+    const mat = new BABYLON.StandardMaterial("rigMat", scene);
+    mat.emissiveColor = c.scale(emissive); mat.diffuseColor = c.scale(0.05); mat.specularColor = BABYLON.Color3.Black();
 
-    const root = new BABYLON.TransformNode("menuRig", scene);
-
-    function seg(parent, w,h,d, yOff=0){
-      const t = new BABYLON.TransformNode("p", scene);
-      t.parent = parent; t.position.y = yOff;
-      const m = BABYLON.MeshBuilder.CreateBox("b",{width:w,height:h,depth:d}, scene);
-      m.parent = t; m.material = mat; m.position.y = -h*0.5;
-      return t;
+    function block(name, w,h,d){
+      const n = new BABYLON.TransformNode(N(name)+"_pivot", scene);
+      const m = BABYLON.MeshBuilder.CreateBox(N(name), {width:w, height:h, depth:d}, scene);
+      m.parent = n; m.material = mat; m.position.y = -h*0.5;
+      return n;
     }
-    const pelvis = seg(root,.9,.28,.6,1.6);
-    const tl = seg(pelvis,.9,.45,.55,.30);
-    const tu = seg(tl,.95,.45,.55,.55);
-    const neck = seg(tu,.25,.22,.25,.55);
-    const head = BABYLON.MeshBuilder.CreateBox("head",{width:.45,height:.6,depth:.45},scene);
-    head.material = mat; head.parent = neck; head.position.y = .3;
 
-    const shL = new BABYLON.TransformNode("shL",scene); shL.parent = tu; shL.position.set(-.62,.5,0);
-    const shR = new BABYLON.TransformNode("shR",scene); shR.parent = tu; shR.position.set(.62,.5,0);
-    seg(shL,.25,.55,.25,0); seg(shL,.22,.55,.22,0); seg(shL,.22,.22,.22,0);
-    seg(shR,.25,.55,.25,0); seg(shR,.22,.55,.22,0); seg(shR,.22,.22,.22,0);
+    const pelvis = block("pelvis", rig.pelvis.w, rig.pelvis.h, rig.pelvis.d); pelvis.parent=root; pelvis.position.y=(rig.transforms?.pelvis?.pos?.y ?? 1.19);
+    const tl = block("torsoLower", rig.torsoLower.w, rig.torsoLower.h, rig.torsoLower.d); tl.parent=pelvis; tl.position.y = rig.torsoLower.h*0.5+0.30;
+    const tu = block("torsoUpper", rig.torsoUpper.w, rig.torsoUpper.h, rig.torsoUpper.d); tu.parent=tl; tu.position.y = rig.torsoUpper.h*0.5+0.55;
+    const neck = block("neck", rig.neck.w, rig.neck.h, rig.neck.d); neck.parent=tu; neck.position.y = rig.neck.h*0.5+0.55;
+    const head = BABYLON.MeshBuilder.CreateBox(N("head"),{width:rig.head.w,height:rig.head.h,depth:rig.head.d},scene);
+    head.material = mat; head.parent = neck; head.position.y = rig.head.h*0.5;
 
-    const hipL = new BABYLON.TransformNode("hipL",scene); hipL.parent = pelvis; hipL.position.set(-.33,-.12,0);
-    const hipR = new BABYLON.TransformNode("hipR",scene); hipR.parent = pelvis; hipR.position.set(.33,-.12,0);
-    seg(hipL,.30,.65,.30,0); seg(hipL,.27,.65,.27,0); seg(hipL,.32,.18,.38,0);
-    seg(hipR,.30,.65,.30,0); seg(hipR,.27,.65,.27,0); seg(hipR,.32,.18,.38,0);
+    function arm(side, sign){
+      const shoulder = new BABYLON.TransformNode(N("shoulder"+side), scene);
+      shoulder.parent = tu; shoulder.position.set(sign * 0.62, 0.5, 0);
+      const upper = block("arm"+side+"_upper", rig.arm.upperW, rig.arm.upperLen, rig.arm.upperD); upper.parent=shoulder;
+      const fore  = block("arm"+side+"_fore",  rig.arm.foreW,  rig.arm.foreLen,  rig.arm.foreD); fore.parent=upper; fore.position.y = -rig.arm.upperLen;
+      const hand  = block("arm"+side+"_hand",  rig.arm.foreW*0.8, rig.arm.handLen, rig.arm.foreD*0.8); hand.parent=fore; hand.position.y = -rig.arm.foreLen;
+      return {shoulder, upper, fore, hand};
+    }
+    arm("L", -1); arm("R", +1);
 
-    root.position.set(0,0,0);
+    function leg(side, sign){
+      const hip = new BABYLON.TransformNode(N("hip"+side), scene); hip.parent=pelvis; hip.position.set(sign*0.33, -0.12, 0);
+      const thigh = block("leg"+side+"_thigh", rig.leg.thighW, rig.leg.thighLen, rig.leg.thighD); thigh.parent=hip;
+      const shin  = block("leg"+side+"_shin",  rig.leg.shinW,  rig.leg.shinLen,  rig.leg.shinD ); shin.parent=thigh; shin.position.y = -rig.leg.thighLen;
+      const foot  = block("leg"+side+"_foot",  rig.leg.footW,  rig.leg.footH,   rig.leg.footLen); foot.parent=shin; foot.position.set(0, -rig.leg.shinLen, -rig.leg.footH);
+      return {hip, thigh, shin, foot};
+    }
+    leg("L", -1); leg("R", +1);
+
     return root;
   }
+
+  // --- Apply a hardcoded pose object to nodes with a prefix ---
+  function applyPose(pose, scene, namePrefix=""){
+    const deg = v => (Number(v)||0) * Math.PI / 180;
+    for (const part in pose){
+      const tr = pose[part];
+      const pivotName = part === "head" ? namePrefix+"head" : namePrefix+part + "_pivot";
+      const n = scene.getTransformNodeByName(pivotName) || scene.getMeshByName(pivotName);
+      if (!n) continue;
+      if (tr.pos){ n.position.x = tr.pos.x||0; n.position.y = tr.pos.y||0; n.position.z = tr.pos.z||0; }
+      if (tr.rot){ n.rotation.x = deg(tr.rot.x); n.rotation.y = deg(tr.rot.y); n.rotation.z = deg(tr.rot.z); }
+    }
+  }
+
+	function buildThrone(scene, gold){
+	  const group = new BABYLON.TransformNode("throne", scene);
+	  const base  = BABYLON.MeshBuilder.CreateBox("th_base", {width:4.5,  height:0.45, depth:4.5},  scene); base.material=gold; base.parent=group; base.position.y = 0.225;
+	  const step  = BABYLON.MeshBuilder.CreateBox("th_step", {width:3.6,  height:0.30, depth:3.6},  scene); step.material=gold; step.parent=group; step.position.y = 0.525;
+	  const seat  = BABYLON.MeshBuilder.CreateBox("th_seat", {width:2.25, height:0.45, depth:2.25}, scene); seat.material=gold; seat.parent=group; seat.position.y = 0.975;
+	  const back  = BABYLON.MeshBuilder.CreateBox("th_back", {width:2.25, height:3.00, depth:0.375}, scene); back.material=gold; back.parent=group; back.position.set(0, 2.325, -0.9375);
+	  const armL  = BABYLON.MeshBuilder.CreateBox("th_armL", {width:0.375,height:0.75, depth:1.95}, scene); armL.material=gold; armL.parent=group; armL.position.set(-1.125, 1.2, 0.075);
+	  const armR  = BABYLON.MeshBuilder.CreateBox("th_armR", {width:0.375,height:0.75, depth:1.95}, scene); armR.material=gold; armR.parent=group; armR.position.set( 1.125, 1.2, 0.075);
+	  return group;
+	}
+
 
   function build(){
     canvas = document.getElementById("menu-canvas");
     if(!canvas) return;
     engine = new BABYLON.Engine(canvas, true, { stencil:true });
+    try { engine.setHardwareScalingLevel(1 / (window.devicePixelRatio || 1)); } catch {}
     scene  = new BABYLON.Scene(engine);
-    scene.clearColor = new BABYLON.Color4(0.02,0.03,0.06,1);
+    scene.clearColor = new BABYLON.Color4(1,1,1,1);
 
-    camera = new BABYLON.ArcRotateCamera("cam", Math.PI*1.15, 1.15, 20, new BABYLON.Vector3(0,1.1,0), scene);
-    camera.lowerRadiusLimit = 12; camera.upperRadiusLimit = 28;
-    camera.wheelDeltaPercentage = 0.008; camera.pinchDeltaPercentage = 0.008;
-    camera.inertia = 0.95; camera.attachControl(canvas, false);
-
-    new BABYLON.HemisphericLight("h", new BABYLON.Vector3(0,1,0), scene).intensity = .7;
-    const sun = new BABYLON.DirectionalLight("s", new BABYLON.Vector3(-.5,-1,-.35), scene);
-    sun.position = new BABYLON.Vector3(20,30,20); sun.intensity = .7;
-
-    glow = new BABYLON.GlowLayer("glow", scene, { blurKernelSize: 32, intensity: 0.6 });
-
-    // neon grid
-    const ground = BABYLON.MeshBuilder.CreateGround("g",{width:200,height:200},scene);
-    try{
-      const Grid = new BABYLON.GridMaterial("gm", scene);
-      Grid.gridRatio = 2.5; Grid.majorUnitFrequency = 5; Grid.minorUnitVisibility = 0.65;
-      Grid.color1 = new BABYLON.Color3(.05,.9,1.0);
-      Grid.color2 = new BABYLON.Color3(0.02,0.03,0.06);
-      ground.material = Grid;
-    }catch{
-      const m = new BABYLON.StandardMaterial("gm", scene);
-      m.emissiveColor = new BABYLON.Color3(.05,.9,1.0).scale(0.25); m.diffuseColor = new BABYLON.Color3(0.02,0.03,0.06);
-      ground.material = m;
+    // Camera
+    camera = new BABYLON.ArcRotateCamera("cam", Math.PI*1.2, 1.05, 28, new BABYLON.Vector3(0,2.6,0), scene);
+    camera.lowerRadiusLimit = 14; camera.upperRadiusLimit = 60;
+    camera.wheelDeltaPercentage = 0.006; camera.pinchDeltaPercentage = 0.006;
+    camera.inertia = 0.92; 
+    // Input ergonomics
+    camera.useCtrlForPanning = true;          // Ctrl+LeftDrag pans (RightDrag also pans)
+    camera.panningSensibility = 800;
+    if (camera.inputs?.attached?.pointers) {
+      camera.inputs.attached.pointers.buttons = [0,1,2]; // Left rotate, Middle/Right pan
     }
+    // Start in auto mode; press 'P' for manual control
+    camera.detachControl();
+    const toggleCam = (on) => {
+      manualCam = on != null ? on : !manualCam;
+      if (manualCam) {
+        canvas.style.pointerEvents = 'auto';
+        canvas.style.zIndex = '1000';      // bring canvas above menu UI
+        camera.attachControl(canvas, false /* preventDefault so we own the mouse */);
+        try { canvas.focus(); } catch {}
+      } else {
+        camera.detachControl();
+        canvas.style.pointerEvents = '';
+        canvas.style.zIndex = '';
+      }
+    };
+    window.addEventListener('keydown', (e)=>{ if ((e.key||'').toLowerCase()==='p') toggleCam(); });
+	
+    camTarget = new BABYLON.TransformNode("camTarget", scene);
+    camTarget.position = new BABYLON.Vector3(0, 2.6, 0);
+    camera.lockedTarget = camTarget;
 
-    // floating cubes
-    const cubes = [];
-    for(let i=0;i<28;i++){
-      const d = 12 + Math.random()*26;
+    // Lights + glow
+    const hemi = new BABYLON.HemisphericLight("h", new BABYLON.Vector3(0,1,0), scene); hemi.intensity = 0.9;
+    const dir  = new BABYLON.DirectionalLight("s", new BABYLON.Vector3(-0.3,-1,-0.2), scene);
+    dir.position = new BABYLON.Vector3(30,50,30); dir.intensity = 0.8;
+    glow = new BABYLON.GlowLayer("glow", scene, { blurKernelSize: 16, intensity: 0.55 });
+
+    // Gold floor
+    const floor = BABYLON.MeshBuilder.CreateGround("floor",{width:240,height:240},scene);
+    floor.material = goldMaterial("goldFloor", scene, 0.55);
+
+    // Orbs
+    const orbm = lightMat("orbM", scene, 1.2);
+    for(let i=0;i<36;i++){
+      const d = 18 + Math.random()*36;
       const a = Math.random()*Math.PI*2;
-      const y = 0.8 + Math.random()*5;
-      const box = BABYLON.MeshBuilder.CreateBox("c"+i,{size: 0.6 + Math.random()*0.8}, scene);
-      box.position.set(Math.cos(a)*d, y, Math.sin(a)*d);
-      const m = new BABYLON.StandardMaterial("cm"+i, scene);
-      m.emissiveColor = BABYLON.Color3.FromHexString("#0ff").scale(0.8);
-      m.diffuseColor = m.emissiveColor.scale(0.1);
-      box.material = m;
-      cubes.push({mesh:box, r:a, d, y, s: 0.3 + Math.random()*0.8});
+      const y = 2.0 + Math.random()*10;
+      const sphere = BABYLON.MeshBuilder.CreateSphere("orb"+i,{diameter: 0.9 + Math.random()*1.6, segments: 12}, scene);
+      sphere.material = orbm;
+      sphere.position.set(Math.cos(a)*d, y, Math.sin(a)*d);
+      orbs.push({mesh:sphere, r:a, d, y, s: 0.3 + Math.random()*0.9});
     }
 
-    // idle humanoid + aura
-    const rig = createHumanoidSilhouette("#0ef");
-    rig.position.y = .2;
-    const aura = BABYLON.MeshBuilder.CreateSphere("aura",{diameter: 3.2, segments: 12}, scene);
-    const am = new BABYLON.StandardMaterial("am", scene);
-    am.emissiveColor = BABYLON.Color3.FromHexString("#0ef").scale(0.35);
-    am.alpha = 0.12; aura.material = am; aura.position.y = 1.2;
+    // Throne + giant (apply hardcoded SITTING pose)
+    const gold = goldMaterial("gold", scene, 0.9);
+    const throne = buildThrone(scene, gold);
+    throne.scaling.setAll(3.00);
+    const rig = currentRig();
+    const giant = buildHumanoid(rig, scene, "#ffffff", 1.0, "giant_");
+    giant.parent = throne;
+    giant.position.set(0, 0.45, 0.4)
+    applyPose(POSE_SITTING, scene, "giant_");
 
-    loop = scene.onBeforeRenderObservable.add(()=>{
+    // followers with hardcoded KNEELING pose
+    const followerCount = 12;
+    for (let i=0;i<followerCount;i++){
+      const ang = (i / followerCount) * Math.PI * 2;
+      const fx = Math.cos(ang) * 14;
+      const fz = Math.sin(ang) * 14;
+      const h = buildHumanoid(rig, scene, "#ffffff", 0.8, `f${i}_`);
+      h.position.set(fx, 0, fz);
+      h.lookAt(new BABYLON.Vector3(0,1.6,0));
+      applyPose(POSE_KNEELING, scene, `f${i}_`);
+    }
+
+    // Halo
+    const halo = BABYLON.MeshBuilder.CreateSphere("halo",{diameter: 8, segments: 24}, scene);
+    halo.material = lightMat("haloM", scene, 0.35); halo.material.alpha = 0.08;
+    halo.position = new BABYLON.Vector3(0, 3.0, 0);
+
+    // Keep throne/rig hard edges off glow
+    scene.meshes.forEach(m => {
+      if (m.name.startsWith("th_") ||
+          m.name.includes("pelvis") || m.name.includes("torsoLower") || m.name.includes("torsoUpper") ||
+          m.name.includes("head")   || m.name.includes("_upper") || m.name.includes("_fore") ||
+          m.name.includes("_hand")  || m.name.includes("_thigh") || m.name.includes("_shin") || m.name.includes("_foot")) {
+        glow.addExcludedMesh(m);
+      }
+    });
+
+    // Animate
+    scene.onBeforeRenderObservable.add(()=>{
       const dt = engine.getDeltaTime()/1000; t += dt;
-      camera.alpha += dt*0.12;
-      camera.radius = 18 + Math.sin(t*0.5)*1.4;
+      if (!manualCam) {
+        camera.alpha += dt*0.08;
+        camera.radius = 26 + Math.sin(t*0.35)*2.0;
+      }
 
-      cubes.forEach((c,i)=>{
-        c.r += dt*(0.05 + c.s*0.06);
-        const y = c.y + Math.sin(t*1.8 + i)*0.35;
+      if (!manualCam) {
+        const panR = 1.4;
+        camTarget.position.x = Math.cos(t * 0.20) * panR;
+        camTarget.position.z = Math.sin(t * 0.20) * panR;
+        camTarget.position.y = 2.6 + Math.sin(t * 0.12) * 0.20;
+      }
+      orbs.forEach((c,i)=>{
+        c.r += dt*(0.08 + c.s*0.08);
+        const y = c.y + Math.sin(t*1.6 + i)*0.6;
         c.mesh.position.set(Math.cos(c.r)*c.d, y, Math.sin(c.r)*c.d);
-        c.mesh.rotation.y += dt*(0.3 + c.s*0.5);
       });
-
-      aura.scaling.setAll(1 + Math.sin(t*1.7)*0.035 + 0.04);
-      aura.material.alpha = 0.10 + (Math.sin(t*2.2)*0.03 + 0.05);
     });
 
     engine.runRenderLoop(()=> scene.render());
-    window.addEventListener("resize", ()=> engine.resize());
+    window.addEventListener("resize", ()=> engine && engine.resize());
   }
 
-  function stop(){ if (!scene) return; try{ engine.stopRenderLoop(); }catch{} }
-  function start(){ if (!scene) build(); else engine.runRenderLoop(()=> scene.render()); }
-
-  document.addEventListener("DOMContentLoaded", build);
-  window.MenuBG = { start, stop };
+  window.MenuBG = {
+    start(){ if(!engine) build(); },
+    stop(){ if(engine){ try{ engine.stopRenderLoop(); }catch{} try{ engine.dispose(); }catch{} } engine=null; scene=null; orbs=[]; }
+  };
 })();

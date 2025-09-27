@@ -3,33 +3,50 @@
 // and panel-free layout (right box removed).
 (() => {
   // ---------- Defaults ----------
-  const DEF = {
-    color: "#00ffcc",
-    // Sizes
-    pelvis: { w: 0.9, h: 0.28, d: 0.60 },
-    torsoLower: { w: 0.9, h: 0.45, d: 0.55 },
-    torsoUpper: { w: 0.95, h: 0.45, d: 0.55 },
-    neck: { w: 0.25, h: 0.22, d: 0.25 },
-    head: { w: 0.45, h: 0.60, d: 0.45 },
-    arm: {
-      upperW: 0.25, upperD: 0.25, upperLen: 0.55,
-      foreW: 0.22,  foreD: 0.22,  foreLen: 0.55,
-      handLen: 0.22
-    },
-    leg: {
-      thighW: 0.30, thighD: 0.30, thighLen: 0.65,
-      shinW: 0.27,  shinD: 0.27,  shinLen: 0.65,
-      footW: 0.32,  footH: 0.18,  footLen: 0.38
-    },
-    // Offsets/rotations (degrees)
-    transforms: {
-      pelvis: t0(), torsoLower: t0(), torsoUpper: t0(), neck: t0(), head: t0(),
-      shoulderL: t0(), armL_upper: t0(), armL_fore: t0(), armL_hand: t0(),
-      shoulderR: t0(), armR_upper: t0(), armR_fore: t0(), armR_hand: t0(),
-      hipL: t0(), legL_thigh: t0(), legL_shin: t0(), legL_foot: t0(),
-      hipR: t0(), legR_thigh: t0(), legR_shin: t0(), legR_foot: t0(),
-    }
-  };
+const DEF = {
+  color: "#804a00",
+  // Sizes (from hxh_rig.xml)
+  pelvis: { w: 0.850, h: 0.350, d: 0.520 },
+  torsoLower: { w: 0.900, h: 0.450, d: 0.550 },
+  torsoUpper: { w: 0.950, h: 0.710, d: 0.550 },
+  neck: { w: 0.250, h: 0.250, d: 0.250 },
+  head: { w: 0.450, h: 0.500, d: 0.450 },
+  arm: {
+    upperW: 0.340, upperD: 0.340, upperLen: 0.750,
+    foreW: 0.300,  foreD: 0.270,  foreLen: 0.700,
+    handLen: 0.250
+  },
+  leg: {
+    thighW: 0.450, thighD: 0.500, thighLen: 1.050,
+    shinW: 0.330,  shinD: 0.430,  shinLen: 0.880,
+    footW: 0.320,  footH: 0.210,  footLen: 0.750
+  },
+  // Offsets/rotations (degrees converted in runtime where needed)
+  transforms: {
+    pelvis:      { pos:{x:0.000, y:1.190, z:0.000}, rot:{x:0, y:0, z:0} },
+    torsoLower:  { pos:{x:0.000, y:0.450, z:0.000}, rot:{x:0, y:0, z:0} },
+    torsoUpper:  { pos:{x:0.000, y:0.710, z:0.000}, rot:{x:0, y:0, z:0} },
+    neck:        { pos:{x:0.000, y:0.250, z:0.000}, rot:{x:0, y:0, z:0} },
+    head:        { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:0, y:0, z:0} },
+    shoulderL:   { pos:{x:-0.650,y:0.000, z:0.000}, rot:{x:0, y:180, z:0} },
+    armL_upper:  { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:0, y:0, z:0} },
+    armL_fore:   { pos:{x:0.000, y:-0.750,z:0.000}, rot:{x:0, y:0, z:0} },
+    armL_hand:   { pos:{x:0.000, y:-0.710,z:0.000}, rot:{x:0, y:0, z:0} },
+    shoulderR:   { pos:{x:0.650, y:0.000, z:0.000}, rot:{x:0, y:180, z:0} },
+    armR_upper:  { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:0, y:0, z:0} },
+    armR_fore:   { pos:{x:0.000, y:-0.750,z:0.000}, rot:{x:0, y:0, z:0} },
+    armR_hand:   { pos:{x:0.000, y:-0.710,z:0.000}, rot:{x:0, y:0, z:0} },
+    hipL:        { pos:{x:-0.250,y:-0.350,z:0.000}, rot:{x:0, y:0, z:0} },
+    legL_thigh:  { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:0, y:0, z:0} },
+    legL_shin:   { pos:{x:0.000, y:-1.050,z:0.000}, rot:{x:0, y:0, z:0} },
+    legL_foot:   { pos:{x:0.000, y:-0.880,z:-0.210}, rot:{x:0, y:0, z:0} },
+    hipR:        { pos:{x:0.250, y:-0.350,z:0.000}, rot:{x:0, y:0, z:0} },
+    legR_thigh:  { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:0, y:0, z:0} },
+    legR_shin:   { pos:{x:0.000, y:-1.050,z:0.000}, rot:{x:0, y:0, z:0} },
+    legR_foot:   { pos:{x:0.000, y:-0.880,z:-0.210}, rot:{x:0, y:0, z:0} },
+  }
+};
+
 
   function t0(){ return { pos:{x:0,y:0,z:0}, rot:{x:0,y:0,z:0} }; }
   const d2r = d => d * Math.PI / 180;
@@ -721,10 +738,27 @@
   }
 
   // ---------- persistence & export ----------
-  function saveLocalSilently(){ try{ localStorage.setItem("hxh.rig.params", JSON.stringify(params)); }catch{} }
+  function saveLocalSilently(){ try{ syncParamsFromScene(); localStorage.setItem("hxh.rig.params", JSON.stringify(params)); }catch{} }
   function saveLocal(){ saveLocalSilently(); alert("Saved this rig to your browser (localStorage)."); }
 
   function parseFloatAttr(node,name,def=0){ const v=parseFloat(node?.getAttribute(name)); return Number.isFinite(v)?v:def; }
+
+  // Sync all live node transforms into params.transforms (deg in params)
+  function syncParamsFromScene(){
+	ensureTransformMap(params);
+	for (const key of PART_KEYS){
+		const n = nodes[key];
+		if (!n) continue;
+		const t = params.transforms[key];
+		t.pos.x = n.position.x;
+		t.pos.y = n.position.y;
+		t.pos.z = n.position.z;
+		t.rot.x = BABYLON.Angle.FromRadians(n.rotation.x).degrees();
+		t.rot.y = BABYLON.Angle.FromRadians(n.rotation.y).degrees();
+		t.rot.z = BABYLON.Angle.FromRadians(n.rotation.z).degrees();
+	  }
+	}
+
 
   function parseRigXML(text){
     const doc=new DOMParser().parseFromString(text,"application/xml");
@@ -764,6 +798,8 @@
   }
 
   function exportXML(){
+	// Ensure we export the exact on-screen pose for every part
+    syncParamsFromScene();
     const p=params;
     function attrs(obj){ return Object.entries(obj).map(([k,v])=>`${k}="${Number(v).toFixed(3)}"`).join(" "); }
     function tnode(key){ const tr=p.transforms[key]||t0(); return `    <${key} posX="${tr.pos.x.toFixed(3)}" posY="${tr.pos.y.toFixed(3)}" posZ="${tr.pos.z.toFixed(3)}" rotX="${tr.rot.x.toFixed(3)}" rotY="${tr.rot.y.toFixed(3)}" rotZ="${tr.rot.z.toFixed(3)}" />`; }
