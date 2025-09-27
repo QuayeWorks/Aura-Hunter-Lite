@@ -61,12 +61,21 @@ legend{ padding:0 .4rem; color:var(--muted); }
 /* Menu */
 #screen--menu{ position:relative; overflow:hidden; }
 #screen--menu .menu-bg{ position:absolute; inset:0; }
-#menu-canvas{ width:100%; height:100%; display:block; }
+#screen--menu .menu-bg{ z-index:0; }
+#menu-canvas{ width:100%; height:100%; display:block;
+/* ↓ ADD: let clicks pass through the background canvas */
+  pointer-events:none;
+}
 #screen--menu .menu-contents{
   position:relative; z-index:2; max-width:900px; margin:2.5rem auto; padding:1.25rem 1.5rem;
   background:linear-gradient(180deg,rgba(10,16,28,.65),rgba(10,16,28,.35));
   border:1px solid #223154; border-radius:16px; box-shadow:0 8px 40px rgba(0,0,0,.35); backdrop-filter:blur(4px);
+/* ↓ ADD (explicit): the panel should accept clicks */
+  pointer-events:auto;
 }
+const c = document.getElementById("menu-canvas");
+if (c) c.style.pointerEvents = "none";
+
 #screen--menu .btn-row{ display:flex; gap:.6rem; flex-wrap:wrap; margin:.4rem 0 1rem; }
 #screen--menu details.small summary{ cursor:pointer; }
 
@@ -76,6 +85,27 @@ legend{ padding:0 .4rem; color:var(--muted); }
   display:grid; grid-template-columns:1fr var(--split-w) var(--panel-w); gap:.8rem; height:100%;
 }
 #screen--rig .rig-canvas-wrap{ position:relative; min-width:320px; height:100%; }
+
+/* ADD: animation panel visibility + layout */
+#anim-panel{
+  display: none;                 /* hidden by default; shown when .anim-open is on */
+  position: absolute;
+  top: 8px; right: 8px; left: 8px;
+  height: 50%;                   /* requested: reduce height by ~50% of view */
+  max-height: 50vh;
+  padding: 10px;
+  overflow: auto;
+  background: rgba(8,12,18,0.85);
+  border: 1px solid #223154;
+  border-radius: 10px;
+  z-index: 5;                    /* above canvas/gizmos, below any modals */
+}
+
+/* when the screen has .anim-open, show the panel */
+#screen--rig.anim-open #anim-panel{
+  display: block;
+}
+
 #rig-canvas{ width:100%; height:100%; display:block; }
 .rig-resizer, .rig-panel{ display:none; }
 

@@ -1,142 +1,186 @@
-(function(){
-  const Spawns = {
-    mobsByColumn: new Map(),
-    chestsByColumn: new Map(),
+// spawns.js
+// Deterministic, per-column spawns for mobs and chests. Now uses RigFactory for humanoids,
+// and respects column enable/disable for performance.
 
-    reset(){
-      // dispose old meshes if any
-      for (const [, list] of this.mobsByColumn) list.forEach(m=>{ try{ m.dispose(); }catch{} });
-      for (const [, list] of this.chestsByColumn) list.forEach(c=>{ try{ c.dispose(); }catch{} });
-      this.mobsByColumn.clear();
-      this.chestsByColumn.clear();
+(function(){
+  const { RigFactory, Species, SizeClass, rollSize, buildStats } = window.Rigs?.RigFactory ? window.Rigs : window.Rigs.RigFactory || window.Rigs;
+
+  // Simple seeded RNG (xorshift)
+  function XorShift(seed){
+    let x = seed | 0 || 123456789;
+    let y = 362436069, z = 521288629, w = 88675123;
+    const fn = () => {
+      const t = x ^ (x << 11);
+      x = y; y = z; z = w;
+      w = (w ^ (w >>> 19)) ^ (t ^ (t >>> 8));
+      return (w >>> 0) / 4294967296;
+    };
+    return fn;
+  }
+
+  function hash3(a,b,c){
+    // integer mix
+    let h = 2166136261|0;
+    h = Math.imul(h ^ a, 16777619);
+    h = Math.imul(h ^ b, 16777619);
+    h = Math.imul(h ^ c, 16777619);
+    return h|0;
+  }
+
+  const Spawns = {
+    init(scene){
+      this.scene = scene;
+      this.mobsByColumn = new Map();
+      this.chestsByColumn = new Map();
+      this.maxMobsPerColumn = 2;     // keep it lean for perf
+      this.maxChestsPerColumn = 1;
+      this.activeSet = new Set();    // currently enabled columns
     },
 
-    ensureForColumn(scene, columnIndex){
-      const terrain = environment.terrain;
-      if (!terrain) return;
-      if (this.mobsByColumn.has(columnIndex)) return;
+    disposeColumn(index){
+      const mobs = this.mobsByColumn.get(index);
+      if (mobs){
+        for (const e of mobs){
+          try { e.root?.dispose?.(); } catch{}
+        }
+        this.mobsByColumn.delete(index);
+      }
+      const chs = this.chestsByColumn.get(index);
+      if (chs){
+        for (const c of chs){
+          try { c.dispose?.(); } catch{}
+        }
+        this.chestsByColumn.delete(index);
+      }
+      this.activeSet.delete(index);
+    },
 
-      const seed = Utils.hash3(environment.seed, columnIndex, 0xC0FFEE);
-      const rng  = Utils.mulberry32(seed);
-      const center = terrain.centers[columnIndex];
+    ensureForColumn(environment, index){
+      if (this.mobsByColumn.has(index) && this.chestsByColumn.has(index)) return;
+
+      const centers = environment.terrain.centers;
+      const heights = environment.terrain.heights;
+      const center = centers[index];
       if (!center) return;
 
-      if (rng() < 0.08) this.spawnChest(scene, columnIndex, rng);
+      // region/column seeded RNG
+      const region = environment.region || { rx:0, rz:0, seed: (environment.seed|0)||1337 };
+      const s = hash3(region.seed|0, (region.rx*73856093) ^ (region.rz*19349663), index|0);
+      const rng = XorShift(s);
 
-      const mobCount = (rng() < 0.15) ? 0 : (rng() < 0.55 ? 1 : (rng() < 0.85 ? 2 : 3));
-      for (let i=0;i<mobCount;i++) this.spawnMob(scene, columnIndex, rng);
-    },
+      // ---- enemies ----
+      if (!this.mobsByColumn.has(index)){
+        this.mobsByColumn.set(index, []);
+        const mobCount = (rng() < 0.15) ? 2 : (rng() < 0.55 ? 1 : 0); // mostly 0–1, sometimes 2
+        for (let i=0;i<Math.min(mobCount, this.maxMobsPerColumn);i++){
+          const species = (rng()<0.65) ? Species.HUMANOID
+                        : (rng()<0.15) ? Species.QUAD
+                        : (rng()<0.1)  ? Species.ANTHRO
+                        : (rng()<0.08) ? Species.AVIAN
+                        : Species.HUMANOID;
+          const size = rollSize(rng);
+          const stats = buildStats(species, size);
 
-    spawnChest(scene, columnIndex, rng){
-      const t = environment.terrain;
-      const center = t.centers[columnIndex];
-      const dirtTop = getTerrainLayerTopForColumn(columnIndex, 1);
-      if (dirtTop === null) return;
-      const offsetX = (rng()-0.5)*t.cubeSize*0.9, offsetZ = (rng()-0.5)*t.cubeSize*0.9;
-      const pos = new BABYLON.Vector3(center.x+offsetX, dirtTop+0.65, center.z+offsetZ);
-      const chest = BABYLON.MeshBuilder.CreateBox("chest", { size: 0.6 }, scene);
-      chest.position.copyFrom(pos);
-      chest.checkCollisions = true; chest.isPickable = true;
-      chest.metadata = { loot: Items.rollLoot(rng) };
+          // random offset in the column footprint
+          const offsetX = (rng()*0.6 - 0.3) * environment.terrain.settings.cubeSize;
+          const offsetZ = (rng()*0.6 - 0.3) * environment.terrain.settings.cubeSize;
 
-      if (!this.chestsByColumn.has(columnIndex)) this.chestsByColumn.set(columnIndex, []);
-      this.chestsByColumn.get(columnIndex).push(chest);
-      chest.setEnabled(!!environment.terrain.columnStates[columnIndex]);
-    },
+          const root = RigFactory.create(this.scene, species, size);
+          root.position.set(center.x + offsetX, heights[index] + 0.02, center.z + offsetZ);
 
-    spawnMob(scene, columnIndex, rng){
-      const t = environment.terrain;
-      const center = t.centers[columnIndex];
-      const dirtTop = getTerrainLayerTopForColumn(columnIndex, 1);
-      if (dirtTop === null) return;
+          root.metadata = {
+            ...(root.metadata||{}),
+            species, size, stats: {...stats}, hp: stats.hp, mob: true,
+            columnIndex: index,
+          };
 
-      const r = rng();
-      const species = r < 0.45 ? Rigs.Species.HUMANOID
-                    : r < 0.70 ? Rigs.Species.QUAD
-                    : r < 0.85 ? Rigs.Species.AVIAN
-                    : r < 0.95 ? Rigs.Species.AQUATIC
-                    : Rigs.Species.ANTHRO;
+          const enemy = {
+            root, vel: new BABYLON.Vector3(0,0,0),
+            prevPos: root.position.clone(),
+            grounded: false, alive: true,
+            aiT: 0, attackT: 0,
+          };
 
-      const size = Rigs.rollSize(rng, species);
-      const mobRoot = Rigs.RigFactory.create(scene, species, size);
+          // keep disabled initially; update() will toggle on with the column
+          root.setEnabled(false);
 
-      const offsetX = (rng()-0.5)*t.cubeSize*0.9, offsetZ = (rng()-0.5)*t.cubeSize*0.9;
-      mobRoot.position.set(center.x+offsetX, dirtTop+0.01, center.z+offsetZ);
-      mobRoot.metadata.columnIndex = columnIndex;
-
-      if (!this.mobsByColumn.has(columnIndex)) this.mobsByColumn.set(columnIndex, []);
-      this.mobsByColumn.get(columnIndex).push(mobRoot);
-      window.enemies?.push?.(mobRoot);
-      mobRoot.setEnabled(!!environment.terrain.columnStates[columnIndex]);
-    },
-	
-	
-
-    update(scene){
-      const t = environment.terrain;
-      if (!t) return;
-      const N = t.columns.length;
-      for (let i=0;i<N;i++){
-        const active = !!t.columnStates[i];
-        if (active){
-          this.ensureForColumn(scene, i);
-          this.mobsByColumn.get(i)?.forEach(m => m.setEnabled(true));
-          this.chestsByColumn.get(i)?.forEach(c => c.setEnabled(true));
-        } else {
-          this.mobsByColumn.get(i)?.forEach(m => m.setEnabled(false));
-          this.chestsByColumn.get(i)?.forEach(c => c.setEnabled(false));
+          this.mobsByColumn.get(index).push(enemy);
+          (window.enemies = window.enemies || []).push(enemy);
         }
       }
+
+      // ---- chests ----
+      if (!this.chestsByColumn.has(index)){
+        this.chestsByColumn.set(index, []);
+        if (rng() < 0.18){ // 18% chance for a chest
+          const chest = BABYLON.MeshBuilder.CreateBox("chest",{size:0.7}, this.scene);
+          chest.position.set(center.x, heights[index]+0.35, center.z);
+          const m = new BABYLON.StandardMaterial("chestM", this.scene);
+          m.diffuseColor = new BABYLON.Color3(0.6,0.45,0.22); m.emissiveColor = m.diffuseColor.scale(0.07);
+          chest.material=m;
+          chest.setEnabled(false);
+          chest.metadata = { chest:true, columnIndex:index, seed:s };
+          this.chestsByColumn.get(index).push(chest);
+          (window.chests = window.chests || []).push(chest);
+        }
+      }
+    },
+
+    // called whenever columnStates change due to terrain streaming
+    syncEnabledWithColumns(environment){
+      const states = environment.terrain.columnStates;
+      if (!states) return;
+
+      for (let i=0;i<states.length;i++){
+        const on = !!states[i];
+        const was = this.activeSet.has(i);
+        if (on && !was){
+          this.activeSet.add(i);
+          const mobs = this.mobsByColumn.get(i);
+          const chs  = this.chestsByColumn.get(i);
+          mobs?.forEach(e=> e.root?.setEnabled?.(true));
+          chs?.forEach(c=> c.setEnabled?.(true));
+        }else if (!on && was){
+          this.activeSet.delete(i);
+          const mobs = this.mobsByColumn.get(i);
+          const chs  = this.chestsByColumn.get(i);
+          mobs?.forEach(e=> e.root?.setEnabled?.(false));
+          chs?.forEach(c=> c.setEnabled?.(false));
+        }
+      }
+    },
+
+    update(environment){
+      if (!environment?.terrain) return;
+      // Ensure we have content for newly-visible columns
+      const states = environment.terrain.columnStates;
+      if (!states) return;
+
+      for (let i=0;i<states.length;i++){
+        if (states[i]) this.ensureForColumn(environment, i);
+      }
+      this.syncEnabledWithColumns(environment);
+
+      // Lightweight AI tick for active columns only
+      const dt = this.scene.getEngine().getDeltaTime()/1000;
+      this.activeSet.forEach(i=>{
+        const arr = this.mobsByColumn.get(i); if (!arr) return;
+        for (let k=arr.length-1;k>=0;k--){
+          const e = arr[k]; if (!e || !e.alive || !e.root?.isEnabled()) continue;
+          // simple face-towards-player + drift
+          const player = window.playerRoot;
+          if (player){
+            const to = player.position.subtract(e.root.position);
+            const dist = to.length(); if (dist>0.0001) to.scaleInPlace(1.0/dist);
+            const speed = (e.root.metadata?.stats?.speed || 3.6) * 0.4;
+            e.root.movePOV(0,0,speed*dt); // use POV forward
+            // rotate slowly towards player
+            e.root.rotation.y = Math.atan2(to.x, to.z);
+          }
+        }
+      });
     }
   };
-  
-   // ------------ Enemies ------------
-   function createEnemy(pos) {
-      const h = createHumanoid("#f24d7a");
-      h.root.position.copyFrom(pos);
-      const e = {
-         root: h.root,
-         parts: h.parts,
-         hp: 40 + rand(0, 20),
-         speed: 3.2 + rand(0, 1.2),
-         alive: true,
-         attackCd: 0,
-         vel: new BABYLON.Vector3(0, 0, 0),
-         grounded: false,
-         groundNormal: new BABYLON.Vector3(0, 1, 0),
-         prevPos: h.root.position.clone(),
-         animPhase: 0,
-         attackAnimT: 0,
-         dormant: false,
-         fearT: 0
-      };
-      const meta = h.root.metadata || {};
-      meta.parts = h.parts;
-      meta.animPhase = 0;
-      h.root.metadata = meta;
-      return e;
-   }
-   
-   	// ADD: utility to absorb one ability from victim
-	function tryAnthroAbsorb(killerMesh, victimMesh) {
-	  const k = killerMesh?.metadata?.stats;
-	  const v = victimMesh?.metadata?.stats;
-	  if (!k || !v) return;
 
-	  if (k.species !== Species.ANTHRO) return;
-	  if (Math.random() < 0.25) {
-		// pick one victim ability (if any)
-		const arr = Array.from(v.abilities || []);
-		if (arr.length) {
-		  const pick = arr[(Math.random() * arr.length) | 0];
-		  k.abilities.add(pick);
-		  // bonus power (portion of victim's dmg)
-		  k.dmg += (v.dmg * 0.15);
-		  msg(`Absorbed ${pick}! (+DMG)`);
-		}
-	  }
-	}
-
-   
   window.Spawns = Spawns;
 })();
