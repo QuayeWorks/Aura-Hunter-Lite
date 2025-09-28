@@ -2861,8 +2861,31 @@
       return e;
    }
 
-   function spawnWave(n) {
-      for (let i = 0; i < n; i++) {
+  function spawnWave(n) {
+      const spawnApi = window.Spawns;
+      const region = window.RegionManager?.getActiveRegion?.() || null;
+      let plan = null;
+      let count = n;
+      if (spawnApi?.planWave) {
+         try {
+            plan = spawnApi.planWave({
+               baseCount: n,
+               region,
+               difficulty: region?.difficulty ?? 1,
+               world,
+               enemies,
+               state
+            }) || null;
+            if (plan && typeof plan.count === "number") {
+               count = Math.max(1, Math.round(plan.count));
+            }
+         } catch (err) {
+            console.warn("[Spawns] planWave failed", err);
+            plan = null;
+            count = n;
+         }
+      }
+      for (let i = 0; i < count; i++) {
          let spawn = null;
          for (let attempts = 0; attempts < 12 && !spawn; attempts++) {
             const x = rand(-world.size / 2 + 6, world.size / 2 - 6);
@@ -2880,7 +2903,26 @@
             const z = rand(-world.size / 3, world.size / 3);
             spawn = new BABYLON.Vector3(x, 3 + rand(0, 4), z);
          }
-         enemies.push(createEnemy(spawn));
+         const enemy = createEnemy(spawn);
+         const entry = plan?.entries?.[i] ?? null;
+         if (entry && spawnApi?.applyEnemyProfile) {
+            try {
+               spawnApi.applyEnemyProfile(enemy, entry, {
+                  index: i,
+                  count,
+                  region,
+                  plan,
+                  state,
+                  world
+               });
+            } catch (err) {
+               console.warn("[Spawns] applyEnemyProfile failed", err);
+            }
+         }
+         if (region) {
+            enemy.regionId = region.id;
+         }
+         enemies.push(enemy);
       }
    }
 
