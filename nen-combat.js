@@ -7,13 +7,39 @@ const getHXH = () => {
 };
 
 export function applyOutgoingDamage(src, limb, baseDamage) {
-  console.log("[HXH] applyOutgoingDamage", limb, baseDamage);
-  return baseDamage;
+  const H = getHXH();
+  let result = baseDamage;
+  const playerState = H.state;
+  if (src && playerState && src === playerState) {
+    const strike = playerState.koStrike;
+    if (strike) {
+      playerState.koStrike = null;
+      if (!strike.limb || strike.limb === limb) {
+        const mult = Number.isFinite(strike.multiplier) ? strike.multiplier : 1;
+        result = baseDamage * mult;
+      }
+    }
+  }
+  console.log("[HXH] applyOutgoingDamage", limb, baseDamage, "->", result);
+  return result;
 }
 
 export function applyIncomingDamage(dst, limb, baseDamage) {
-  console.log("[HXH] applyIncomingDamage", limb, baseDamage);
-  return baseDamage;
+  const H = getHXH();
+  let result = baseDamage;
+  if (dst && typeof dst === "object") {
+    const aura = dst.aura || (dst === H.state ? H.state?.aura : undefined);
+    if (aura?.ken) {
+      result *= 0.75;
+    }
+    const vulnerabilityT = Number.isFinite(dst.koVulnerabilityT) ? dst.koVulnerabilityT : 0;
+    if (vulnerabilityT > 0) {
+      const vulnMult = Number.isFinite(dst.koVulnerabilityMultiplier) ? dst.koVulnerabilityMultiplier : 1.5;
+      result *= vulnMult;
+    }
+  }
+  console.log("[HXH] applyIncomingDamage", limb, baseDamage, "->", result);
+  return result;
 }
 
 const H = getHXH();

@@ -9,7 +9,9 @@
     message: (...a)=>H.msg?.(...a),
     updateAuraStrip: (...a)=>H.updateAuraHud?.(...a),
     subscribeAura: (...a)=>H.subscribeAura?.(...a),
-    getAuraState: (...a)=>H.getAuraState?.(...a)
+    getAuraState: (...a)=>H.getAuraState?.(...a),
+    updateFlow: (...a)=>H.updateFlowHud?.(...a),
+    getFlowState: (...a)=>H.getFlowState?.(...a)
   };
   window.HUD = HUD;
 })();

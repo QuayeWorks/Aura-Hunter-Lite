@@ -71,6 +71,8 @@
     getAuraState: ()=>H.getAuraState?.(),
     onAuraChange: (fn)=>H.subscribeAura?.(fn),
     refreshAuraHud: ()=>H.updateAuraHud?.(),
+    getFlowState: ()=>H.getFlowState?.(),
+    refreshFlowHud: ()=>H.updateFlowHud?.(),
     nenTick,
   };
   window.NenCore = NenCore;

@@ -39,6 +39,26 @@
       { key: "en", label: "En", nestedKey: "en" }
    ];
 
+   const FLOW_GROUPS = [
+      { key: "head", label: "Head", limbs: ["head"], color: "#6da8ff" },
+      { key: "torso", label: "Torso", limbs: ["torso"], color: "#5fd1bb" },
+      { key: "arms", label: "Arms", limbs: ["lArm", "rArm"], color: "#f79f5c" },
+      { key: "legs", label: "Legs", limbs: ["lLeg", "rLeg"], color: "#c47bff" }
+   ];
+   const FLOW_LIMB_KEYS = ["head", "torso", "rArm", "lArm", "rLeg", "lLeg"];
+   const FLOW_PRESETS = [
+      { key: "balanced", label: "Balanced Guard", groups: { head: 0.1, torso: 0.3, arms: 0.3, legs: 0.3 } },
+      { key: "arms-heavy", label: "Arms 70/30", groups: { head: 0.08, torso: 0.22, arms: 0.45, legs: 0.25 } },
+      { key: "torso-wall", label: "Torso 60/40", groups: { head: 0.06, torso: 0.45, arms: 0.3, legs: 0.19 } },
+      { key: "mobile-legs", label: "Leg Drive", groups: { head: 0.07, torso: 0.2, arms: 0.27, legs: 0.46 } }
+   ];
+   const DEFAULT_FLOW_PRESET_INDEX = 0;
+   const KO_AAP = 1.0;
+   const KO_COST = 10 + KO_AAP * 0.5;
+   const KO_MULTIPLIER = 2.5;
+   const KO_VULN_DURATION = 0.8;
+   const KO_VULN_MULTIPLIER = 1.5;
+
    if (hud.nen) {
       hud.nen.textContent = "";
       const nenInfo = document.createElement("div");
@@ -71,6 +91,72 @@
          badgeMap.set(spec.key, { badge, spec });
       }
       hud.auraBadges = badgeMap;
+
+      const flowWrap = document.createElement("div");
+      flowWrap.className = "hud-flow";
+      flowWrap.style.display = "flex";
+      flowWrap.style.alignItems = "center";
+      flowWrap.style.flexWrap = "wrap";
+      flowWrap.style.gap = "0.7rem";
+      flowWrap.style.marginTop = "0.5rem";
+      hud.nen.appendChild(flowWrap);
+      hud.flowWrap = flowWrap;
+
+      const pie = document.createElement("div");
+      pie.style.width = "64px";
+      pie.style.height = "64px";
+      pie.style.borderRadius = "50%";
+      pie.style.border = "2px solid rgba(255,255,255,0.16)";
+      pie.style.background = "conic-gradient(#243356 0deg 360deg)";
+      pie.style.boxShadow = "0 0 0 rgba(0,0,0,0)";
+      flowWrap.appendChild(pie);
+      hud.flowPie = pie;
+
+      const flowInfo = document.createElement("div");
+      flowInfo.style.display = "flex";
+      flowInfo.style.flexDirection = "column";
+      flowInfo.style.gap = "0.25rem";
+      flowInfo.style.minWidth = "150px";
+      flowWrap.appendChild(flowInfo);
+
+      const flowLabel = document.createElement("div");
+      flowLabel.style.fontSize = "0.82rem";
+      flowLabel.style.fontWeight = "600";
+      flowLabel.textContent = "Ryu: Balanced";
+      flowInfo.appendChild(flowLabel);
+      hud.flowLabel = flowLabel;
+
+      const legend = document.createElement("div");
+      legend.style.display = "grid";
+      legend.style.gridTemplateColumns = "repeat(2, minmax(0, 1fr))";
+      legend.style.gap = "0.25rem 0.8rem";
+      flowInfo.appendChild(legend);
+      hud.flowLegend = legend;
+
+      const legendEntries = new Map();
+      for (const group of FLOW_GROUPS) {
+         const row = document.createElement("div");
+         row.style.display = "flex";
+         row.style.alignItems = "center";
+         row.style.gap = "0.45rem";
+         row.style.fontSize = "0.74rem";
+
+         const swatch = document.createElement("span");
+         swatch.style.width = "0.65rem";
+         swatch.style.height = "0.65rem";
+         swatch.style.borderRadius = "50%";
+         swatch.style.display = "inline-block";
+         swatch.style.background = group.color;
+         row.appendChild(swatch);
+
+         const value = document.createElement("span");
+         value.textContent = `${group.label} 0%`;
+         row.appendChild(value);
+
+         legend.appendChild(row);
+         legendEntries.set(group.key, { row, value, swatch });
+      }
+      hud.flowLegendEntries = legendEntries;
    }
 
    // Babylon exposes the wrap constant as WRAP_ADDRESSMODE (without the "ING").
@@ -99,9 +185,13 @@
          nenblast: { active: false, pct: -1 },
          special: { active: false, pct: -1 },
          dash: { active: false, pct: -1 }
-      }
+      },
+      flowPresetKey: null,
+      flowFocus: null,
+      flowVulnerable: false
    };
    const auraListeners = new Set();
+   const flowListeners = new Set();
    let cooldownUiAccumulator = COOLDOWN_UI_INTERVAL;
 
    const isTouchDevice = (() => {
@@ -127,6 +217,42 @@
          nen: $("#mc-nen")
       }
    };
+
+   function makeFlowFromGroups(groups = {}) {
+      const flow = {
+         head: 0,
+         torso: 0,
+         rArm: 0,
+         lArm: 0,
+         rLeg: 0,
+         lLeg: 0
+      };
+      let total = 0;
+      for (const group of FLOW_GROUPS) {
+         const value = Number(groups[group.key] ?? 0);
+         if (Number.isFinite(value) && value > 0) {
+            total += value;
+         }
+      }
+      if (total <= 0) total = 1;
+      for (const group of FLOW_GROUPS) {
+         const value = Number(groups[group.key] ?? 0);
+         if (!Number.isFinite(value) || value <= 0) continue;
+         const normalized = value / total;
+         const perLimb = normalized / (group.limbs.length || 1);
+         for (const limb of group.limbs) {
+            flow[limb] = perLimb;
+         }
+      }
+      const sum = FLOW_LIMB_KEYS.reduce((acc, key) => acc + (flow[key] ?? 0), 0);
+      if (sum > 0 && Math.abs(sum - 1) > 1e-6) {
+         const correction = 1 / sum;
+         for (const key of FLOW_LIMB_KEYS) {
+            flow[key] = (flow[key] ?? 0) * correction;
+         }
+      }
+      return flow;
+   }
 
    const ensureFiniteDamage = (value, fallback) =>
       Number.isFinite(value) ? value : fallback;
@@ -1305,12 +1431,152 @@
       setHudBarWidth(hud.nenbar, state.nen.cur / state.nen.max, "nen");
       if (hud.nenbarWrap) {
          const summary = state.nenDrainSummary || "None";
-         hud.nenbarWrap.setAttribute("title", `Nen drains: ${summary}`);
+         if (typeof hud.nenbarWrap.attr === "function") {
+            hud.nenbarWrap.attr("title", `Nen drains: ${summary}`);
+         } else if (hud.nenbarWrap.setAttribute) {
+            hud.nenbarWrap.setAttribute("title", `Nen drains: ${summary}`);
+         } else if (hud.nenbarWrap[0]?.setAttribute) {
+            hud.nenbarWrap[0].setAttribute("title", `Nen drains: ${summary}`);
+         }
       }
    }
 
    function updateXpHud(pct) {
       setHudBarWidth(hud.xpbar, pct, "xp");
+   }
+
+   function computeFlowGroupTotals(flow = state.flow) {
+      return FLOW_GROUPS.map(group => {
+         const total = group.limbs.reduce((acc, limb) => acc + (flow?.[limb] ?? 0), 0);
+         return { ...group, value: total };
+      });
+   }
+
+   function getDominantFlowZone(flow = state.flow) {
+      const totals = computeFlowGroupTotals(flow);
+      let dominant = null;
+      for (const entry of totals) {
+         if (!dominant || entry.value > dominant.value) {
+            dominant = entry;
+         }
+      }
+      return dominant;
+   }
+
+   function getFlowSnapshot() {
+      const values = {};
+      for (const key of FLOW_LIMB_KEYS) {
+         values[key] = state.flow?.[key] ?? 0;
+      }
+      const groups = computeFlowGroupTotals(state.flow).map(({ key, label, value }) => ({ key, label, value }));
+      const focus = getDominantFlowZone(state.flow);
+      return {
+         presetKey: state.flowPresetKey,
+         presetLabel: state.flowPresetLabel,
+         values,
+         groups,
+         focus: focus ? { key: focus.key, label: focus.label, value: focus.value } : null,
+         vulnerable: state.koVulnerabilityT > 0
+      };
+   }
+
+   function updateFlowHud() {
+      if (!hud.flowPie) return;
+      const totals = computeFlowGroupTotals(state.flow);
+      const totalValue = totals.reduce((sum, entry) => sum + entry.value, 0) || 1;
+      let cursor = 0;
+      const segments = totals.map(entry => {
+         const pct = entry.value / totalValue;
+         const start = cursor;
+         cursor += pct;
+         return { ...entry, pct, start, end: cursor };
+      });
+      if (!segments.length) {
+         hud.flowPie.style.background = "conic-gradient(#243356 0deg 360deg)";
+      } else {
+         const gradient = segments.map(segment => {
+            const startPct = (segment.start * 100).toFixed(2);
+            const endPct = (segment.end * 100).toFixed(2);
+            return `${segment.color} ${startPct}% ${endPct}%`;
+         }).join(", ");
+         hud.flowPie.style.background = `conic-gradient(${gradient})`;
+      }
+      const focus = getDominantFlowZone(state.flow);
+      if (hud.flowLabel) {
+         let text = `Ryu: ${state.flowPresetLabel || "Flow"}`;
+         if (focus) text += ` • ${focus.label}`;
+         if (state.koVulnerabilityT > 0) {
+            text += state.koLastFocus ? ` — Ko Vulnerable (${state.koLastFocus})` : " — Ko Vulnerable";
+         }
+         hud.flowLabel.textContent = text;
+      }
+      if (hud.flowLegendEntries) {
+         for (const segment of segments) {
+            const entry = hud.flowLegendEntries.get(segment.key);
+            if (!entry) continue;
+            entry.value.textContent = `${segment.label} ${(segment.pct * 100).toFixed(0)}%`;
+            entry.row.style.opacity = segment.pct > 0 ? "1" : "0.55";
+            entry.row.style.fontWeight = focus && focus.key === segment.key ? "600" : "400";
+         }
+      }
+      if (hud.flowWrap) {
+        const kenActive = !!state.aura?.ken && !state.aura?.zetsu;
+        hud.flowWrap.style.opacity = kenActive ? "1" : "0.6";
+      }
+      const vulnerable = state.koVulnerabilityT > 0;
+      if (hud.flowPie) {
+         hud.flowPie.style.boxShadow = vulnerable ? "0 0 14px rgba(255,90,90,0.7)" : "0 0 0 rgba(0,0,0,0)";
+         hud.flowPie.style.borderColor = vulnerable ? "rgba(255,120,120,0.7)" : "rgba(255,255,255,0.16)";
+      }
+      hudState.flowPresetKey = state.flowPresetKey;
+      hudState.flowFocus = focus?.key ?? null;
+      hudState.flowVulnerable = vulnerable;
+   }
+
+   function notifyFlowChange({ silent = false } = {}) {
+      updateFlowHud();
+      if (flowListeners.size === 0) return;
+      const snapshot = getFlowSnapshot();
+      for (const listener of flowListeners) {
+         try {
+            listener(snapshot);
+         } catch (err) {
+            console.error("Flow listener error", err);
+         }
+      }
+   }
+
+   function subscribeFlow(listener) {
+      if (typeof listener !== "function") return () => {};
+      flowListeners.add(listener);
+      return () => flowListeners.delete(listener);
+   }
+
+   function applyFlowPreset(index, { silent = false } = {}) {
+      if (!FLOW_PRESETS.length) return false;
+      if (!Number.isFinite(index)) return false;
+      const len = FLOW_PRESETS.length;
+      const nextIndex = ((Math.round(index) % len) + len) % len;
+      const preset = FLOW_PRESETS[nextIndex];
+      const previousKey = state.flowPresetKey;
+      Object.assign(state.flow, makeFlowFromGroups(preset.groups));
+      state.flowPresetIndex = nextIndex;
+      state.flowPresetKey = preset.key;
+      state.flowPresetLabel = preset.label;
+      notifyFlowChange({ silent });
+      if (!silent && previousKey !== preset.key) {
+         msg(`Ryu stance: ${preset.label}`);
+      }
+      return previousKey !== preset.key;
+   }
+
+   function rotateFlowPreset(direction) {
+      if (!FLOW_PRESETS.length) return false;
+      const delta = direction > 0 ? 1 : -1;
+      const len = FLOW_PRESETS.length;
+      const nextIndex = (state.flowPresetIndex + delta + len) % len;
+      if (nextIndex === state.flowPresetIndex) return false;
+      return applyFlowPreset(nextIndex);
    }
 
    function updateAuraHud() {
@@ -1333,6 +1599,7 @@
 
    function notifyAuraChange() {
       updateAuraHud();
+      updateFlowHud();
       for (const listener of auraListeners) {
          try {
             listener(getAuraSnapshot());
@@ -1397,6 +1664,7 @@
       updateHealthHud();
       updateNenHud();
       updateAuraHud();
+      updateFlowHud();
       const req = xpToNext(progress.level);
       const pct = progress.level >= 410 ? 1 : (progress.xp / req);
       updateXpHud(pct);
@@ -1855,14 +2123,15 @@
          renMul: 1.0
       },
 
-      flow: {
-         head: 0.09,
-         torso: 0.25,
-         rArm: 0.166,
-         lArm: 0.166,
-         rLeg: 0.166,
-         lLeg: 0.166
-      },
+      flow: makeFlowFromGroups(FLOW_PRESETS[DEFAULT_FLOW_PRESET_INDEX]?.groups),
+      flowPresetIndex: DEFAULT_FLOW_PRESET_INDEX,
+      flowPresetKey: FLOW_PRESETS[DEFAULT_FLOW_PRESET_INDEX]?.key ?? "balanced",
+      flowPresetLabel: FLOW_PRESETS[DEFAULT_FLOW_PRESET_INDEX]?.label ?? "Balanced Guard",
+      koVulnerabilityT: 0,
+      koVulnerabilityMultiplier: KO_VULN_MULTIPLIER,
+      koStrike: null,
+      koLastFocus: null,
+      lastKoWarning: 0,
 
       vows: [],
 
@@ -1893,6 +2162,8 @@
    };
 
    updateAuraHud();
+   updateFlowHud();
+   notifyFlowChange({ silent: true });
 
    // recompute all derived numbers from creator stats + level alloc
    function computeEffective() {
@@ -2131,6 +2402,17 @@
          }
       });
 
+      canvas.addEventListener("wheel", (e) => {
+         if (paused) return;
+         if (!state.aura.ken || !input["KeyK"]) return;
+         if (!FLOW_PRESETS.length) return;
+         const direction = Math.sign(e.deltaY || 0);
+         if (direction === 0) return;
+         if (rotateFlowPreset(direction)) {
+            e.preventDefault();
+         }
+      }, { passive: false });
+
       window.addEventListener("keydown", e => {
          if (e.code === "Escape") {
             togglePause();
@@ -2189,6 +2471,10 @@
       state.aura.renActive = false;
       state.aura.renCharge = 0;
       state.aura.renMul = 1.0;
+      state.koVulnerabilityT = 0;
+      state.koStrike = null;
+      state.koLastFocus = null;
+      state.lastKoWarning = 0;
       notifyAuraChange();
 
       updateHUD();
@@ -2511,6 +2797,12 @@
                state.chargingNen = false;
             }
             if (state.nenLight) state.nenLight.intensity = 0.0;
+            if (state.koVulnerabilityT > 0) {
+               state.koVulnerabilityT = 0;
+               state.koStrike = null;
+               state.koLastFocus = null;
+               notifyFlowChange({ silent: true });
+            }
             msg("Entered Zetsu — aura suppressed.");
          } else {
             msg("Exited Zetsu.");
@@ -2587,6 +2879,35 @@
       return true;
    }
 
+   function tryStartKoStrike(limbKey = "melee") {
+      if (state.aura.zetsu) return false;
+      if (!spendNen(KO_COST)) {
+         const now = typeof performance === "object" && typeof performance.now === "function"
+            ? performance.now()
+            : Date.now();
+         if (!state.lastKoWarning || now - state.lastKoWarning > 600) {
+            state.lastKoWarning = now;
+            msg("Nen too low for Ko!");
+         }
+         return false;
+      }
+      const focus = getDominantFlowZone();
+      state.koStrike = {
+         limb: limbKey,
+         multiplier: KO_MULTIPLIER,
+         focus: focus?.key ?? null
+      };
+      state.koVulnerabilityT = KO_VULN_DURATION;
+      state.koLastFocus = focus?.label ?? null;
+      notifyFlowChange({ silent: true });
+      if (focus?.label) {
+         msg(`Ko strike channels through the ${focus.label.toLowerCase()}!`);
+      } else {
+         msg("Ko strike unleashed!");
+      }
+      return true;
+   }
+
    function melee() {
       if (cdActive("meleehit")) return;
       setCooldown("meleehit", COOLDOWNS.meleehit);
@@ -2598,6 +2919,9 @@
       const range = 2.0;
       let base = 10 + (state.eff.power * 1.5) * (state.ch.nen === "Enhancer" ? 1.25 : 1);
       const mult = state.aura.renMul || 1.0;
+      if (input["KeyC"]) {
+         tryStartKoStrike("melee");
+      }
       let dmg = base * mult;
       if (state.buffs.electrify) dmg += 6;
       if (state.buffs.berserk) dmg *= 1.25;
@@ -3013,6 +3337,15 @@
          if (!hasOwn.call(state.buffs, key)) continue;
          state.buffs[key] -= dt;
          if (state.buffs[key] <= 0) delete state.buffs[key];
+      }
+
+      if (state.koVulnerabilityT > 0) {
+         const prev = state.koVulnerabilityT;
+         state.koVulnerabilityT = Math.max(0, prev - dt);
+         if (state.koVulnerabilityT === 0) {
+            state.koLastFocus = null;
+            notifyFlowChange({ silent: true });
+         }
       }
 
       advanceEnvironment(dt);
@@ -3431,7 +3764,7 @@ try {
     getFallbackTreeMaterials, createFallbackTree,
 
     // HUD & cooldowns
-    setCooldown, cdActive, markCooldownDirty, updateHealthHud, updateNenHud, updateXpHud, updateAuraHud, updateCooldownUI, updateHUD, msg,
+    setCooldown, cdActive, markCooldownDirty, updateHealthHud, updateNenHud, updateXpHud, updateAuraHud, updateFlowHud, updateCooldownUI, updateHUD, msg,
 
     // combat
     blast, dash, special, nearestEnemy,
@@ -3443,6 +3776,10 @@ try {
     state,
     getAuraState: () => getAuraSnapshot(),
     subscribeAura,
+    getFlowState: () => getFlowSnapshot(),
+    subscribeFlow,
+    applyFlowPreset,
+    rotateFlowPreset,
   });
   // share rig definitions for the editor if available
   window.RigDefinitions = {
