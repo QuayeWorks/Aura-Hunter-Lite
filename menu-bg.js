@@ -16,21 +16,21 @@ const POSE_SITTING = {
   neck:        { pos:{x:0.000, y:0.250, z:-0.000},rot:{x:350.746, y:0.000,   z:0.000} },
   head:        { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:347.458, y:0.000,   z:0.000} },
   shoulderL:   { pos:{x:-0.650,y:0.000, z:0.000}, rot:{x:0.000,   y:180.000, z:0.000} },
-  armL_upper:  { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:30.295,  y:7.416,   z:0.396} },
+  armL_upper:  { pos:{x:0.000, y:-0.450, z:0.000}, rot:{x:30.295,  y:187.416,   z:0.396} },
   armL_fore:   { pos:{x:0.000, y:-0.750,z:0.000}, rot:{x:41.116,  y:360.000, z:360.000} },
   armL_hand:   { pos:{x:0.000, y:-0.710,z:0.000}, rot:{x:0.000,   y:0.000,   z:0.000} },
   shoulderR:   { pos:{x:0.650, y:0.000, z:0.000}, rot:{x:0.000,   y:180.000, z:0.000} },
-  armR_upper:  { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:30.892,  y:0.000,   z:3.297} },
+  armR_upper:  { pos:{x:0.000, y:-0.350, z:0.000}, rot:{x:30.892,  y:180.000,   z:3.297} },
   armR_fore:   { pos:{x:0.000, y:-0.750,z:0.000}, rot:{x:30.963,  y:360.000, z:360.000} },
   armR_hand:   { pos:{x:0.000, y:-0.710,z:0.000}, rot:{x:0.000,   y:0.000,   z:0.000} },
-  hipL:        { pos:{x:-0.250,y:-0.350,z:0.000}, rot:{x:0.000,   y:0.000,   z:0.000} },
-  legL_thigh:  { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:270.392, y:0.000,   z:0.000} },
-  legL_shin:   { pos:{x:0.000, y:-1.050,z:0.000}, rot:{x:76.031,  y:0.000,   z:0.000} },
-  legL_foot:   { pos:{x:0.000, y:-0.880,z:-0.210},rot:{x:0.000,   y:0.000,   z:0.000} },
+  hipL:        { pos:{x:-0.250,y:-0.450,z:0.000}, rot:{x:0.000,   y:0.000,   z:0.000} },
+  legL_thigh:  { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:255.392, y:0.000,   z:0.000} },
+  legL_shin:   { pos:{x:0.000, y:-1.050,z:0.000}, rot:{x:80.031,  y:0.000,   z:0.000} },
+  legL_foot:   { pos:{x:0.000, y:-0.880,z:0.210},rot:{x:-20.000,   y:180.000,   z:0.000} },
   hipR:        { pos:{x:0.250, y:-0.350,z:0.000}, rot:{x:0.000,   y:0.000,   z:0.000} },
-  legR_thigh:  { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:270.257, y:180.000, z:180.000} },
+  legR_thigh:  { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:285.257, y:180.000, z:180.000} },
   legR_shin:   { pos:{x:0.000, y:-1.050,z:-0.000},rot:{x:80.248,  y:360.000, z:360.000} },
-  legR_foot:   { pos:{x:0.000, y:-0.880,z:-0.210},rot:{x:0.000,   y:0.000,   z:0.000} },
+  legR_foot:   { pos:{x:0.000, y:-0.880,z:0.210},rot:{x:-20.000,   y:180.000,   z:0.000} },
 };
 
 const POSE_KNEELING = {
@@ -40,21 +40,21 @@ const POSE_KNEELING = {
   neck:        { pos:{x:0.000, y:0.250, z:-0.000},rot:{x:8.795,   y:0.000,   z:0.000} },
   head:        { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:11.552,  y:0.000,   z:0.000} },
   shoulderL:   { pos:{x:-0.650,y:0.000, z:0.000}, rot:{x:0.000,   y:180.000, z:0.000} },
-  armL_upper:  { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:18.888,  y:45.723,  z:18.365} },
+  armL_upper:  { pos:{x:0.000, y:-0.450, z:0.000}, rot:{x:18.888,  y:225.723,  z:18.365} },
   armL_fore:   { pos:{x:0.000, y:-0.750,z:-0.000},rot:{x:57.918,  y:0.000,   z:0.000} },
   armL_hand:   { pos:{x:0.000, y:-0.710,z:0.000}, rot:{x:0.000,   y:0.000,   z:0.000} },
   shoulderR:   { pos:{x:0.650, y:0.000, z:0.000}, rot:{x:0.000,   y:180.000, z:0.000} },
-  armR_upper:  { pos:{x:0.000, y:0.000, z:-0.000},rot:{x:40.926,  y:354.287, z:9.413} },
+  armR_upper:  { pos:{x:0.000, y:-0.450, z:-0.000},rot:{x:40.926,  y:174.287, z:9.413} },
   armR_fore:   { pos:{x:0.000, y:-0.750,z:0.000}, rot:{x:360.000, y:0.000,   z:30.251} },
   armR_hand:   { pos:{x:0.000, y:-0.710,z:0.000}, rot:{x:0.000,   y:0.000,   z:0.000} },
   hipL:        { pos:{x:-0.250,y:-0.350,z:0.000}, rot:{x:0.000,   y:0.000,   z:0.000} },
   legL_thigh:  { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:272.397, y:360.000, z:0.000} },
   legL_shin:   { pos:{x:0.000, y:-1.050,z:-0.000},rot:{x:87.414,  y:0.000,   z:0.000} },
-  legL_foot:   { pos:{x:0.000, y:-0.880,z:-0.210},rot:{x:0.000,   y:0.000,   z:0.000} },
+  legL_foot:   { pos:{x:0.000, y:-0.880,z:0.210},rot:{x:0.000,   y:0.000,   z:0.000} },
   hipR:        { pos:{x:0.250, y:-0.350,z:0.000}, rot:{x:0.000,   y:0.000,   z:0.000} },
   legR_thigh:  { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:19.925,  y:359.247, z:359.930} },
   legR_shin:   { pos:{x:0.000, y:-1.050,z:0.000}, rot:{x:87.258,  y:180.000, z:180.000} },
-  legR_foot:   { pos:{x:0.000, y:-0.880,z:-0.210},rot:{x:0.000,   y:0.000,   z:0.000} },
+  legR_foot:   { pos:{x:0.000, y:-0.880,z:0.210},rot:{x:0.000,   y:0.000,   z:0.000} },
 };
 
   // --- Rig defaults (same as your XML sizes) ---
@@ -98,11 +98,11 @@ const POSE_KNEELING = {
   }
 
   // --- Materials ---
-  function goldMaterial(name, scene, emissiveScale=0.7){
+  function goldMaterial(name, scene, emissiveScale=1.0){
     const m = new BABYLON.PBRMaterial(name, scene);
     m.albedoColor = new BABYLON.Color3(1.0, 0.85, 0.35);
     m.metallic = 1.0; m.roughness = 0.25;
-    m.emissiveColor = new BABYLON.Color3(0.2, 0.25, 0.25).scale(emissiveScale);
+    m.emissiveColor = new BABYLON.Color3(0.8, 0.45, 0.15).scale(emissiveScale);
     return m;
   }
   function lightMat(name, scene, intensity=1.0){
@@ -114,7 +114,7 @@ const POSE_KNEELING = {
   }
 
   // --- Humanoid constructor with namePrefix (for unique nodes) ---
-  function buildHumanoid(rig, scene, colorHex="#ffffff", emissive=0.9, namePrefix=""){
+  function buildHumanoid(rig, scene, colorHex="#ffffff", emissive=1.9, namePrefix=""){
     const root = new BABYLON.TransformNode(namePrefix+"rigRoot", scene);
     const N=(n)=> namePrefix+n;
     const c = BABYLON.Color3.FromHexString(colorHex);
@@ -172,12 +172,12 @@ const POSE_KNEELING = {
 
 	function buildThrone(scene, gold){
 	  const group = new BABYLON.TransformNode("throne", scene);
-	  const base  = BABYLON.MeshBuilder.CreateBox("th_base", {width:4.5,  height:0.45, depth:4.5},  scene); base.material=gold; base.parent=group; base.position.y = 0.225;
-	  const step  = BABYLON.MeshBuilder.CreateBox("th_step", {width:3.6,  height:0.30, depth:3.6},  scene); step.material=gold; step.parent=group; step.position.y = 0.525;
-	  const seat  = BABYLON.MeshBuilder.CreateBox("th_seat", {width:2.25, height:0.45, depth:2.25}, scene); seat.material=gold; seat.parent=group; seat.position.y = 0.975;
-	  const back  = BABYLON.MeshBuilder.CreateBox("th_back", {width:2.25, height:3.00, depth:0.375}, scene); back.material=gold; back.parent=group; back.position.set(0, 2.325, -0.9375);
-	  const armL  = BABYLON.MeshBuilder.CreateBox("th_armL", {width:0.375,height:0.75, depth:1.95}, scene); armL.material=gold; armL.parent=group; armL.position.set(-1.125, 1.2, 0.075);
-	  const armR  = BABYLON.MeshBuilder.CreateBox("th_armR", {width:0.375,height:0.75, depth:1.95}, scene); armR.material=gold; armR.parent=group; armR.position.set( 1.125, 1.2, 0.075);
+	  const base  = BABYLON.MeshBuilder.CreateBox("th_base", {width:3.375,  height:0.3375, depth:3.375},  scene); base.material=gold; base.parent=group; base.position.y = 0.16875;
+	  const step  = BABYLON.MeshBuilder.CreateBox("th_step", {width:2.7,    height:0.225,  depth:2.7},    scene); step.material=gold; step.parent=group; step.position.y = 0.39375;
+	  const seat  = BABYLON.MeshBuilder.CreateBox("th_seat", {width:1.6875, height:0.3375, depth:1.6875}, scene); seat.material=gold; seat.parent=group; seat.position.y = 0.73125;
+	  const back  = BABYLON.MeshBuilder.CreateBox("th_back", {width:1.6875, height:2.25,   depth:0.28125},scene); back.material=gold; back.parent=group; back.position.set(0, 1.74375, -0.703125);
+	  const armL  = BABYLON.MeshBuilder.CreateBox("th_armL", {width:0.28125,height:0.5625, depth:1.4625}, scene); armL.material=gold; armL.parent=group; armL.position.set(-0.84375, 0.9, 0.05625);
+	  const armR  = BABYLON.MeshBuilder.CreateBox("th_armR", {width:0.28125,height:0.5625, depth:1.4625}, scene); armR.material=gold; armR.parent=group; armR.position.set( 0.84375, 0.9, 0.05625);
 	  return group;
 	}
 
@@ -223,10 +223,10 @@ const POSE_KNEELING = {
     camera.lockedTarget = camTarget;
 
     // Lights + glow
-    const hemi = new BABYLON.HemisphericLight("h", new BABYLON.Vector3(0,1,0), scene); hemi.intensity = 0.9;
+    const hemi = new BABYLON.HemisphericLight("h", new BABYLON.Vector3(0,1,0), scene); hemi.intensity = 1.0;
     const dir  = new BABYLON.DirectionalLight("s", new BABYLON.Vector3(-0.3,-1,-0.2), scene);
-    dir.position = new BABYLON.Vector3(30,50,30); dir.intensity = 0.8;
-    glow = new BABYLON.GlowLayer("glow", scene, { blurKernelSize: 16, intensity: 0.55 });
+    dir.position = new BABYLON.Vector3(30,50,30); dir.intensity = 0.9;
+    glow = new BABYLON.GlowLayer("glow", scene, { blurKernelSize: 36, intensity: 0.55 });
 
     // Gold floor
     const floor = BABYLON.MeshBuilder.CreateGround("floor",{width:240,height:240},scene);
@@ -238,33 +238,44 @@ const POSE_KNEELING = {
       const d = 18 + Math.random()*36;
       const a = Math.random()*Math.PI*2;
       const y = 2.0 + Math.random()*10;
-      const sphere = BABYLON.MeshBuilder.CreateSphere("orb"+i,{diameter: 0.9 + Math.random()*1.6, segments: 12}, scene);
+      const sphere = BABYLON.MeshBuilder.CreateSphere("orb"+i,{diameter: 0.5 + Math.random()*1.6, segments: 22}, scene);
       sphere.material = orbm;
       sphere.position.set(Math.cos(a)*d, y, Math.sin(a)*d);
       orbs.push({mesh:sphere, r:a, d, y, s: 0.3 + Math.random()*0.9});
     }
 
     // Throne + giant (apply hardcoded SITTING pose)
-    const gold = goldMaterial("gold", scene, 0.9);
+    const gold = goldMaterial("gold", scene, 1.0);
     const throne = buildThrone(scene, gold);
     throne.scaling.setAll(3.00);
     const rig = currentRig();
-    const giant = buildHumanoid(rig, scene, "#ffffff", 1.0, "giant_");
+    const giant = buildHumanoid(rig, scene, "#ffffff", 1.8, "giant_");
     giant.parent = throne;
-    giant.position.set(0, 0.45, 0.4)
+    giant.position.set(0, 0.06, 0.1)
     applyPose(POSE_SITTING, scene, "giant_");
 
-    // followers with hardcoded KNEELING pose
-    const followerCount = 12;
-    for (let i=0;i<followerCount;i++){
-      const ang = (i / followerCount) * Math.PI * 2;
-      const fx = Math.cos(ang) * 14;
-      const fz = Math.sin(ang) * 14;
-      const h = buildHumanoid(rig, scene, "#ffffff", 0.8, `f${i}_`);
-      h.position.set(fx, 0, fz);
-      h.lookAt(new BABYLON.Vector3(0,1.6,0));
-      applyPose(POSE_KNEELING, scene, `f${i}_`);
-    }
+    // Followers — three kneeling rings: 6, 12, 24
+    const rings = [
+      { count: 7,  radius: 14 },
+      { count: 14, radius: 26 },
+      { count: 21, radius: 38 },
+	  { count: 28, radius: 50 },
+	  { count: 35, radius: 62 },
+	  { count: 42, radius: 74 },
+	  { count: 49, radius: 86 },
+    ];
+    rings.forEach((ring, rIdx) => {
+      for (let i = 0; i < ring.count; i++) {
+        const ang = (i / ring.count) * Math.PI * 2;
+        const fx = Math.cos(ang) * ring.radius;
+        const fz = Math.sin(ang) * ring.radius;
+        const prefix = `f${rIdx}_${i}_`;
+        const h = buildHumanoid(rig, scene, "#ffffff", 1.0, prefix);
+        h.position.set(fx, 0, fz);
+        h.lookAt(new BABYLON.Vector3(0, 1.6, 0));
+        applyPose(POSE_KNEELING, scene, prefix);
+      }
+    });
 
     // Halo
     const halo = BABYLON.MeshBuilder.CreateSphere("halo",{diameter: 8, segments: 24}, scene);
@@ -273,10 +284,7 @@ const POSE_KNEELING = {
 
     // Keep throne/rig hard edges off glow
     scene.meshes.forEach(m => {
-      if (m.name.startsWith("th_") ||
-          m.name.includes("pelvis") || m.name.includes("torsoLower") || m.name.includes("torsoUpper") ||
-          m.name.includes("head")   || m.name.includes("_upper") || m.name.includes("_fore") ||
-          m.name.includes("_hand")  || m.name.includes("_thigh") || m.name.includes("_shin") || m.name.includes("_foot")) {
+      if (m.name.startsWith("th_")) {
         glow.addExcludedMesh(m);
       }
     });
