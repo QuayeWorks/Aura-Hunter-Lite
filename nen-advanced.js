@@ -288,6 +288,7 @@
     return layer;
   }
 
+
   function isMeshLike(node) {
     if (!node) return false;
     if (typeof node.getTotalVertices === "function") return true;
@@ -356,6 +357,7 @@
           mesh.onDisposeObservable.remove(observer);
         }
       });
+
     }
     advState.enStatus.senseEntries.delete(enemy);
   }
@@ -370,6 +372,7 @@
     if (!enemy || !enemy.root || enemy.root.isDisposed?.() || !enemy.alive) return;
     const layer = ensureEnHighlightLayer(enemy.root);
     if (!layer) return;
+
     const meshSet = new Set(gatherSenseMeshes(enemy.root));
     const parts = enemy.parts;
     if (parts && typeof parts === "object") {
