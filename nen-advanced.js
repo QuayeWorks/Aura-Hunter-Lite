@@ -498,18 +498,14 @@
     return true;
   }
 
-  function updateEn(nowMs) {
+  function updateEn(nowMs, dtSec = 0) {
     updateProjectileSlows(nowMs);
     updateSenseEntries(nowMs);
 
     const status = advState.enStatus;
     const state = advState.currentState;
-    const H = getHXH();
+    const dt = Number.isFinite(dtSec) ? Math.max(0, dtSec) : 0;
     if (!state) return;
-
-    if (!status.maintainActive) {
-      setAuraEn(false, 0);
-    }
 
     if (status.keyHeld && !status.maintainActive && !status.maintainFailed) {
       if (nowMs - status.keyDownAt >= status.holdThresholdMs) {
@@ -531,8 +527,26 @@
       const radius = EN_MIN_RADIUS + (EN_MAX_RADIUS - EN_MIN_RADIUS) * t;
       status.maintainRadius = radius;
       setAuraEn(true, radius);
+      const nen = state.nen;
+      if (nen && dt > 0) {
+        const lerp = (radius - EN_MIN_RADIUS) / (EN_MAX_RADIUS - EN_MIN_RADIUS);
+        const mix = Math.min(1, Math.max(0, lerp));
+        const drainRate = 4 + (10 - 4) * mix;
+        const nenCost = drainRate * dt;
+        if (nenCost > 0) {
+          if (nen.cur <= nenCost) {
+            nen.cur = 0;
+            getHXH()?.updateNenHud?.();
+            stopEnMaintain("Nen exhausted — En collapses.");
+            return;
+          }
+          nen.cur = Math.max(0, nen.cur - nenCost);
+          getHXH()?.updateNenHud?.();
+        }
+      }
       const playerPos = getPlayerPosition();
       if (playerPos) {
+        const H = getHXH();
         const radiusSq = radius * radius;
         const enemies = Array.isArray(H?.enemies) ? H.enemies : [];
         enemies.forEach(enemy => {
@@ -932,7 +946,7 @@
     const dt = Math.max(0, (ts - advState.lastFrameTs) / 1000);
     advState.lastFrameTs = ts;
 
-    updateEn(ts);
+    updateEn(ts, dt);
 
     if (advState.currentState) {
       if (H?.projectiles && H.projectiles !== advState.trackedProjectiles) {

@@ -2419,6 +2419,7 @@
             return;
          }
          input[e.code] = true;
+         if (e.repeat) return;
          inputOnce[e.code] = true;
       });
       window.addEventListener("keyup", e => {
