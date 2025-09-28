@@ -28,6 +28,50 @@
       }
    };
 
+   const AURA_STATUS_KEYS = [
+      { key: "ten", label: "Ten" },
+      { key: "zetsu", label: "Zetsu" },
+      { key: "ren", label: "Ren" },
+      { key: "ken", label: "Ken" },
+      { key: "gyo", label: "Gyo" },
+      { key: "shu", label: "Shu" },
+      { key: "en", label: "En", nestedKey: "en" }
+   ];
+
+   if (hud.nen) {
+      hud.nen.textContent = "";
+      const nenInfo = document.createElement("div");
+      nenInfo.className = "hud-nen-info";
+      hud.nen.appendChild(nenInfo);
+      hud.nenInfo = nenInfo;
+
+      const strip = document.createElement("div");
+      strip.className = "hud-nen-strip";
+      strip.style.display = "flex";
+      strip.style.gap = "0.4rem";
+      strip.style.flexWrap = "wrap";
+      strip.style.alignItems = "center";
+      hud.nen.appendChild(strip);
+      hud.nenStrip = strip;
+
+      const badgeMap = new Map();
+      for (const spec of AURA_STATUS_KEYS) {
+         const badge = document.createElement("span");
+         badge.className = "hud-nen-badge";
+         badge.style.padding = "0.1rem 0.35rem";
+         badge.style.borderRadius = "4px";
+         badge.style.fontSize = "0.75rem";
+         badge.style.letterSpacing = "0.04em";
+         badge.style.textTransform = "uppercase";
+         badge.style.background = "rgba(255,255,255,0.08)";
+         badge.style.border = "1px solid rgba(255,255,255,0.18)";
+         badge.style.transition = "background-color 0.15s ease";
+         strip.appendChild(badge);
+         badgeMap.set(spec.key, { badge, spec });
+      }
+      hud.auraBadges = badgeMap;
+   }
+
    // Babylon exposes the wrap constant as WRAP_ADDRESSMODE (without the "ING").
    // Some older snippets – including the new ground material introduced in this
    // branch – referenced WRAP_ADDRESSING_MODE instead, leaving the property
@@ -56,6 +100,7 @@
          dash: { active: false, pct: -1 }
       }
    };
+   const auraListeners = new Set();
    let cooldownUiAccumulator = COOLDOWN_UI_INTERVAL;
 
    const isTouchDevice = (() => {
@@ -1225,11 +1270,46 @@
    }
 
    function updateNenHud() {
-      setHudBarWidth(hud.nenbar, state.nen / state.nenMax, "nen");
+      setHudBarWidth(hud.nenbar, state.nen.cur / state.nen.max, "nen");
    }
 
    function updateXpHud(pct) {
       setHudBarWidth(hud.xpbar, pct, "xp");
+   }
+
+   function updateAuraHud() {
+      if (!hud.auraBadges) return;
+      for (const [key, data] of hud.auraBadges.entries()) {
+         const { badge, spec } = data;
+         const active = key === "en" ? !!state.aura.en?.on : !!state.aura[key];
+         badge.textContent = `${spec.label}: ${active ? "ON" : "OFF"}`;
+         badge.style.background = active ? "rgba(80,200,255,0.25)" : "rgba(255,255,255,0.08)";
+         badge.style.borderColor = active ? "rgba(120,220,255,0.55)" : "rgba(255,255,255,0.18)";
+      }
+   }
+
+   function getAuraSnapshot() {
+      return {
+         ...state.aura,
+         en: { ...state.aura.en }
+      };
+   }
+
+   function notifyAuraChange() {
+      updateAuraHud();
+      for (const listener of auraListeners) {
+         try {
+            listener(getAuraSnapshot());
+         } catch (err) {
+            console.error("Aura listener error", err);
+         }
+      }
+   }
+
+   function subscribeAura(listener) {
+      if (typeof listener !== "function") return () => {};
+      auraListeners.add(listener);
+      return () => auraListeners.delete(listener);
    }
 
    function updateCooldownUI(dt = 0) {
@@ -1272,10 +1352,15 @@
 
    function updateHUD() {
       hud.name.textContent = state.ch.name || "Hunter";
-      hud.nen.textContent = `${state.ch.nen} — ${state.ch.clan||"Wanderer"}`;
+      if (hud.nenInfo) {
+         hud.nenInfo.textContent = `${state.ch.nen} — ${state.ch.clan || "Wanderer"}`;
+      } else if (hud.nen) {
+         hud.nen.textContent = `${state.ch.nen} — ${state.ch.clan || "Wanderer"}`;
+      }
       hud.level.textContent = `Lv ${progress.level}  •  Points: ${progress.unspent}`;
       updateHealthHud();
       updateNenHud();
+      updateAuraHud();
       const req = xpToNext(progress.level);
       const pct = progress.level >= 410 ? 1 : (progress.xp / req);
       updateXpHud(pct);
@@ -1710,18 +1795,40 @@
       },
       maxHP: 100,
       hp: 100,
-      nenMax: 100,
-      nen: 100,
-      baseNenRegen: 2.0,
+      nen: {
+         max: 100,
+         cur: 100,
+         regen: 2.0
+      },
       baseHpRegen: 0.0,
 
       aura: {
-         ten: true,
+         ten: false,
          zetsu: false,
+         ren: false,
+         ken: false,
+         in: false,
+         gyo: false,
+         shu: false,
+         en: {
+            on: false,
+            r: 0
+         },
          renActive: false,
          renCharge: 0,
          renMul: 1.0
       },
+
+      flow: {
+         head: 0.09,
+         torso: 0.25,
+         rArm: 0.166,
+         lArm: 0.166,
+         rLeg: 0.166,
+         lLeg: 0.166
+      },
+
+      vows: [],
 
       buffs: {},
       cooldowns: {},
@@ -1749,6 +1856,8 @@
       ultMaxDur: 8,
    };
 
+   updateAuraHud();
+
    // recompute all derived numbers from creator stats + level alloc
    function computeEffective() {
       const s = state.ch.stats;
@@ -1765,13 +1874,13 @@
 
       // Max pools + regen
       state.maxHP = 100 + e.power * 12;
-      state.nenMax = 100 + e.focus * 12;
+      state.nen.max = 100 + e.focus * 12;
       state.baseHpRegen = 0.0 + e.power * 0.08;
-      state.baseNenRegen = 2.0 + e.focus * 0.6;
+      state.nen.regen = 2.0 + e.focus * 0.6;
 
       // clamp current values
       state.hp = clamp(state.hp, 0, state.maxHP);
-      state.nen = clamp(state.nen, 0, state.nenMax);
+      state.nen.cur = clamp(state.nen.cur, 0, state.nen.max);
 
       // cooldown scaling from Focus; dash from Agility
       COOLDOWNS.nenblast = 2.0 * (1 - e.focus * 0.04);
@@ -2027,18 +2136,24 @@
       saveCharacter(ch);
       // seed pools before recompute (so we don't clamp to zero)
       state.hp = state.maxHP;
-      state.nen = state.nenMax;
+      state.nen.cur = state.nen.max;
       recomputeDerived(); // compute from (creator + alloc)
       // after recompute, fill to full
       state.hp = state.maxHP;
-      state.nen = state.nenMax;
-      Object.assign(state.aura, {
-         ten: true,
-         zetsu: false,
-         renActive: false,
-         renCharge: 0,
-         renMul: 1.0
-      });
+      state.nen.cur = state.nen.max;
+      state.aura.ten = true;
+      state.aura.zetsu = false;
+      state.aura.ren = false;
+      state.aura.ken = false;
+      state.aura.in = false;
+      state.aura.gyo = false;
+      state.aura.shu = false;
+      state.aura.en.on = false;
+      state.aura.en.r = 0;
+      state.aura.renActive = false;
+      state.aura.renCharge = 0;
+      state.aura.renMul = 1.0;
+      notifyAuraChange();
 
       updateHUD();
       msg("Defeat enemies to trigger the exit portal! Press L to open the Level menu.");
@@ -2323,11 +2438,13 @@
 
    function updateAura(dt) {
       const aura = state.aura;
+      let changed = false;
 
       if (inputOnce["KeyT"]) {
-         if (!aura.ten) {
-            const exitingZetsu = aura.zetsu;
-            aura.ten = true;
+         const exitingZetsu = aura.zetsu;
+         aura.ten = !aura.ten;
+         changed = true;
+         if (aura.ten) {
             if (exitingZetsu) {
                aura.zetsu = false;
                msg("Ten restored — aura guard re-established.");
@@ -2335,15 +2452,21 @@
                msg("Ten reinforced.");
             }
          } else {
-            aura.ten = false;
             msg("Ten relaxed.");
          }
       }
 
       if (inputOnce["KeyZ"]) {
          aura.zetsu = !aura.zetsu;
+         changed = true;
          if (aura.zetsu) {
             aura.ten = false;
+            aura.ren = false;
+            aura.ken = false;
+            aura.gyo = false;
+            aura.shu = false;
+            aura.en.on = false;
+            aura.en.r = 0;
             aura.renActive = false;
             aura.renCharge = 0;
             aura.renMul = 1.0;
@@ -2357,9 +2480,40 @@
          }
       }
 
+      if (inputOnce["KeyK"]) {
+         aura.ken = !aura.ken;
+         changed = true;
+         msg(aura.ken ? "Ken raised." : "Ken released.");
+      }
+
+      if (inputOnce["KeyG"]) {
+         aura.gyo = !aura.gyo;
+         changed = true;
+         msg(aura.gyo ? "Gyo focus sharpened." : "Gyo relaxed.");
+      }
+
+      if (inputOnce["KeyB"]) {
+         aura.shu = !aura.shu;
+         changed = true;
+         msg(aura.shu ? "Shu channeled." : "Shu dispersed.");
+      }
+
+      if (inputOnce["KeyV"]) {
+         aura.en.on = !aura.en.on;
+         if (!aura.en.on) {
+            aura.en.r = 0;
+         }
+         changed = true;
+         msg(aura.en.on ? "En expanding." : "En withdrawn.");
+      }
+
       const renSuppressed = aura.zetsu;
       const holdingRen = !renSuppressed && input["KeyR"];
-      if (holdingRen && state.nen > 0) {
+      if (aura.ren !== holdingRen) {
+         aura.ren = holdingRen;
+         changed = true;
+      }
+      if (holdingRen && state.nen.cur > 0) {
          aura.renActive = true;
          aura.renCharge = Math.min(1, aura.renCharge + dt / 1.2);
       } else {
@@ -2383,11 +2537,15 @@
             state.nenLight.intensity = glow;
          }
       }
+
+      if (changed) {
+         notifyAuraChange();
+      }
    }
 
    function spendNen(cost) {
-      if (state.nen < cost) return false;
-      state.nen -= cost;
+      if (state.nen.cur < cost) return false;
+      state.nen.cur -= cost;
       updateNenHud();
       return true;
    }
@@ -2465,11 +2623,11 @@
    function updateJumpCharge(dt) {
       if (!state.chargingJump) return;
       const drain = JUMP_NEN_DRAIN * dt;
-      if (state.nen <= 0) {
+      if (state.nen.cur <= 0) {
          performJump();
          return;
       }
-      state.nen = Math.max(0, state.nen - drain);
+      state.nen.cur = Math.max(0, state.nen.cur - drain);
       updateNenHud();
       state.jumpChargeT = Math.min(JUMP_MAX_T, state.jumpChargeT + dt);
       if (state.nenLight) state.nenLight.intensity = 0.2 + 0.6 * (state.jumpChargeT / JUMP_MAX_T);
@@ -2560,7 +2718,7 @@
             break;
          case "Specialist":
             if (state.timeStop) return;
-            if (state.nen <= state.ultMinNen + 5) {
+            if (state.nen.cur <= state.ultMinNen + 5) {
                msg("Not enough Nen for time distortion.");
                return;
             }
@@ -2884,18 +3042,18 @@
       // passive regen + aura flow
       const aura = state.aura;
       const regenMult = aura.ten ? 0.85 : 1.0;
-      let nenRate = state.baseNenRegen * regenMult;
+      let nenRate = state.nen.regen * regenMult;
       if (state.chargingNen && !aura.zetsu) nenRate += 4.0;
       let nenDrain = 0;
       if (!aura.ten && !aura.zetsu) nenDrain += 0.8;
       if (aura.renActive) nenDrain += 2 + 6 * aura.renCharge;
       const nenDelta = (nenRate - nenDrain) * dt;
-      const prevNen = state.nen;
-      state.nen = clamp(state.nen + nenDelta, 0, state.nenMax);
-      if (state.nen !== prevNen) {
+      const prevNen = state.nen.cur;
+      state.nen.cur = clamp(state.nen.cur + nenDelta, 0, state.nen.max);
+      if (state.nen.cur !== prevNen) {
          updateNenHud();
       }
-      if (state.nen <= 0 && aura.renActive) {
+      if (state.nen.cur <= 0 && aura.renActive) {
          aura.renActive = false;
          aura.renCharge = 0;
          aura.renMul = 1.0;
@@ -2906,12 +3064,12 @@
       // Specialist ult drain
       if (state.timeStop) {
          state.ultT += dt;
-         const prevNen = state.nen;
-         state.nen = Math.max(0, state.nen - state.ultDrainRate * dt);
-         if (state.nen !== prevNen) {
+         const prevNen = state.nen.cur;
+         state.nen.cur = Math.max(0, state.nen.cur - state.ultDrainRate * dt);
+         if (state.nen.cur !== prevNen) {
             updateNenHud();
          }
-         if (state.nen <= state.ultMinNen || state.ultT >= state.ultMaxDur) {
+         if (state.nen.cur <= state.ultMinNen || state.ultT >= state.ultMaxDur) {
             state.timeStop = false;
             setCooldown("special", COOLDOWNS.special);
             msg("Time resumes!");
@@ -3164,7 +3322,7 @@
                spawnWave(8);
                state.hp = Math.min(state.maxHP, state.hp + 20);
                updateHealthHud();
-               state.nen = Math.min(state.nenMax, state.nen + 30);
+               state.nen.cur = Math.min(state.nen.max, state.nen.cur + 30);
                updateNenHud();
             }
          }
@@ -3239,7 +3397,7 @@ try {
     getFallbackTreeMaterials, createFallbackTree,
 
     // HUD & cooldowns
-    setCooldown, cdActive, markCooldownDirty, updateHealthHud, updateNenHud, updateXpHud, updateCooldownUI, updateHUD, msg,
+    setCooldown, cdActive, markCooldownDirty, updateHealthHud, updateNenHud, updateXpHud, updateAuraHud, updateCooldownUI, updateHUD, msg,
 
     // combat
     blast, dash, special, nearestEnemy,
@@ -3247,6 +3405,10 @@ try {
     // saves & progress
     saveProgress, gainXP, xpToNext,
 
+    // aura state accessors
+    state,
+    getAuraState: () => getAuraSnapshot(),
+    subscribeAura,
   });
   // share rig definitions for the editor if available
   window.RigDefinitions = {

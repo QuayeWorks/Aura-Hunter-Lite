@@ -6,7 +6,10 @@
     updateCooldowns: (...a)=>H.updateCooldownUI?.(...a),
     setCooldown: (...a)=>H.setCooldown?.(...a),
     isCooldown: (...a)=>H.cdActive?.(...a),
-    message: (...a)=>H.msg?.(...a)
+    message: (...a)=>H.msg?.(...a),
+    updateAuraStrip: (...a)=>H.updateAuraHud?.(...a),
+    subscribeAura: (...a)=>H.subscribeAura?.(...a),
+    getAuraState: (...a)=>H.getAuraState?.(...a)
   };
   window.HUD = HUD;
 })();
