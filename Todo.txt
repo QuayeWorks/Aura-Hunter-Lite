@@ -21,35 +21,6 @@ A short “What changed / Why” note
 
 Quick manual test steps
 
-Task 0 — Index the codebase and confirm hooks
-
-Prompt to Codex:
-
-Read all listed files. Output a 10–15 line summary of what each file currently exposes (functions/exports) and where input handling, damage calculation, spawning, and HUD rendering live. Identify safe insertion points for Nen systems, inventory, regions, and enemies. Do not modify code.
-
-Task 1 — Inputs + base state (Nen stubs only)
-
-Files: game.js, hud.js, nen-core.js
-Prompt:
-
-Add key bindings and base state only (no effects yet).
-
-Reserve keys: T(Ten), Z(Zetsu), R (hold Ren), G(Gyo), V(En), B(Shu), K(Ken), C+LMB (Ko), Wheel (Ryu), Tab (radial).
-
-Add to global state:
-
-state.aura = { ten:false, zetsu:false, ren:false, ken:false, in:false, gyo:false, shu:false, en:{ on:false, r:0 } };
-state.flow = { head:.09, torso:.25, rArm:.166, lArm:.166, rLeg:.166, lLeg:.166 };
-state.vows = [];
-state.nen = { max:100, cur:100, regen:2.0 }; // numbers placeholder
-
-
-HUD: small strip that renders current ON/OFF for Ten/Zetsu/Ren/Ken/Gyo/Shu/En.
-
-No drains or combat effects yet.
-Follow my output rules.
-
-Done check: Toggling keys flips booleans in state and HUD badges reflect it.
 
 Task 2 — Nen economy loop (regen/leak/drains)
 
@@ -264,5 +235,6 @@ Files: game.js, hud.js
 Prompt:
 
 Serialize: inventory, vows, nenType, stat ceilings, region progress, and Nen pools. On load, restore HUD and all toggles. Add a quick in-game test panel (dev-only) to flip modes and spawn target dummies. Follow my output rules.
+
 
 Done check: Quit/reload returns to the same state; dev panel toggles help QA.
