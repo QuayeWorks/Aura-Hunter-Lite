@@ -128,6 +128,37 @@
       }
    };
 
+   const ensureFiniteDamage = (value, fallback) =>
+      Number.isFinite(value) ? value : fallback;
+
+   function runOutgoingDamage(src, limb, baseDamage) {
+      const base = ensureFiniteDamage(baseDamage, 0);
+      const hook = window.HXH?.applyOutgoingDamage;
+      if (typeof hook === "function") {
+         try {
+            const result = hook(src, limb, base);
+            return ensureFiniteDamage(result, base);
+         } catch (err) {
+            console.warn("[HXH] applyOutgoingDamage failed", err);
+         }
+      }
+      return base;
+   }
+
+   function runIncomingDamage(dst, limb, baseDamage) {
+      const base = ensureFiniteDamage(baseDamage, 0);
+      const hook = window.HXH?.applyIncomingDamage;
+      if (typeof hook === "function") {
+         try {
+            const result = hook(dst, limb, base);
+            return ensureFiniteDamage(result, base);
+         } catch (err) {
+            console.warn("[HXH] applyIncomingDamage failed", err);
+         }
+      }
+      return base;
+   }
+
    const mobileMove = { x: 0, y: 0, active: false };
    let mobileControlsInitialized = false;
 
@@ -2427,7 +2458,8 @@
 
    // ------------ Combat / Abilities ------------
    function takeDamage(amount, type = "physical") {
-      let dmg = amount;
+      const normalized = ensureFiniteDamage(amount, 0);
+      let dmg = runIncomingDamage(state, type, normalized);
       if (state.aura.ten && type !== "nen") {
          dmg *= 0.9;
       }
@@ -2569,11 +2601,13 @@
       let dmg = base * mult;
       if (state.buffs.electrify) dmg += 6;
       if (state.buffs.berserk) dmg *= 1.25;
+      const outgoing = runOutgoingDamage(state, "melee", dmg);
       enemies.forEach(e => {
          if (!e.alive) return;
          const d = BABYLON.Vector3.Distance(e.root.position, playerRoot.position);
          if (d < range) {
-            e.hp -= dmg;
+            const applied = runIncomingDamage(e, "torso", outgoing);
+            e.hp -= applied;
             if (e.hp <= 0) {
                e.alive = false;
                e.root.dispose();
@@ -2682,6 +2716,8 @@
          speed,
          life,
          dmg,
+         source: state,
+         limb: "nenBlast",
          radius: 0.55,
          prevPos: orb.position.clone()
       });
@@ -2779,6 +2815,8 @@
                   speed,
                   life,
                   dmg,
+                  source: state,
+                  limb: "nenVolley",
                   radius: 0.5,
                   prevPos: orb.position.clone()
                });
@@ -3109,8 +3147,11 @@
          for (const e of enemies) {
             if (!e.alive || !e.root.isEnabled()) continue;
             const hitRadius = 0.9 + ((p.radius || 0) * 0.5);
-            if (BABYLON.Vector3.Distance(e.root.position, p.mesh.position) < hitRadius) {
-               e.hp -= p.dmg;
+            const dist = BABYLON.Vector3.Distance(e.root.position, p.mesh.position);
+            if (dist < hitRadius) {
+               const outgoing = runOutgoingDamage(p.source ?? state, p.limb ?? "projectile", p.dmg);
+               const applied = runIncomingDamage(e, p.limb ?? "projectile", outgoing);
+               e.hp -= applied;
                p.life.t = 0;
                if (e.hp <= 0) {
                   e.alive = false;
@@ -3235,8 +3276,9 @@
             } else {
                e.attackCd -= dt;
                if (e.attackCd <= 0) {
-                  const dmg = state.buffs.shield ? 6 : 12;
-                  takeDamage(dmg, "physical");
+                  const baseDmg = state.buffs.shield ? 6 : 12;
+                  const outgoing = runOutgoingDamage(e, "melee", baseDmg);
+                  takeDamage(outgoing, "physical");
                   e.attackCd = 1.2;
                   e.attackAnimT = 0.22;
                }
@@ -3363,10 +3405,13 @@
 
    // Public API
    window.GameSettings = GameSettings;
+   const previousHXH = typeof window.HXH === "object" && window.HXH ? window.HXH : {};
    window.HXH = {
       startGame,
       rigReady,
-      getRig: () => RIG
+      getRig: () => RIG,
+      applyOutgoingDamage: previousHXH.applyOutgoingDamage,
+      applyIncomingDamage: previousHXH.applyIncomingDamage
    };
 // === Added: expose subsystems so auxiliary files can reuse them ===
 try {
