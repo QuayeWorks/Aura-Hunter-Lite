@@ -3,12 +3,6 @@ world-utils.js, rig-definitions.js, items-and-crafting.js, spawns.js, region-man
 
 Hard rules for code output (follow exactly):
 
-If any single function changes by > 25 lines, print the entire function with edits.
-
-If total changes in a reply are > 200 lines, print the entire file, preserving all existing features.
-
-If code changes are ≤ 25 lines, print the patch with 3 lines of context above and below.
-
 Before removing any feature, ask if it’s relevant; otherwise do not remove.
 
 Constraints: Do not break existing HUD buttons, attacks, gameplay, or terrain generation. Keep index.html and styles.css working. Use modern, clean JS (no transpile step).
@@ -238,3 +232,4 @@ Serialize: inventory, vows, nenType, stat ceilings, region progress, and Nen poo
 
 
 Done check: Quit/reload returns to the same state; dev panel toggles help QA.
+
