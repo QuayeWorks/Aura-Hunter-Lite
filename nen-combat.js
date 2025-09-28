@@ -13,10 +13,22 @@ export function applyOutgoingDamage(src, limb, baseDamage) {
   if (src && playerState && src === playerState) {
     const strike = playerState.koStrike;
     if (strike) {
+      const advanced = typeof window !== "undefined" ? window.NenAdvanced : null;
+      if (advanced && typeof advanced.onKoStrike === "function") {
+        try {
+          advanced.onKoStrike(strike, { limb, baseDamage, source: src });
+        } catch (err) {
+          console.warn("[HXH] NenAdvanced.onKoStrike failed", err);
+        }
+      }
       playerState.koStrike = null;
       if (!strike.limb || strike.limb === limb) {
         const mult = Number.isFinite(strike.multiplier) ? strike.multiplier : 1;
-        result = baseDamage * mult;
+        let final = baseDamage * mult;
+        if (playerState.aura && playerState.aura.gyo) {
+          final *= 1.15;
+        }
+        result = final;
       }
     }
   }
