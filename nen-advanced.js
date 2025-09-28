@@ -22,15 +22,38 @@
       pendingKind: null,
       pendingWindow: 0,
       notified: false,
+    },
+    enStatus: {
+      keyHeld: false,
+      keyDownAt: 0,
+      holdThresholdMs: 220,
+      maintainActive: false,
+      maintainStart: 0,
+      maintainRadius: 0,
+      maintainFailed: false,
+      pendingPulse: false,
+      lastAuraRadius: 0,
+      highlightLayer: null,
+      senseEntries: new Map(),
+      slowedProjectiles: new Map(),
+      senseColor: null
     }
   };
 
   const IN_UPFRONT_COST = 8;
   const IN_UPKEEP_PER_SEC = 1;
   const VOLLEY_WINDOW = 0.16;
+  const EN_PULSE_COST = 12;
+  const EN_PULSE_RADIUS = 12;
+  const EN_PULSE_SLOW_FACTOR = 0.35;
+  const EN_PULSE_SLOW_DURATION = 0.3;
+  const EN_MIN_RADIUS = 6;
+  const EN_MAX_RADIUS = 18;
+  const EN_EXPAND_DURATION = 1.0;
 
   const getHXH = () => (typeof globalObj.HXH === "object" ? globalObj.HXH : null);
   const getHUD = () => (typeof globalObj.HUD === "object" ? globalObj.HUD : null);
+  const getBABYLON = () => globalObj.BABYLON || null;
 
   function createColor(hex, fallback = [1, 1, 1]) {
     const BABYLON = globalObj.BABYLON;
@@ -65,7 +88,8 @@
     weakGlow: createColor("#5cc9ff", [0.36, 0.78, 1.0]),
     weakGlowVulnerable: createColor("#ffb347", [1.0, 0.7, 0.34]),
     concealOutline: createColor("#7fd2ff", [0.5, 0.82, 1.0]),
-    concealGlow: createColor("#9fe1ff", [0.62, 0.88, 1.0])
+    concealGlow: createColor("#9fe1ff", [0.62, 0.88, 1.0]),
+    enSense: createColor("#7fb8ff", [0.5, 0.72, 1.0])
   };
 
   function hudMessage(text) {
@@ -190,6 +214,451 @@
     resetInStatus();
     if (reason && !opts.silent) hudMessage(reason);
     return true;
+  }
+
+  function getNow() {
+    if (typeof globalObj.performance === "object" && typeof globalObj.performance.now === "function") {
+      return globalObj.performance.now();
+    }
+    return Date.now();
+  }
+
+  function getPlayerPosition() {
+    const state = advState.currentState;
+    if (!state) return null;
+    if (state.prevPlayerPos && typeof state.prevPlayerPos.x === "number") {
+      return state.prevPlayerPos;
+    }
+    const root = state.ch?.root;
+    if (root?.position && typeof root.position.x === "number") {
+      return root.position;
+    }
+    return null;
+  }
+
+  function distanceSq(a, b) {
+    if (!a || !b) return Infinity;
+    const ax = typeof a.x === "number" ? a.x : 0;
+    const ay = typeof a.y === "number" ? a.y : 0;
+    const az = typeof a.z === "number" ? a.z : 0;
+    const bx = typeof b.x === "number" ? b.x : 0;
+    const by = typeof b.y === "number" ? b.y : 0;
+    const bz = typeof b.z === "number" ? b.z : 0;
+    const dx = ax - bx;
+    const dy = ay - by;
+    const dz = az - bz;
+    return dx * dx + dy * dy + dz * dz;
+  }
+
+  function ensureEnSenseColor() {
+    if (advState.enStatus.senseColor) return advState.enStatus.senseColor;
+    const base = COLORS.enSense;
+    if (!base) return null;
+    advState.enStatus.senseColor = base.clone ? base.clone() : base;
+    return advState.enStatus.senseColor;
+  }
+
+  function ensureEnHighlightLayer(mesh) {
+    const BABYLON = getBABYLON();
+    if (!BABYLON || typeof BABYLON.HighlightLayer !== "function" || !mesh?.getScene) return null;
+    const scene = mesh.getScene?.();
+    if (!scene) return null;
+    let layer = advState.enStatus.highlightLayer || null;
+    if (layer && typeof layer.isDisposed === "function" && layer.isDisposed()) {
+      layer = null;
+      advState.enStatus.highlightLayer = null;
+    }
+    if (layer && layer._scene && layer._scene !== scene) {
+      try { layer.dispose(); } catch (err) { console.warn("[HXH] Failed to dispose old En layer", err); }
+      layer = null;
+      advState.enStatus.highlightLayer = null;
+    }
+    if (!layer) {
+      try {
+        layer = new BABYLON.HighlightLayer("enSenseLayer", scene, { blurHorizontalSize: 1.2, blurVerticalSize: 1.2 });
+        layer.innerGlow = true;
+        layer.outerGlow = false;
+        advState.enStatus.highlightLayer = layer;
+      } catch (err) {
+        console.warn("[HXH] Failed to create En highlight layer", err);
+        advState.enStatus.highlightLayer = null;
+        return null;
+      }
+    }
+    return layer;
+  }
+
+  function isMeshLike(node) {
+    if (!node) return false;
+    if (typeof node.getTotalVertices === "function") return true;
+    if (typeof node.isVerticesDataPresent === "function") return true;
+    const name = node.getClassName?.();
+    return typeof name === "string" && /mesh/i.test(name);
+  }
+
+  function gatherSenseMeshes(root) {
+    if (!root) return [];
+    const meshes = [];
+    const seen = new Set();
+    const add = mesh => {
+      if (!mesh || seen.has(mesh) || !isMeshLike(mesh)) return;
+      seen.add(mesh);
+      meshes.push(mesh);
+    };
+    if (isMeshLike(root)) add(root);
+    const collectChildren = node => {
+      if (!node) return;
+      let children = [];
+      if (typeof node.getChildMeshes === "function") {
+        try {
+          const result = node.getChildMeshes(false);
+          if (Array.isArray(result)) {
+            children = result;
+          }
+        } catch (err) {
+          console.warn("[HXH] Failed to enumerate En meshes", err);
+        }
+      }
+      if (!children.length && Array.isArray(node._children)) {
+        children = node._children;
+      }
+      children.forEach(child => {
+        if (isMeshLike(child)) add(child);
+        collectChildren(child);
+      });
+    };
+    collectChildren(root);
+    return meshes;
+  }
+
+  function removeSenseEntry(enemy) {
+    const entry = advState.enStatus.senseEntries.get(enemy);
+    if (!entry) return;
+    if (!Array.isArray(entry.meshes)) {
+      entry.meshes = [];
+      if (entry.mesh && !entry.meshes.includes(entry.mesh)) {
+        entry.meshes.push(entry.mesh);
+      }
+    }
+    if (!Array.isArray(entry.disposeObservers) && entry.disposeObserver && entry.mesh) {
+      entry.disposeObservers = [{ mesh: entry.mesh, observer: entry.disposeObserver }];
+    }
+    const layer = advState.enStatus.highlightLayer;
+    if (layer?.removeMesh && Array.isArray(entry.meshes)) {
+      entry.meshes.forEach(mesh => {
+        if (!mesh) return;
+        try { layer.removeMesh(mesh); } catch (err) { console.warn("[HXH] Failed removing En mesh", err); }
+      });
+    }
+    if (Array.isArray(entry.disposeObservers)) {
+      entry.disposeObservers.forEach(({ mesh, observer }) => {
+        if (mesh?.onDisposeObservable?.remove && observer) {
+          mesh.onDisposeObservable.remove(observer);
+        }
+      });
+    }
+    advState.enStatus.senseEntries.delete(enemy);
+  }
+
+  function clearSenseEntries() {
+    for (const enemy of Array.from(advState.enStatus.senseEntries.keys())) {
+      removeSenseEntry(enemy);
+    }
+  }
+
+  function markEnemySensed(enemy, now, durationMs) {
+    if (!enemy || !enemy.root || enemy.root.isDisposed?.() || !enemy.alive) return;
+    const layer = ensureEnHighlightLayer(enemy.root);
+    if (!layer) return;
+    const meshSet = new Set(gatherSenseMeshes(enemy.root));
+    const parts = enemy.parts;
+    if (parts && typeof parts === "object") {
+      Object.values(parts).forEach(part => {
+        gatherSenseMeshes(part).forEach(mesh => meshSet.add(mesh));
+      });
+    }
+    const meshes = Array.from(meshSet);
+    if (!meshes.length) return;
+    const color = ensureEnSenseColor();
+    let entry = advState.enStatus.senseEntries.get(enemy);
+    if (!entry) {
+      const addedMeshes = [];
+      const disposeObservers = [];
+      meshes.forEach(mesh => {
+        try {
+          layer.addMesh(mesh, color, true);
+          addedMeshes.push(mesh);
+          if (mesh.onDisposeObservable?.add) {
+            const observer = mesh.onDisposeObservable.add(() => removeSenseEntry(enemy));
+            disposeObservers.push({ mesh, observer });
+          }
+        } catch (err) {
+          console.warn("[HXH] Failed highlighting enemy mesh", err);
+        }
+      });
+      if (!addedMeshes.length) return;
+      entry = {
+        meshes: addedMeshes,
+        enemy,
+        expiresAt: now + durationMs,
+        disposeObservers
+      };
+      advState.enStatus.senseEntries.set(enemy, entry);
+    } else {
+      if (!Array.isArray(entry.meshes)) entry.meshes = [];
+      if (!Array.isArray(entry.disposeObservers)) entry.disposeObservers = [];
+      entry.expiresAt = Math.max(entry.expiresAt, now + durationMs);
+      const missing = meshes.filter(mesh => !entry.meshes.includes(mesh));
+      missing.forEach(mesh => {
+        try {
+          layer.addMesh(mesh, color, true);
+          entry.meshes.push(mesh);
+          if (mesh.onDisposeObservable?.add) {
+            const observer = mesh.onDisposeObservable.add(() => removeSenseEntry(enemy));
+            entry.disposeObservers = entry.disposeObservers || [];
+            entry.disposeObservers.push({ mesh, observer });
+          }
+        } catch (err) {
+          console.warn("[HXH] Failed updating En highlight", err);
+        }
+      });
+    }
+  }
+
+  function updateSenseEntries(now) {
+    for (const [enemy, entry] of Array.from(advState.enStatus.senseEntries.entries())) {
+      const meshes = Array.isArray(entry?.meshes)
+        ? entry.meshes
+        : entry?.mesh
+          ? [entry.mesh]
+          : [];
+      const hasMesh = meshes.some(mesh => mesh && !mesh.isDisposed?.());
+      if (!enemy || !enemy.alive || !hasMesh || now >= entry.expiresAt) {
+        removeSenseEntry(enemy);
+      }
+    }
+  }
+
+  function clearEnHighlightLayer() {
+    const layer = advState.enStatus.highlightLayer;
+    if (layer) {
+      try { layer.dispose(); } catch (err) { console.warn("[HXH] Failed disposing En layer", err); }
+      advState.enStatus.highlightLayer = null;
+    }
+  }
+
+  function clearProjectileSlows() {
+    for (const [proj, info] of Array.from(advState.enStatus.slowedProjectiles.entries())) {
+      if (proj && typeof info?.originalSpeed === "number") {
+        proj.speed = info.originalSpeed;
+      }
+      advState.enStatus.slowedProjectiles.delete(proj);
+    }
+  }
+
+  function updateProjectileSlows(nowMs) {
+    for (const [proj, info] of Array.from(advState.enStatus.slowedProjectiles.entries())) {
+      const expired = !proj || info.until <= nowMs || proj.mesh?.isDisposed?.();
+      if (expired) {
+        if (proj && typeof info?.originalSpeed === "number") {
+          proj.speed = info.originalSpeed;
+        }
+        advState.enStatus.slowedProjectiles.delete(proj);
+      }
+    }
+  }
+
+  function applyProjectileSlow(proj, nowMs, durationSec = EN_PULSE_SLOW_DURATION) {
+    if (!proj || typeof proj.speed !== "number") return;
+    const durationMs = Math.max(0, durationSec * 1000);
+    const entry = advState.enStatus.slowedProjectiles.get(proj);
+    if (entry) {
+      entry.until = Math.max(entry.until, nowMs + durationMs);
+      return;
+    }
+    const originalSpeed = proj.speed;
+    proj.speed = Math.max(0, originalSpeed * EN_PULSE_SLOW_FACTOR);
+    advState.enStatus.slowedProjectiles.set(proj, {
+      originalSpeed,
+      until: nowMs + durationMs
+    });
+  }
+
+  function setAuraEn(active, radius = EN_MIN_RADIUS, opts = {}) {
+    const state = advState.currentState;
+    const aura = state?.aura;
+    if (!aura || !aura.en) return false;
+    const en = aura.en;
+    const prevOn = !!en.on;
+    const prevRadius = typeof en.r === "number" ? en.r : 0;
+    if (active) {
+      const clamped = Math.min(EN_MAX_RADIUS, Math.max(EN_MIN_RADIUS, Number.isFinite(radius) ? radius : EN_MIN_RADIUS));
+      en.on = true;
+      en.r = clamped;
+      advState.enStatus.lastAuraRadius = clamped;
+    } else {
+      en.on = false;
+      en.r = 0;
+      advState.enStatus.lastAuraRadius = 0;
+    }
+    const changed = prevOn !== en.on || Math.abs(prevRadius - en.r) > 0.05;
+    if (changed && !opts.skipHud) {
+      getHXH()?.updateAuraHud?.();
+    }
+    return changed;
+  }
+
+  function startEnMaintain(nowMs) {
+    const state = advState.currentState;
+    if (!state) return false;
+    if (state.aura?.zetsu) {
+      hudMessage("Cannot expand En while in Zetsu.");
+      advState.enStatus.maintainFailed = true;
+      setAuraEn(false);
+      return false;
+    }
+    if (!state.nen || state.nen.cur <= 0) {
+      hudMessage("Nen too low to maintain En.");
+      advState.enStatus.maintainFailed = true;
+      setAuraEn(false);
+      return false;
+    }
+    advState.enStatus.maintainActive = true;
+    advState.enStatus.maintainStart = nowMs;
+    advState.enStatus.maintainRadius = EN_MIN_RADIUS;
+    advState.enStatus.maintainFailed = false;
+    advState.enStatus.pendingPulse = false;
+    setAuraEn(true, EN_MIN_RADIUS);
+    hudMessage("En aura maintained — senses extending.");
+    return true;
+  }
+
+  function stopEnMaintain(reason, opts = {}) {
+    if (advState.enStatus.maintainActive) {
+      advState.enStatus.maintainActive = false;
+      advState.enStatus.maintainRadius = 0;
+      advState.enStatus.maintainStart = 0;
+    }
+    setAuraEn(false, 0, { skipHud: opts.skipHud });
+    if (reason && !opts.silent) hudMessage(reason);
+    clearSenseEntries();
+  }
+
+  function resetEnState(opts = {}) {
+    const status = advState.enStatus;
+    status.keyHeld = false;
+    status.keyDownAt = 0;
+    status.pendingPulse = false;
+    status.maintainActive = false;
+    status.maintainFailed = false;
+    status.maintainRadius = 0;
+    status.maintainStart = 0;
+    status.lastAuraRadius = 0;
+    setAuraEn(false, 0, { skipHud: opts.skipHud });
+    clearProjectileSlows();
+    clearSenseEntries();
+    if (opts.disposeLayer) {
+      clearEnHighlightLayer();
+    }
+  }
+
+  function performEnPulse(nowMs) {
+    const state = advState.currentState;
+    if (!state?.nen) return false;
+    if (state.nen.cur < EN_PULSE_COST) {
+      hudMessage("Nen too low for En pulse.");
+      setAuraEn(false);
+      return false;
+    }
+    state.nen.cur = Math.max(0, state.nen.cur - EN_PULSE_COST);
+    getHXH()?.updateNenHud?.();
+    const playerPos = getPlayerPosition();
+    const radiusSq = EN_PULSE_RADIUS * EN_PULSE_RADIUS;
+    const H = getHXH();
+    if (playerPos) {
+      const enemies = Array.isArray(H?.enemies) ? H.enemies : [];
+      enemies.forEach(enemy => {
+        const pos = enemy?.root?.position;
+        if (!pos) return;
+        if (distanceSq(pos, playerPos) <= radiusSq) {
+          markEnemySensed(enemy, nowMs, 340);
+        }
+      });
+      const projectiles = Array.isArray(H?.projectiles) ? H.projectiles : [];
+      projectiles.forEach(proj => {
+        const pos = proj?.mesh?.position;
+        if (!pos) return;
+        if (distanceSq(pos, playerPos) <= radiusSq) {
+          applyProjectileSlow(proj, nowMs, EN_PULSE_SLOW_DURATION);
+        }
+      });
+    }
+    advState.enStatus.pendingPulse = false;
+    hudMessage("En pulse ripples outward.");
+    setAuraEn(false, 0);
+    return true;
+  }
+
+  function updateEn(nowMs, dtSec = 0) {
+    updateProjectileSlows(nowMs);
+    updateSenseEntries(nowMs);
+
+    const status = advState.enStatus;
+    const state = advState.currentState;
+    const dt = Number.isFinite(dtSec) ? Math.max(0, dtSec) : 0;
+    if (!state) return;
+
+    if (status.keyHeld && !status.maintainActive && !status.maintainFailed) {
+      if (nowMs - status.keyDownAt >= status.holdThresholdMs) {
+        startEnMaintain(nowMs);
+      }
+    }
+
+    if (status.maintainActive) {
+      if (state.aura?.zetsu) {
+        stopEnMaintain("Zetsu suppresses En.");
+        return;
+      }
+      if (!state.nen || state.nen.cur <= 0) {
+        stopEnMaintain("Nen exhausted — En collapses.");
+        return;
+      }
+      const elapsed = Math.max(0, (nowMs - status.maintainStart) / 1000);
+      const t = Math.min(1, elapsed / EN_EXPAND_DURATION);
+      const radius = EN_MIN_RADIUS + (EN_MAX_RADIUS - EN_MIN_RADIUS) * t;
+      status.maintainRadius = radius;
+      setAuraEn(true, radius);
+      const nen = state.nen;
+      if (nen && dt > 0) {
+        const lerp = (radius - EN_MIN_RADIUS) / (EN_MAX_RADIUS - EN_MIN_RADIUS);
+        const mix = Math.min(1, Math.max(0, lerp));
+        const drainRate = 4 + (10 - 4) * mix;
+        const nenCost = drainRate * dt;
+        if (nenCost > 0) {
+          if (nen.cur <= nenCost) {
+            nen.cur = 0;
+            getHXH()?.updateNenHud?.();
+            stopEnMaintain("Nen exhausted — En collapses.");
+            return;
+          }
+          nen.cur = Math.max(0, nen.cur - nenCost);
+          getHXH()?.updateNenHud?.();
+        }
+      }
+      const playerPos = getPlayerPosition();
+      if (playerPos) {
+        const H = getHXH();
+        const radiusSq = radius * radius;
+        const enemies = Array.isArray(H?.enemies) ? H.enemies : [];
+        enemies.forEach(enemy => {
+          const pos = enemy?.root?.position;
+          if (!pos) return;
+          if (distanceSq(pos, playerPos) <= radiusSq) {
+            markEnemySensed(enemy, nowMs, 220);
+          }
+        });
+      }
+    }
   }
 
   function toggleIn(forceOff = false) {
@@ -473,6 +942,7 @@
         console.warn("[HXH] Failed to restore projectile push", err);
       }
     }
+    clearProjectileSlows();
     advState.trackedProjectiles = null;
     advState.originalProjectilePush = null;
   }
@@ -487,6 +957,7 @@
 
   function attachState(state) {
     advState.currentState = state;
+    resetEnState({ skipHud: true, disposeLayer: true });
     ensureOverlay();
     ensureInIndicator();
     advState.gyoActive = !!state?.aura?.gyo;
@@ -499,6 +970,7 @@
   }
 
   function detachState() {
+    resetEnState({ skipHud: true, disposeLayer: true });
     if (advState.unsubscribeAura) {
       try { advState.unsubscribeAura(); } catch (err) { console.warn("[HXH] Aura unsubscribe failed", err); }
       advState.unsubscribeAura = null;
@@ -531,6 +1003,37 @@
     if (e.code === "KeyI" && isGameScreenVisible()) {
       toggleIn();
     }
+    if (e.code === "KeyV" && isGameScreenVisible()) {
+      const status = advState.enStatus;
+      status.keyHeld = true;
+      status.keyDownAt = getNow();
+      status.pendingPulse = true;
+      status.maintainFailed = false;
+      if (!status.maintainActive) {
+        setAuraEn(false, 0);
+      }
+    }
+  }
+
+  function handleKeyup(e) {
+    if (e.code !== "KeyV") return;
+    const status = advState.enStatus;
+    const now = getNow();
+    if (status.maintainActive) {
+      stopEnMaintain(null, { silent: true });
+    } else if (status.pendingPulse && !status.maintainFailed) {
+      const held = now - status.keyDownAt;
+      if (held <= status.holdThresholdMs + 80) {
+        performEnPulse(now);
+      } else {
+        setAuraEn(false, 0);
+      }
+    } else {
+      setAuraEn(false, 0);
+    }
+    status.keyHeld = false;
+    status.pendingPulse = false;
+    status.maintainFailed = false;
   }
 
   function frame(ts) {
@@ -543,6 +1046,8 @@
     if (!advState.lastFrameTs) advState.lastFrameTs = ts;
     const dt = Math.max(0, (ts - advState.lastFrameTs) / 1000);
     advState.lastFrameTs = ts;
+
+    updateEn(ts, dt);
 
     if (advState.currentState) {
       if (H?.projectiles && H.projectiles !== advState.trackedProjectiles) {
@@ -587,6 +1092,7 @@
 
   try {
     globalObj.addEventListener("keydown", handleKeydown, { passive: true });
+    globalObj.addEventListener("keyup", handleKeyup, { passive: true });
   } catch (err) {
     console.warn("[HXH] NenAdvanced key handler failed", err);
   }
