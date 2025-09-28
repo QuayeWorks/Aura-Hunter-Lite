@@ -288,15 +288,76 @@
     return layer;
   }
 
+
+  function isMeshLike(node) {
+    if (!node) return false;
+    if (typeof node.getTotalVertices === "function") return true;
+    if (typeof node.isVerticesDataPresent === "function") return true;
+    const name = node.getClassName?.();
+    return typeof name === "string" && /mesh/i.test(name);
+  }
+
+  function gatherSenseMeshes(root) {
+    if (!root) return [];
+    const meshes = [];
+    const seen = new Set();
+    const add = mesh => {
+      if (!mesh || seen.has(mesh) || !isMeshLike(mesh)) return;
+      seen.add(mesh);
+      meshes.push(mesh);
+    };
+    if (isMeshLike(root)) add(root);
+    const collectChildren = node => {
+      if (!node) return;
+      let children = [];
+      if (typeof node.getChildMeshes === "function") {
+        try {
+          const result = node.getChildMeshes(false);
+          if (Array.isArray(result)) {
+            children = result;
+          }
+        } catch (err) {
+          console.warn("[HXH] Failed to enumerate En meshes", err);
+        }
+      }
+      if (!children.length && Array.isArray(node._children)) {
+        children = node._children;
+      }
+      children.forEach(child => {
+        if (isMeshLike(child)) add(child);
+        collectChildren(child);
+      });
+    };
+    collectChildren(root);
+    return meshes;
+  }
+
   function removeSenseEntry(enemy) {
     const entry = advState.enStatus.senseEntries.get(enemy);
     if (!entry) return;
-    const layer = advState.enStatus.highlightLayer;
-    if (entry.mesh && layer?.removeMesh) {
-      try { layer.removeMesh(entry.mesh); } catch (err) { console.warn("[HXH] Failed removing En mesh", err); }
+    if (!Array.isArray(entry.meshes)) {
+      entry.meshes = [];
+      if (entry.mesh && !entry.meshes.includes(entry.mesh)) {
+        entry.meshes.push(entry.mesh);
+      }
     }
-    if (entry.disposeObserver && entry.mesh?.onDisposeObservable?.remove) {
-      entry.mesh.onDisposeObservable.remove(entry.disposeObserver);
+    if (!Array.isArray(entry.disposeObservers) && entry.disposeObserver && entry.mesh) {
+      entry.disposeObservers = [{ mesh: entry.mesh, observer: entry.disposeObserver }];
+    }
+    const layer = advState.enStatus.highlightLayer;
+    if (layer?.removeMesh && Array.isArray(entry.meshes)) {
+      entry.meshes.forEach(mesh => {
+        if (!mesh) return;
+        try { layer.removeMesh(mesh); } catch (err) { console.warn("[HXH] Failed removing En mesh", err); }
+      });
+    }
+    if (Array.isArray(entry.disposeObservers)) {
+      entry.disposeObservers.forEach(({ mesh, observer }) => {
+        if (mesh?.onDisposeObservable?.remove && observer) {
+          mesh.onDisposeObservable.remove(observer);
+        }
+      });
+
     }
     advState.enStatus.senseEntries.delete(enemy);
   }
@@ -311,28 +372,71 @@
     if (!enemy || !enemy.root || enemy.root.isDisposed?.() || !enemy.alive) return;
     const layer = ensureEnHighlightLayer(enemy.root);
     if (!layer) return;
+
+    const meshSet = new Set(gatherSenseMeshes(enemy.root));
+    const parts = enemy.parts;
+    if (parts && typeof parts === "object") {
+      Object.values(parts).forEach(part => {
+        gatherSenseMeshes(part).forEach(mesh => meshSet.add(mesh));
+      });
+    }
+    const meshes = Array.from(meshSet);
+    if (!meshes.length) return;
     const color = ensureEnSenseColor();
     let entry = advState.enStatus.senseEntries.get(enemy);
     if (!entry) {
-      try { layer.addMesh(enemy.root, color); } catch (err) { console.warn("[HXH] Failed highlighting enemy", err); return; }
+      const addedMeshes = [];
+      const disposeObservers = [];
+      meshes.forEach(mesh => {
+        try {
+          layer.addMesh(mesh, color, true);
+          addedMeshes.push(mesh);
+          if (mesh.onDisposeObservable?.add) {
+            const observer = mesh.onDisposeObservable.add(() => removeSenseEntry(enemy));
+            disposeObservers.push({ mesh, observer });
+          }
+        } catch (err) {
+          console.warn("[HXH] Failed highlighting enemy mesh", err);
+        }
+      });
+      if (!addedMeshes.length) return;
       entry = {
-        mesh: enemy.root,
+        meshes: addedMeshes,
         enemy,
         expiresAt: now + durationMs,
-        disposeObserver: null
+        disposeObservers
       };
-      if (enemy.root.onDisposeObservable?.add) {
-        entry.disposeObserver = enemy.root.onDisposeObservable.add(() => removeSenseEntry(enemy));
-      }
       advState.enStatus.senseEntries.set(enemy, entry);
     } else {
+      if (!Array.isArray(entry.meshes)) entry.meshes = [];
+      if (!Array.isArray(entry.disposeObservers)) entry.disposeObservers = [];
       entry.expiresAt = Math.max(entry.expiresAt, now + durationMs);
+      const missing = meshes.filter(mesh => !entry.meshes.includes(mesh));
+      missing.forEach(mesh => {
+        try {
+          layer.addMesh(mesh, color, true);
+          entry.meshes.push(mesh);
+          if (mesh.onDisposeObservable?.add) {
+            const observer = mesh.onDisposeObservable.add(() => removeSenseEntry(enemy));
+            entry.disposeObservers = entry.disposeObservers || [];
+            entry.disposeObservers.push({ mesh, observer });
+          }
+        } catch (err) {
+          console.warn("[HXH] Failed updating En highlight", err);
+        }
+      });
     }
   }
 
   function updateSenseEntries(now) {
     for (const [enemy, entry] of Array.from(advState.enStatus.senseEntries.entries())) {
-      if (!enemy || !enemy.alive || !entry.mesh || entry.mesh.isDisposed?.() || now >= entry.expiresAt) {
+      const meshes = Array.isArray(entry?.meshes)
+        ? entry.meshes
+        : entry?.mesh
+          ? [entry.mesh]
+          : [];
+      const hasMesh = meshes.some(mesh => mesh && !mesh.isDisposed?.());
+      if (!enemy || !enemy.alive || !hasMesh || now >= entry.expiresAt) {
         removeSenseEntry(enemy);
       }
     }
