@@ -8,6 +8,7 @@
       xpbar: $("#hud-xpbar span"),
       health: $("#hud-health span"),
       nenbar: $("#hud-nenbar span"),
+      nenbarWrap: $("#hud-nenbar"),
       msg: $("#hud-message"),
       cdQ: $("#cd-q"),
       cdE: $("#cd-e"),
@@ -1271,6 +1272,10 @@
 
    function updateNenHud() {
       setHudBarWidth(hud.nenbar, state.nen.cur / state.nen.max, "nen");
+      if (hud.nenbarWrap) {
+         const summary = state.nenDrainSummary || "None";
+         hud.nenbarWrap.setAttribute("title", `Nen drains: ${summary}`);
+      }
    }
 
    function updateXpHud(pct) {
@@ -3041,23 +3046,7 @@
 
       // passive regen + aura flow
       const aura = state.aura;
-      const regenMult = aura.ten ? 0.85 : 1.0;
-      let nenRate = state.nen.regen * regenMult;
-      if (state.chargingNen && !aura.zetsu) nenRate += 4.0;
-      let nenDrain = 0;
-      if (!aura.ten && !aura.zetsu) nenDrain += 0.8;
-      if (aura.renActive) nenDrain += 2 + 6 * aura.renCharge;
-      const nenDelta = (nenRate - nenDrain) * dt;
-      const prevNen = state.nen.cur;
-      state.nen.cur = clamp(state.nen.cur + nenDelta, 0, state.nen.max);
-      if (state.nen.cur !== prevNen) {
-         updateNenHud();
-      }
-      if (state.nen.cur <= 0 && aura.renActive) {
-         aura.renActive = false;
-         aura.renCharge = 0;
-         aura.renMul = 1.0;
-      }
+      window.NenCore?.nenTick?.(dt);
       state.hp = clamp(state.hp + state.baseHpRegen * dt, 0, state.maxHP);
       updateHealthHud();
 
