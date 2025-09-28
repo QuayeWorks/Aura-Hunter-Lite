@@ -37,6 +37,16 @@
       senseEntries: new Map(),
       slowedProjectiles: new Map(),
       senseColor: null
+    },
+    shuStatus: {
+      intent: false,
+      active: false,
+      weaponOut: false,
+      lastActive: false,
+      modifiers: null,
+      weapon: null,
+      glyph: null,
+      warned: false
     }
   };
 
@@ -54,6 +64,9 @@
   const getHXH = () => (typeof globalObj.HXH === "object" ? globalObj.HXH : null);
   const getHUD = () => (typeof globalObj.HUD === "object" ? globalObj.HUD : null);
   const getBABYLON = () => globalObj.BABYLON || null;
+  const getItems = () => (typeof globalObj.Items === "object" && globalObj.Items ? globalObj.Items : null);
+
+  const DEFAULT_SHU_MODIFIERS = { damageMul: 1.3, durabilityScalar: 0.65, pierceCount: 1 };
 
   function createColor(hex, fallback = [1, 1, 1]) {
     const BABYLON = globalObj.BABYLON;
@@ -133,6 +146,48 @@
         transition: opacity 160ms ease-out;
       }
       #hud .nen-in-indicator.active { opacity: 1; }
+      #hud .hud-shu-layer {
+        position: absolute;
+        top: 3rem;
+        right: 1rem;
+        pointer-events: none;
+        display: flex;
+        justify-content: flex-end;
+        z-index: 3;
+      }
+      #hud .shu-glyph {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0.18rem 0.42rem;
+        border-radius: 6px;
+        border: 1px solid rgba(110, 195, 255, 0.5);
+        background: rgba(12, 32, 54, 0.78);
+        color: #d4ecff;
+        font-size: 0.62rem;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        opacity: 0;
+        transform: translateY(-6px);
+        transition: opacity 140ms ease, transform 140ms ease, box-shadow 160ms ease;
+      }
+      #hud .shu-glyph .label { font-size: 0.62rem; }
+      #hud .shu-glyph.intent {
+        opacity: 0.45;
+        transform: translateY(-3px);
+      }
+      #hud .shu-glyph.armed.intent {
+        opacity: 0.65;
+      }
+      #hud .shu-glyph.active {
+        opacity: 1;
+        transform: translateY(0);
+        box-shadow: 0 0 12px rgba(120, 210, 255, 0.45);
+      }
+      #hud .shu-glyph.hidden {
+        opacity: 0;
+        transform: translateY(-8px);
+      }
     `;
     const HUD = getHUD();
     if (HUD?.injectStyles) {
@@ -193,6 +248,203 @@
       delete state.aura[flag];
     }
     getHXH()?.updateAuraHud?.();
+  }
+
+  function getActiveWeapon(state) {
+    if (!state || typeof state !== "object") return null;
+    const Items = getItems();
+    if (Items?.getActiveWeapon) {
+      try {
+        const weapon = Items.getActiveWeapon(state);
+        if (weapon) return weapon;
+      } catch (err) {
+        console.warn("[HXH] Items.getActiveWeapon failed", err);
+      }
+    }
+    if (state.weapon && typeof state.weapon === "object") return state.weapon;
+    return null;
+  }
+
+  function weaponIsOut(state, weapon) {
+    if (!weapon || typeof weapon !== "object") return false;
+    const Items = getItems();
+    if (Items?.isWeaponOut) {
+      try {
+        return !!Items.isWeaponOut(state, weapon);
+      } catch (err) {
+        console.warn("[HXH] Items.isWeaponOut failed", err);
+      }
+    }
+    if ("out" in weapon) return !!weapon.out;
+    if ("drawn" in weapon) return !!weapon.drawn;
+    if ("equipped" in weapon) return !!weapon.equipped;
+    if ("active" in weapon) return !!weapon.active;
+    if ("holstered" in weapon) return !weapon.holstered;
+    return true;
+  }
+
+  function sanitizeShuModifiers(mods) {
+    const fallback = DEFAULT_SHU_MODIFIERS;
+    if (!mods || typeof mods !== "object") return { ...fallback };
+    const damage = typeof mods.damageMul === "number" && Number.isFinite(mods.damageMul)
+      ? mods.damageMul
+      : typeof mods.damageMultiplier === "number" && Number.isFinite(mods.damageMultiplier)
+        ? mods.damageMultiplier
+        : fallback.damageMul;
+    const durability = typeof mods.durabilityScalar === "number" && Number.isFinite(mods.durabilityScalar)
+      ? mods.durabilityScalar
+      : typeof mods.durabilityMultiplier === "number" && Number.isFinite(mods.durabilityMultiplier)
+        ? mods.durabilityMultiplier
+        : typeof mods.durabilityEfficiency === "number" && Number.isFinite(mods.durabilityEfficiency)
+          ? mods.durabilityEfficiency
+          : fallback.durabilityScalar;
+    const pierceSource = mods.pierceCount ?? mods.pierce ?? mods.pierceBonus;
+    const pierce = typeof pierceSource === "number" && Number.isFinite(pierceSource) && pierceSource >= 0
+      ? pierceSource
+      : fallback.pierceCount;
+    return {
+      damageMul: damage > 0 ? damage : fallback.damageMul,
+      durabilityScalar: durability > 0 ? durability : fallback.durabilityScalar,
+      pierceCount: pierce
+    };
+  }
+
+  function resolveShuModifiers(state, weapon) {
+    const Items = getItems();
+    if (Items?.computeShuModifiers) {
+      try {
+        const mods = Items.computeShuModifiers(state, weapon);
+        if (mods) return sanitizeShuModifiers(mods);
+      } catch (err) {
+        console.warn("[HXH] Items.computeShuModifiers failed", err);
+      }
+    }
+    return { ...DEFAULT_SHU_MODIFIERS };
+  }
+
+  function createShuGlyphElement() {
+    const glyph = document.createElement("div");
+    glyph.className = "shu-glyph hidden";
+    const label = document.createElement("span");
+    label.className = "label";
+    label.textContent = "Shu";
+    glyph.appendChild(label);
+    return glyph;
+  }
+
+  function ensureShuGlyph() {
+    const status = advState.shuStatus;
+    ensureStyles();
+    const HUD = getHUD();
+    const hudRoot = HUD?.getHudRoot?.() || document.getElementById("hud");
+    if (!hudRoot) return null;
+    const Items = getItems();
+    const anchor = Items?.locateWeaponHud?.(hudRoot) || null;
+    let glyph = status.glyph;
+    if (!glyph || !glyph.isConnected) {
+      glyph = createShuGlyphElement();
+    }
+    if (anchor) {
+      if (glyph.parentElement !== anchor) {
+        glyph.remove();
+        anchor.appendChild(glyph);
+      }
+    } else {
+      const layer = HUD?.ensureLayer?.("hud-shu-layer", "hud-shu-layer") || document.getElementById("hud-shu-layer");
+      if (!layer) return glyph;
+      if (!layer.contains(glyph)) {
+        layer.innerHTML = "";
+        layer.appendChild(glyph);
+      }
+    }
+    status.glyph = glyph;
+    return glyph;
+  }
+
+  function updateShuGlyph(status) {
+    const glyph = ensureShuGlyph();
+    if (!glyph) return;
+    const label = glyph.querySelector?.(".label") || glyph;
+    if (label && label.textContent !== "Shu") label.textContent = "Shu";
+    const visible = status.intent || status.active;
+    glyph.classList.toggle("hidden", !visible);
+    glyph.classList.toggle("intent", !!status.intent);
+    glyph.classList.toggle("active", !!status.active);
+    glyph.classList.toggle("armed", !!status.weaponOut);
+    const weaponName = status.weapon && typeof status.weapon.name === "string" && status.weapon.name.trim().length
+      ? status.weapon.name.trim()
+      : null;
+    let title = "Shu inactive.";
+    if (status.active) {
+      title = weaponName ? `Shu imbues ${weaponName}.` : "Shu imbues your weapon.";
+    } else if (status.intent) {
+      title = status.weaponOut ? "Shu ready." : "Equip a weapon to channel Shu.";
+    }
+    glyph.title = title;
+  }
+
+  function setupProjectilePierce(projectile, pierceCount) {
+    if (!projectile || typeof projectile !== "object") return;
+    const attempts = Math.max(0, Math.floor(pierceCount));
+    if (attempts <= 0) return;
+    const life = projectile.life;
+    if (!life || typeof life !== "object") return;
+    if (life.__shuPierceMeta) {
+      life.__shuPierceMeta.remaining = Math.max(life.__shuPierceMeta.remaining, attempts);
+      return;
+    }
+    let internal = typeof life.t === "number" ? life.t : 0;
+    const meta = {
+      remaining: attempts,
+      keepAlive: Math.max(0.08, Math.min(internal > 0 ? internal * 0.25 : 0.18, 0.25)),
+      hits: 0
+    };
+    life.__shuPierceMeta = meta;
+    Object.defineProperty(life, "t", {
+      configurable: true,
+      enumerable: true,
+      get() { return internal; },
+      set(value) {
+        const data = life.__shuPierceMeta;
+        if (value === 0 && data && data.remaining > 0 && projectile.mesh && !projectile.mesh.isDisposed?.()) {
+          data.remaining -= 1;
+          data.hits += 1;
+          const minLife = data.keepAlive;
+          internal = internal > minLife ? internal : minLife;
+          const dir = projectile.dir;
+          if (dir && typeof dir.scale === "function" && projectile.mesh?.position?.addInPlace) {
+            const advance = Math.max(0.6, Math.min(1.4, (projectile.speed || 12) * 0.05));
+            try {
+              projectile.mesh.position.addInPlace(dir.scale(advance));
+              if (projectile.prevPos?.copyFrom) projectile.prevPos.copyFrom(projectile.mesh.position);
+            } catch (err) {
+              console.warn("[HXH] Shu projectile advance failed", err);
+            }
+          }
+          return;
+        }
+        internal = value;
+      }
+    });
+    projectile.__shuPierceMeta = meta;
+  }
+
+  function handleShuProjectile(projectile) {
+    const state = advState.currentState;
+    const status = advState.shuStatus;
+    if (!state || !status.active || !status.modifiers) return;
+    if (!projectile || typeof projectile !== "object") return;
+    if (projectile.source && projectile.source !== state) return;
+    const limb = typeof projectile.limb === "string" ? projectile.limb.toLowerCase() : "";
+    if (limb.startsWith("nen")) return;
+    const pierce = Math.max(0, Math.floor(status.modifiers.pierceCount ?? status.modifiers.pierce ?? DEFAULT_SHU_MODIFIERS.pierceCount));
+    if (pierce <= 0) return;
+    setupProjectilePierce(projectile, pierce);
+  }
+
+  function refreshShuProjectiles() {
+    if (!Array.isArray(advState.trackedProjectiles)) return;
+    advState.trackedProjectiles.forEach(handleShuProjectile);
   }
 
   function resetInStatus() {
@@ -721,6 +973,68 @@
     getHXH()?.updateNenHud?.();
   }
 
+  function updateShu(dt) {
+    const state = advState.currentState;
+    if (!state) return;
+    const aura = state.aura || (state.aura = {});
+    const status = advState.shuStatus;
+    const prevIntent = status.intent;
+    const prevActive = status.active;
+
+    const intent = !!aura.shu;
+    const weapon = getActiveWeapon(state);
+    const weaponOut = weaponIsOut(state, weapon);
+    const active = intent && weaponOut;
+    const modifiers = active ? resolveShuModifiers(state, weapon) : null;
+
+    aura.__shuIntent = intent;
+    aura.__shuWeaponOut = weaponOut;
+    aura.__shuActive = active;
+    aura.__shuModifiers = modifiers;
+    aura.__shuDurabilityScalar = modifiers ? modifiers.durabilityScalar : 1;
+    aura.__shuDamageMul = modifiers ? modifiers.damageMul : 1;
+
+    status.intent = intent;
+    status.weaponOut = weaponOut;
+    status.active = active;
+    status.weapon = weapon || null;
+    status.modifiers = modifiers;
+
+    const Items = getItems();
+    if (Items?.recordShuState) {
+      Items.recordShuState({
+        state,
+        weapon,
+        intent,
+        active,
+        weaponOut,
+        modifiers
+      });
+    } else if (Items && Items.__runtime) {
+      Items.__runtime.shu = { intent, active, weaponOut, weapon, modifiers };
+    }
+
+    if (intent && !weaponOut) {
+      if (!status.warned && prevIntent !== intent) {
+        hudMessage("Shu requires an equipped weapon.");
+        status.warned = true;
+      }
+    } else {
+      status.warned = false;
+    }
+
+    if (active && !prevActive) {
+      refreshShuProjectiles();
+    }
+    status.lastActive = active;
+
+    updateShuGlyph(status);
+
+    if (active !== prevActive) {
+      getHXH()?.updateAuraHud?.();
+    }
+  }
+
   function ensureHighlightEntry(enemy) {
     if (!enemy || !enemy.root) return null;
     let entry = advState.enemyHighlights.get(enemy);
@@ -932,9 +1246,13 @@
     advState.originalProjectilePush = original;
     projectiles.push = function(...items) {
       const result = original.apply(this, items);
-      items.forEach(item => handleConjured(item));
+      items.forEach(item => {
+        handleConjured(item);
+        handleShuProjectile(item);
+      });
       return result;
     };
+    refreshShuProjectiles();
   }
 
   function detachProjectiles() {
@@ -965,11 +1283,24 @@
     ensureInIndicator();
     advState.gyoActive = !!state?.aura?.gyo;
     setOverlayActive(advState.gyoActive);
+    const aura = state?.aura || {};
+    const status = advState.shuStatus;
+    const weapon = getActiveWeapon(state);
+    const inferredWeaponOut = weaponIsOut(state, weapon);
+    status.intent = !!aura.shu;
+    status.active = !!(aura.__shuActive ?? (status.intent && inferredWeaponOut));
+    status.weaponOut = !!(aura.__shuWeaponOut ?? inferredWeaponOut);
+    status.modifiers = aura.__shuModifiers || (status.active ? resolveShuModifiers(state, weapon) : null);
+    status.weapon = weapon;
+    status.lastActive = status.active;
+    status.warned = false;
+    updateShuGlyph(status);
     const H = getHXH();
     if (H?.subscribeAura) {
       advState.unsubscribeAura = H.subscribeAura(handleAuraChange);
     }
     attachProjectiles(H?.projectiles);
+    updateShu(0);
   }
 
   function detachState() {
@@ -994,6 +1325,22 @@
       resetEnemyHighlight(entry);
     }
     advState.enemyHighlights.clear();
+    const glyph = advState.shuStatus.glyph;
+    if (glyph) {
+      glyph.classList.add("hidden");
+      glyph.classList.remove("active", "intent", "armed");
+    }
+    Object.assign(advState.shuStatus, {
+      intent: false,
+      active: false,
+      weaponOut: false,
+      lastActive: false,
+      modifiers: null,
+      weapon: null,
+      warned: false
+    });
+    const Items = getItems();
+    Items?.recordShuState?.(null);
   }
 
   function isGameScreenVisible() {
@@ -1056,6 +1403,7 @@
       if (H?.projectiles && H.projectiles !== advState.trackedProjectiles) {
         attachProjectiles(H.projectiles);
       }
+      updateShu(dt);
       drainIn(dt);
       if (advState.inStatus.pendingKind) {
         advState.inStatus.pendingWindow = Math.max(0, advState.inStatus.pendingWindow - dt);

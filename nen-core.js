@@ -38,7 +38,8 @@
     addDrain("Ren", 1.0, aura.renActive);
     addDrain("Ken", 1.8, !!aura.ken);
     addDrain("Gyo", 0.6, !!aura.gyo);
-    addDrain("Shu", 1.0, !!aura.shu);
+    const shuActive = aura?.__shuActive ?? aura.shu;
+    addDrain("Shu", 1.0, !!shuActive);
     if (aura.en && aura.en.on) {
       const r = clamp(aura.en.r ?? 0, 6, 18);
       addDrain("En", mapRange(r, 6, 18, 4, 10));
