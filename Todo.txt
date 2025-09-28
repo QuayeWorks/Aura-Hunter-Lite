@@ -1,160 +1,268 @@
-Lets improve Gameplay to make this more intreresting.
+You are modifying a JS game with this file layout:
+world-utils.js, rig-definitions.js, items-and-crafting.js, spawns.js, region-manager.js, nen-core.js, nen-advanced.js, nen-combat.js, hud.js, game.js, enemies.js, rig-editor.js, index.html, styles.css.
 
-Character Variety
+Hard rules for code output (follow exactly):
 
-Support humanoid and anthropomorphic rigs across a wide range of heights and proportions as well as quadroped.
+If any single function changes by > 25 lines, print the entire function with edits.
+
+If total changes in a reply are > 200 lines, print the entire file, preserving all existing features.
+
+If code changes are ≤ 25 lines, print the patch with 3 lines of context above and below.
+
+Before removing any feature, ask if it’s relevant; otherwise do not remove.
+
+Constraints: Do not break existing HUD buttons, attacks, gameplay, or terrain generation. Keep index.html and styles.css working. Use modern, clean JS (no transpile step).
+
+Deliverables per task:
+
+The code per the rules above
+
+A short “What changed / Why” note
+
+Quick manual test steps
+
+Task 0 — Index the codebase and confirm hooks
+
+Prompt to Codex:
+
+Read all listed files. Output a 10–15 line summary of what each file currently exposes (functions/exports) and where input handling, damage calculation, spawning, and HUD rendering live. Identify safe insertion points for Nen systems, inventory, regions, and enemies. Do not modify code.
+
+Task 1 — Inputs + base state (Nen stubs only)
+
+Files: game.js, hud.js, nen-core.js
+Prompt:
+
+Add key bindings and base state only (no effects yet).
+
+Reserve keys: T(Ten), Z(Zetsu), R (hold Ren), G(Gyo), V(En), B(Shu), K(Ken), C+LMB (Ko), Wheel (Ryu), Tab (radial).
+
+Add to global state:
+
+state.aura = { ten:false, zetsu:false, ren:false, ken:false, in:false, gyo:false, shu:false, en:{ on:false, r:0 } };
+state.flow = { head:.09, torso:.25, rArm:.166, lArm:.166, rLeg:.166, lLeg:.166 };
+state.vows = [];
+state.nen = { max:100, cur:100, regen:2.0 }; // numbers placeholder
 
 
+HUD: small strip that renders current ON/OFF for Ten/Zetsu/Ren/Ken/Gyo/Shu/En.
 
-anthropomorphic Mechanic
+No drains or combat effects yet.
+Follow my output rules.
 
-On killing a target, a anthropomorphic has a 25% chance to absorb one of the victim’s abilities and gain a portion of their strength.
+Done check: Toggling keys flips booleans in state and HUD badges reflect it.
+
+Task 2 — Nen economy loop (regen/leak/drains)
+
+Files: nen-core.js, hud.js
+Prompt:
+
+Implement nenTick(dt) that updates state.nen.cur given:
+
+Base leak = 0.8/s if neither Ten nor Zetsu; 0 if Ten or Zetsu.
+
+Ren on: add a ramp multiplier to output (store as state.aura.renMul) and drain (start simple: +1.0/s while held).
+
+Ken drains 1.8/s; Gyo 0.6/s; Shu 1.0/s; En drains map(state.aura.en.r, 6..18m) → 4..10/s.
+
+Clamp state.nen.cur to [0, state.nen.max].
+HUD adds a Nen bar with tooltip listing current drains. Follow my output rules.
+
+Done check: With modes toggled, the bar changes predictably; letting go returns to regen.
+
+Task 3 — Damage centralization hooks
+
+Files: nen-combat.js
+Prompt:
+
+Route all outgoing and incoming damage through:
+
+export function applyOutgoingDamage(src, limb, baseDamage) { /* stub now */ }
+export function applyIncomingDamage(dst, limb, baseDamage) { /* stub now */ }
 
 
-Lets add Four Major + Advanced Techniques
-1) Gyo (Focus) – Eyes
+For now, just return baseDamage. Wire existing melee/projectile paths to call these (light-touch edits). Follow my output rules.
 
-Input: G toggle (drains 0.6/s).
+Done check: No numeric changes yet; logs prove both hooks are hit.
 
-Effect: Reveals In objects/traps and enemy weak points (+15% crit window). Slight tunnel vision vignette.
+Task 4 — Ko / Ken / Ryu (phase 1 wiring)
 
-2) In (Conceal)
+Files: nen-combat.js, hud.js, nen-core.js
+Prompt:
 
-Use: Hide your next conjured trap or emitted orb.
+Ken: when on, apply damage reduction to applyIncomingDamage (start with 25% DR).
 
-Cost: upfront 8 Nen + 1/s upkeep (auto-drops when you attack with Ko).
+Ryu: while Ken held, mouse wheel adjusts state.flow presets (e.g., 70/30 arms vs 60/40 torso; keep sum=1.0). HUD pie shows current distribution. Use simple presets first.
 
-Counter: Gyo/strong Zetsu tracking.
+Ko: on C+LMB, consume 10 + (AAP*0.5) Nen (stub AAP as 1.0 for now), apply a 2.5× multiplier to the chosen limb for one strike and set a vulnerability timer 0.8s (incoming damage ×1.5).
+Follow my output rules.
 
-3) En (Aura field)
+Done check: Ken reduces incoming damage; wheel shifts pie; C+LMB spikes damage then opens a brief vulnerability window.
 
-Input: V press/hold to pulse/maintain.
+Task 5 — Gyo & In (vision + conceal)
 
-Pulse: 12 Nen burst → 12m sense ping + time-dilation on pinged daggers/projectiles (0.3s).
+Files: nen-advanced.js, hud.js, nen-combat.js
+Prompt:
 
-Maintain: radius 6→18m while held; drains 4–10/s; shows faint silhouettes.
+Gyo (G): drain 0.6/s, add vignette overlay; mark weak points on enemies (+15% crit window: widen timing or multiplier in applyOutgoingDamage).
 
-4) Shu (Imbue)
+In: next conjured trap/emitted orb gets {concealed:true}; charge 8 Nen upfront + 1/s upkeep until it’s placed/fired or Ko is used (Ko cancels upkeep).
 
-Input: B toggle; applies to melee & thrown pickups.
+Enemies & player with Gyo on can see “In” objects; others can’t.
+Follow my output rules.
 
-Effect: weapon durability/DMG ↑; projectiles pierce 1 target; drains 1/s while a weapon is out.
+Done check: G toggles highlights; triggering In changes visibility; Ko cancels In upkeep.
 
-5) Ko / Ken / Ryu (Offense/Defense flow)
+Task 6 — En (pulse & maintain)
 
-Ko (C+LMB): one strike/guard with 100% aura to a limb → huge dmg/guard, body unprotected for 0.8s; costs 10 Nen + (AAP×0.5).
+Files: nen-advanced.js, hud.js
+Prompt:
 
-Ken (K toggle): sustained shell (Ten+Ren) → strong all-around guard; drains 1.8/s.
+Implement En behavior:
 
-Ryu (Mouse wheel while holding Ken): shift 70/30, 60/40, etc. Live HUD pie shows flow.
+Pulse (V tap): spend 12 Nen; perform a 12m sense ping; apply 0.3s time-dilation to projectiles/daggers within ping radius.
 
-Implementation tip: simple percentages into state.auraFlow = {head, torso, rArm, lArm, rLeg, lLeg} and multiply incoming/outgoing DMG.
+Maintain (V hold): expand radius from 6→18m over 1s; drain 4..10/s as radius grows; draw faint silhouettes for sensed entities.
+Follow my output rules.
 
-Nen Type Specials (class identity)
+Done check: Pulse slows projectiles briefly; hold shows silhouettes and drains faster at larger radii.
 
-Enhancer: Ren stacks also boost Ten/Ken DR; Ko hits leave shockwaves (small AoE).
+Task 7 — Shu (imbue) + projectiles pierce 1
 
-Transmuter: give emitted shots properties (sticky, elastic, conductive). Pick 1 at a time via radial menu (Tab).
+Files: nen-advanced.js, nen-combat.js, items-and-crafting.js
+Prompt:
 
-Emitter: charged blasts persist off-body longer; Volley gains slight homing during En pulse.
+Shu (B toggle): while a weapon is equipped, increase weapon damage and durability efficiency; thrown/shot projectiles pierce 1 enemy. Drain 1/s while a weapon is out.
 
-Conjurer: place Bound Sigil (E) that strengthens a rule (see Vows) inside 6m; visible only with Gyo.
+Add a tiny “Shu” glyph on active weapon in HUD.
+Follow my output rules.
 
-Manipulator: tag darts/threads; on 3 tags, short Compel (0.8s) or Jam (silence).
+Done check: Projectiles hit two targets max; melee shows higher damage; dur. drains slower.
 
-Specialist: limited-uptime Time Distortion you already have → make it scale on Focus & Vow severity (see below) and auto-end when Nen ≤ ultMin.
+Task 8 — Inventory + equipment + durability
 
-Vows & Limitations (build-defining power-ups)
+Files: items-and-crafting.js, hud.js, game.js
+Prompt:
 
-In menus, let players craft 1–3 active vows; each gives a multiplier and a rule:
+Define Item schema { id, slot, type, dmg, dur, tags, stack }.
 
-“Only Ko strikes this wave” → +35% Ko power, Ken disabled.
+Implement inventory = { slots:[], hotbar:[], add(), use(), equip() }.
+
+HUD hotbar (1–9) equips active item.
+
+On hit, reduce durability; at 0, item breaks and unequips.
+Follow my output rules.
+
+Done check: Pick up, equip, and break a sword; HUD updates correctly.
+
+Task 9 — Regions + spawns (Minecraft-like without mining/building)
+
+Files: region-manager.js, spawns.js, world-utils.js, enemies.js
+Prompt:
+
+Region schema { id, name, bounds, ambient, spawnTable, difficulty } + registry.
+
+setRegion(id) swaps ambient and spawn tables; /region set <id> dev command.
+
+spawns.js: per-region spawn controller with wave size, cadence, and enemy mix.
+
+world-utils.js: applyRegionVisuals(region) for sky/fog/ground tint.
+Follow my output rules.
+
+Done check: Switching regions clearly changes visuals and enemy compositions.
+
+Task 10 — Nen type specials + Tab radial
+
+Files: nen-core.js, nen-advanced.js, nen-combat.js, hud.js
+Prompt:
+
+Add state.nenType and implement specials (minimal but functional):
+
+Enhancer: Ren stacks add DR to Ken; Ko emits a small shockwave AoE.
+
+Transmuter: emitted shots gain one property (sticky/elastic/conductive) selected from a Tab radial menu.
+
+Emitter: blasts persist longer; volley gains slight homing during En pulse.
+
+Conjurer: place a Bound Sigil (E) that buffs a selected vow rule inside 6m; visible only in Gyo.
+
+Manipulator: tag darts/threads; on 3 tags, Compel (0.8s) or Jam.
+
+Specialist: your time distortion scales on Focus & vow severity; auto-end when Nen ≤ ultMin.
+Follow my output rules.
+
+Done check: Each type produces at least one observable effect in a test arena.
+
+Task 11 — Vows UI + rule engine
+
+Files: nen-advanced.js, hud.js, game.js, nen-combat.js
+Prompt:
+
+Menu to craft 1–3 active vows; schema { ruleId, strength, lethal }; show multipliers preview; serialize to save.
+
+Implement sample rules:
+
+“Only Ko strikes this wave” → +35% Ko power; Ken disabled.
 
 “No dash this wave” → +20% all Nen damage.
 
-“Only attack the marked elite” → +60% vs that target; –30% vs others.
+“Only attack marked elite” → +60% vs that target; –30% others.
 
-“I’ll die if I break it” checkbox (endgame) → doubles the bonus but failing = instant down.
+“I’ll die if I break it” checkbox: doubles the bonus; violating downs the player.
+Follow my output rules.
 
-UI: simple checklist + multiplier preview. Serialize into save; show active vows in HUD.
+Done check: Picking vows changes combat; violating lethal vow downs the player.
 
-Initiation & Talent
+Task 12 — Enemies & counterplay
 
-Initiation (fast awaken): skip tutorials but apply Leak Sickness debuff for 3 fights (–30% nen regen, random stuns on big Ren spikes).
+Files: enemies.js, nen-combat.js, hud.js
+Prompt:
 
-Talent/Potential: hidden roll at creation influences training minigame speeds and stat scaling (Power/Agility/Focus per level).
+Add archetypes with Nen literacy:
 
-Post-Mortem Nen (risk/reward)
+Bruiser: telegraphs Ko to a limb (glow); blocking with correct Ryu distribution mitigates it.
 
-On player death, if a Grudge bar was full (tied to vow/emotion), trigger Curse Mark on killer (DoT + slow).
+Assassin: enters Zetsu and attempts backstab; Gyo counters.
 
-Enemies can leave lingering curses too → add Exorcism side quests/consumables.
+Emitter/Conjurer adds: ranged traps/orbs that interact with In/En.
+HUD subtly indicates detected enemy aura flows when Gyo is active. Follow my output rules.
 
-Sensory/Stealth Loop
+Done check: Player technique choice (Gyo/Ryu) measurably changes survival.
 
-Zetsu + crouch = super-stealth route through arenas; but you’re fragile.
+Task 13 — Training minigames & progression caps
 
-En pings reveal cloaked ambushers; Gyo sees enemy aura flows (use Ryu to counter).
+Files: hud.js, nen-advanced.js, game.js
+Prompt:
 
-Training Minigames (progression that feels “Nen”)
+Implement four lightweight minigames that permanently raise caps or efficiencies:
 
-Ren hold practice: keep a rising meter within bands for 90s (extends Ren duration cap).
+Ren hold meter (extends Ren duration cap)
 
-Gyo numbers: flash In numbers; you must Gyo-tap the correct answers quickly.
+Gyo numbers (accuracy → crit window bonus cap)
 
-Ryu drill: match target distributions (e.g., 70% right arm) in a timer—improves Ryu speed/accuracy.
+Ryu drill (faster/more precise redistribution)
 
-Shu rock test: imbue a stone and break 100 others without cracking it—boosts Shu efficiency.
+Shu rock test (Shu efficiency)
+Persist results; show ceilings in HUD tooltips. Follow my output rules.
 
-Each success permanently tweaks ceilings: Ken duration, Ko wind-up safety frames, En radius cap, etc.
+Done check: Successful minigames increase the displayed caps and change gameplay feel.
 
-Quantified Aura (simple, readable)
+Task 14 — Post-Mortem Nen, curses, exorcism
 
-Map M.A.P. ≈ state.nenMax, P.A.P. = current Nen, A.A.P. = technique output/sec.
+Files: nen-advanced.js, enemies.js, hud.js
+Prompt:
 
-Use AAP caps so low-affinity uses waste aura (great for balancing Emitters spamming melee Ko, etc.).
+Add Grudge bar; on player death with full Grudge, apply a Curse Mark (DoT+slow) to killer.
 
-Enemy Use & Counterplay
+Enemies can leave lingering curses; add consumable/quest to exorcise.
+Follow my output rules.
 
-Some enemies telegraph Ko (glow to a limb) → punish with Ryu to the block side.
+Done check: The effect triggers on death appropriately; exorcism clears it.
 
-Assassin types enter Zetsu then backstab; Gyo counters.
+Task 15 — Save/Load + QA polish
 
-Bosses drop Divine Script glyphs; standing within your own glyph buffs your Hatsu (Conjurer synergy).
+Files: game.js, hud.js
+Prompt:
 
-Super-thin Implementation Sketch (drop-in)
+Serialize: inventory, vows, nenType, stat ceilings, region progress, and Nen pools. On load, restore HUD and all toggles. Add a quick in-game test panel (dev-only) to flip modes and spawn target dummies. Follow my output rules.
 
-Inputs (keep it mnemonic): T=Ten, Z=Zetsu, R=Ren (hold), G=Gyo, V=En, B=Shu, K=Ken, Wheel=Ryu, C+LMB=Ko.
-
-State additions
-
-state.aura = { ten:false, zetsu:false, ren:false, ken:false, in:false, gyo:false, shu:false, en:{on:false, r:0} };
-state.flow = { rArm:.166,lArm:.166, rLeg:.166,lLeg:.166, torso:.25, head:.09 }; // Ryu distribution
-state.vows = []; // {ruleId, strength, lethal}
-
-
-Per-tick:
-
-Leak/regen math:
-
-base leak = 0.8; if Ten → 0; if Zetsu → 0; else subtract from Nen.
-
-Ren on → state.aura.renMul = 1 + ramp [0.3..1.2]; add nen drain.
-
-Ken drains, En drains per radius, Gyo drains a trickle.
-
-Damage calc wraps limb multipliers (Ryu) and DR from Ken/Ten; Ko overrides to 100% limb.
-
-Stealth/aggro checks read Zetsu/Ten/En.
-
-HUD: small “Aura Modes” strip + pie for Ryu when Ken held; vow icons.
-
-Small, flavorful extras
-
-Bloodlust meter: builds with Ren usage; spikes cause weak mobs to hesitate.
-
-Half-Awakened NPCs: can feel aura → react to bloodlust but can’t see aura (fun stealth tells).
-
-Water Divination at creation to pick/confirm type (mini shader + quick outcomes).
-
-Dual-Affinity trait (rare): learn adjacent type nodes 20% faster.
+Done check: Quit/reload returns to the same state; dev panel toggles help QA.
