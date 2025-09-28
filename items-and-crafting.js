@@ -7,6 +7,7 @@
 
   const Items = globalObj.Items = existing;
   const runtime = Items.__runtime = Items.__runtime || {};
+  const supportsWeakMap = typeof WeakMap === "function";
 
   const DEFAULT_SHU = { damageMul: 1.3, durabilityScalar: 0.65, pierceCount: 1 };
   const DEFAULT_WEAPON_HUD_SELECTORS = [
@@ -18,6 +19,9 @@
   ];
   if (!runtime.shuDefaults) runtime.shuDefaults = { ...DEFAULT_SHU };
   runtime.shu = runtime.shu || null;
+  if (!runtime.lastWeaponByOwner) {
+    runtime.lastWeaponByOwner = supportsWeakMap ? new WeakMap() : [];
+  }
   runtime.weaponHudSelectors = Array.isArray(runtime.weaponHudSelectors)
     ? runtime.weaponHudSelectors.slice()
     : [...DEFAULT_WEAPON_HUD_SELECTORS];
@@ -49,71 +53,90 @@
     return null;
   }
 
+  function rememberWeapon(state, weapon) {
+    if (!weapon || typeof weapon !== "object") return null;
+    runtime.lastWeapon = weapon;
+    if (state && typeof state === "object") {
+      const store = runtime.lastWeaponByOwner;
+      if (store instanceof WeakMap) {
+        store.set(state, weapon);
+      } else if (Array.isArray(store)) {
+        let updated = false;
+        for (let i = 0; i < store.length; i += 1) {
+          const entry = store[i];
+          if (entry && entry.owner === state) {
+            store[i] = { owner: state, item: weapon };
+            updated = true;
+            break;
+          }
+        }
+        if (!updated) store.push({ owner: state, item: weapon });
+      }
+      runtime.activeWeapon = { owner: state, item: weapon };
+    }
+    return weapon;
+  }
+
+  function forgetWeapon(state) {
+    if (!state || typeof state !== "object") return;
+    const store = runtime.lastWeaponByOwner;
+    if (runtime.activeWeapon && runtime.activeWeapon.owner === state) {
+      runtime.activeWeapon = null;
+    }
+    if (store instanceof WeakMap) {
+      store.delete(state);
+    } else if (Array.isArray(store)) {
+      for (let i = store.length - 1; i >= 0; i -= 1) {
+        const entry = store[i];
+        if (entry && entry.owner === state) {
+          store.splice(i, 1);
+        }
+      }
+    }
+  }
+
   function detectActiveWeapon(state) {
     if (!state || typeof state !== "object") return null;
     if (state.weapon && typeof state.weapon === "object") {
-      runtime.lastWeapon = state.weapon;
-      return state.weapon;
+      return rememberWeapon(state, state.weapon);
     }
     const eq = state.equipment;
     if (eq && typeof eq === "object") {
       if (typeof eq.getActiveWeapon === "function") {
         try {
           const weapon = eq.getActiveWeapon();
-          if (weapon) {
-            runtime.lastWeapon = weapon;
-            runtime.activeWeapon = { owner: state, item: weapon };
-            return weapon;
-          }
+          if (weapon) return rememberWeapon(state, weapon);
         } catch (err) {
           console.warn("[HXH] Items.getActiveWeapon failed", err);
         }
       }
       if (eq.activeWeapon && typeof eq.activeWeapon === "object") {
-        runtime.lastWeapon = eq.activeWeapon;
-        runtime.activeWeapon = { owner: state, item: eq.activeWeapon };
-        return eq.activeWeapon;
+        return rememberWeapon(state, eq.activeWeapon);
       }
       if (eq.weapon && typeof eq.weapon === "object") {
-        runtime.lastWeapon = eq.weapon;
-        runtime.activeWeapon = { owner: state, item: eq.weapon };
-        return eq.weapon;
+        return rememberWeapon(state, eq.weapon);
       }
       if (eq.active && typeof eq.active === "object") {
         const slot = eq.active;
         const slotName = typeof slot.slot === "string" ? slot.slot : slot.type;
         if (slotName && slotName.toLowerCase() === "weapon") {
           const weapon = slot.item || slot;
-          if (weapon && typeof weapon === "object") {
-            runtime.lastWeapon = weapon;
-            runtime.activeWeapon = { owner: state, item: weapon };
-            return weapon;
-          }
+          if (weapon && typeof weapon === "object") return rememberWeapon(state, weapon);
         }
       }
       const slotWeapon = detectWeaponFromSlots(eq.slots);
-      if (slotWeapon) {
-        runtime.lastWeapon = slotWeapon;
-        runtime.activeWeapon = { owner: state, item: slotWeapon };
-        return slotWeapon;
-      }
+      if (slotWeapon) return rememberWeapon(state, slotWeapon);
     }
     if (state.activeItem && typeof state.activeItem === "object") {
       const slot = state.activeItem;
       const slotName = typeof slot.slot === "string" ? slot.slot : slot.type;
       if (slotName && slotName.toLowerCase() === "weapon") {
         const weapon = slot.item || slot;
-        if (weapon && typeof weapon === "object") {
-          runtime.lastWeapon = weapon;
-          runtime.activeWeapon = { owner: state, item: weapon };
-          return weapon;
-        }
+        if (weapon && typeof weapon === "object") return rememberWeapon(state, weapon);
       }
     }
-    if (runtime.activeWeapon && runtime.activeWeapon.owner === state) {
-      return runtime.activeWeapon.item || null;
-    }
-    return runtime.lastWeapon || null;
+    forgetWeapon(state);
+    return null;
   }
 
   function isWeaponOut(state, weapon = detectActiveWeapon(state)) {
@@ -260,8 +283,19 @@
   }
 
   function registerActiveWeapon(state, weapon) {
-    runtime.activeWeapon = { owner: state || null, item: weapon || null };
-    if (weapon && typeof weapon === "object") runtime.lastWeapon = weapon;
+    if (state && typeof state === "object" && weapon && typeof weapon === "object") {
+      rememberWeapon(state, weapon);
+      return;
+    }
+    if (state && typeof state === "object") {
+      forgetWeapon(state);
+      return;
+    }
+    runtime.activeWeapon = {
+      owner: null,
+      item: weapon && typeof weapon === "object" ? weapon : null
+    };
+    if (runtime.activeWeapon.item) runtime.lastWeapon = runtime.activeWeapon.item;
   }
 
   Items.getActiveWeapon = detectActiveWeapon;
