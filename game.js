@@ -49,10 +49,48 @@
    const FLOW_PRESETS = [
       { key: "balanced", label: "Balanced Guard", groups: { head: 0.1, torso: 0.3, arms: 0.3, legs: 0.3 } },
       { key: "arms-heavy", label: "Arms 70/30", groups: { head: 0.08, torso: 0.22, arms: 0.45, legs: 0.25 } },
-      { key: "torso-wall", label: "Torso 60/40", groups: { head: 0.06, torso: 0.45, arms: 0.3, legs: 0.19 } },
-      { key: "mobile-legs", label: "Leg Drive", groups: { head: 0.07, torso: 0.2, arms: 0.27, legs: 0.46 } }
-   ];
-   const DEFAULT_FLOW_PRESET_INDEX = 0;
+   { key: "torso-wall", label: "Torso 60/40", groups: { head: 0.06, torso: 0.45, arms: 0.3, legs: 0.19 } },
+   { key: "mobile-legs", label: "Leg Drive", groups: { head: 0.07, torso: 0.2, arms: 0.27, legs: 0.46 } }
+  ];
+  const DEFAULT_FLOW_PRESET_INDEX = 0;
+
+   const HOTBAR_LENGTH = 9;
+
+   const parseHotbarKey = (code) => {
+      if (typeof code !== "string") return null;
+      if (code.startsWith("Digit")) {
+         const num = Number.parseInt(code.slice(5), 10);
+         if (Number.isInteger(num) && num >= 1 && num <= HOTBAR_LENGTH) return num - 1;
+      }
+      if (code.startsWith("Numpad")) {
+         const num = Number.parseInt(code.slice(6), 10);
+         if (Number.isInteger(num) && num >= 1 && num <= HOTBAR_LENGTH) return num - 1;
+      }
+      return null;
+   };
+
+   const getItemsModule = () => (typeof window.Items === "object" && window.Items ? window.Items : null);
+
+   const formatInventoryName = (item) => {
+      if (!item) return "";
+      if (typeof item.name === "string" && item.name.trim()) return item.name.trim();
+      if (typeof item.label === "string" && item.label.trim()) return item.label.trim();
+      const id = typeof item.id === "string" ? item.id : "";
+      if (!id) return "";
+      return id
+         .split(/[-_\s]+/)
+         .filter(Boolean)
+         .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+         .join(" ");
+   };
+
+   const findHotbarIndexForSlot = (inventory, slotIndex) => {
+      if (!inventory || !Array.isArray(inventory.hotbar)) return null;
+      for (let i = 0; i < inventory.hotbar.length; i += 1) {
+         if (inventory.hotbar[i] === slotIndex) return i;
+      }
+      return null;
+   };
    const KO_AAP = 1.0;
    const KO_COST = 10 + KO_AAP * 0.5;
    const KO_MULTIPLIER = 2.5;
@@ -304,6 +342,8 @@
       inputUp = {};
    let enemies = [],
       projectiles = [];
+   let inventoryUnsub = null,
+      hotbarUnsub = null;
    let lastTime = 0,
       paused = false;
    let startPos = new BABYLON.Vector3(0, 3, 0);
@@ -2091,6 +2131,8 @@
    // ------- Game state -------
    const state = {
       ch: null,
+      inventory: null,
+      weapon: null,
       // live derived stats
       eff: {
          power: 0,
@@ -2160,6 +2202,93 @@
       ultT: 0,
       ultMaxDur: 8,
    };
+
+   function teardownInventorySystem() {
+      if (inventoryUnsub) {
+         try {
+            inventoryUnsub();
+         } catch (err) {
+            console.warn("[HXH] inventory unsubscribe failed", err);
+         }
+         inventoryUnsub = null;
+      }
+      if (hotbarUnsub) {
+         try {
+            hotbarUnsub();
+         } catch (err) {
+            console.warn("[HXH] hotbar unsubscribe failed", err);
+         }
+         hotbarUnsub = null;
+      }
+      state.inventory = null;
+      state.weapon = null;
+   }
+
+   function handleInventoryEvent(change, inventory) {
+      if (!inventory) {
+         state.inventory = null;
+         state.weapon = null;
+         return;
+      }
+      state.inventory = inventory;
+      const active = inventory.activeItem && !inventory.activeItem.broken ? inventory.activeItem : null;
+      state.weapon = active;
+      const hudApi = window.HUD;
+      if (hudApi && typeof hudApi.renderHotbar === "function") {
+         hudApi.renderHotbar(inventory);
+      }
+      if (change && change.type === "break" && change.item) {
+         const label = formatInventoryName(change.item);
+         if (label) msg(`${label} broke!`);
+         const hotbarIndices = Array.isArray(change.hotbarIndices)
+            ? change.hotbarIndices
+            : Array.isArray(change.hotbar)
+               ? change.hotbar
+               : [];
+         const index = hotbarIndices.length ? hotbarIndices[0] : findHotbarIndexForSlot(inventory, change.slotIndex);
+         if (typeof index === "number" && hudApi && typeof hudApi.flashHotbarBreak === "function") {
+            hudApi.flashHotbarBreak(index);
+         }
+      }
+   }
+
+   function setupInventorySystem() {
+      teardownInventorySystem();
+      const Items = getItemsModule();
+      if (!Items) return;
+      const inventory = typeof Items.bindPlayerState === "function" ? Items.bindPlayerState(state) : Items.inventory;
+      if (!inventory) return;
+      state.inventory = inventory;
+      state.weapon = inventory.activeItem && !inventory.activeItem.broken ? inventory.activeItem : null;
+      const hudApi = window.HUD;
+      if (hudApi && typeof hudApi.ensureHotbar === "function") {
+         hudApi.ensureHotbar();
+      }
+      if (hudApi && typeof hudApi.renderHotbar === "function") {
+         hudApi.renderHotbar(inventory);
+      }
+      inventoryUnsub = inventory.subscribe((change, inv) => {
+         handleInventoryEvent(change, inv);
+      });
+      handleInventoryEvent({ type: "sync" }, inventory);
+      if (hudApi && typeof hudApi.bindHotbar === "function") {
+         hotbarUnsub = hudApi.bindHotbar((index) => {
+            if (paused) return;
+            inventory.equip(index);
+         });
+      }
+      if (!inventory.slots.some(entry => entry)) {
+         inventory.add({
+            id: "rusty-blade",
+            slot: "weapon",
+            type: "melee",
+            dmg: 6,
+            dur: { current: 24, max: 24 },
+            tags: ["starter", "sword"],
+            stack: { count: 1, max: 1 }
+         }, { hotbarIndex: 0, autoEquip: true });
+      }
+   }
 
    updateAuraHud();
    updateFlowHud();
@@ -2418,6 +2547,16 @@
             togglePause();
             return;
          }
+         if (!paused) {
+            const hotbarIndex = parseHotbarKey(e.code);
+            if (hotbarIndex !== null) {
+               if (!e.repeat && state.inventory) {
+                  state.inventory.equip(hotbarIndex);
+               }
+               e.preventDefault();
+               return;
+            }
+         }
          input[e.code] = true;
          if (e.repeat) return;
          inputOnce[e.code] = true;
@@ -2477,6 +2616,8 @@
       state.koLastFocus = null;
       state.lastKoWarning = 0;
       notifyAuraChange();
+
+      setupInventorySystem();
 
       updateHUD();
       msg("Defeat enemies to trigger the exit portal! Press L to open the Level menu.");
