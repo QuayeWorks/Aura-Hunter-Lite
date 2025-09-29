@@ -323,6 +323,28 @@
     return lastCommand;
   }
 
+  function spawnInstances(type, transforms, options) {
+    if (!type) return [];
+    try {
+      const fn = window.HXH?.spawnInstances;
+      return typeof fn === "function" ? fn(type, transforms, options) || [] : [];
+    } catch (err) {
+      console.warn("[RegionManager] spawnInstances failed", err);
+      return [];
+    }
+  }
+
+  function despawnInstances(type, ids) {
+    if (!type) return 0;
+    try {
+      const fn = window.HXH?.despawnInstances;
+      return typeof fn === "function" ? fn(type, ids) || 0 : 0;
+    } catch (err) {
+      console.warn("[RegionManager] despawnInstances failed", err);
+      return 0;
+    }
+  }
+
   const API = {
     registerRegion,
     listRegions,
@@ -333,6 +355,8 @@
     onRegionChange,
     runCommand,
     getLastCommand,
+    spawnInstances,
+    despawnInstances,
     getLODConfig: id => buildRegionLodProfile(id || activeRegionId),
     getDefaultLODConfig: () => ({ version: DEFAULT_LOD_CONFIG.version, assets: clone(DEFAULT_LOD_CONFIG.assets) }),
     setTerrainRadius: (radius, opts) => window.WorldUtils?.setTerrainStreamingRadius?.(radius, opts),
