@@ -6,6 +6,7 @@
 
   const HOTBAR_SIZE = 9;
   let hotbarCache = null;
+  let nenRadialCache = null;
 
   function formatItemLabel(item) {
     if (!item) return "";
@@ -174,6 +175,154 @@
     }, 220);
   }
 
+  function ensureNenRadial() {
+    if (nenRadialCache?.root?.isConnected) return nenRadialCache;
+    const root = ensureHudRoot();
+    if (!root) return null;
+    let container = document.getElementById("hud-nen-radial");
+    if (!container) {
+      container = document.createElement("div");
+      container.id = "hud-nen-radial";
+      container.style.position = "absolute";
+      container.style.pointerEvents = "auto";
+      container.style.display = "none";
+      container.style.left = "50%";
+      container.style.bottom = "30%";
+      container.style.transform = "translateX(-50%)";
+      container.style.width = "220px";
+      container.style.height = "220px";
+      container.style.zIndex = "9";
+      root.appendChild(container);
+    } else {
+      container.innerHTML = "";
+    }
+    const ring = document.createElement("div");
+    ring.style.position = "relative";
+    ring.style.width = "100%";
+    ring.style.height = "100%";
+    ring.style.borderRadius = "50%";
+    ring.style.background = "radial-gradient(circle, rgba(18,32,52,0.9) 0%, rgba(8,16,28,0.8) 55%, rgba(4,12,24,0.2) 100%)";
+    ring.style.border = "1px solid rgba(132, 200, 255, 0.4)";
+    ring.style.boxShadow = "0 0 22px rgba(40,140,255,0.35)";
+    ring.style.pointerEvents = "auto";
+
+    const center = document.createElement("div");
+    center.dataset.role = "center";
+    center.style.position = "absolute";
+    center.style.left = "50%";
+    center.style.top = "50%";
+    center.style.transform = "translate(-50%, -50%)";
+    center.style.fontSize = "0.78rem";
+    center.style.letterSpacing = "0.1em";
+    center.style.textTransform = "uppercase";
+    center.style.color = "#d6ecff";
+    center.style.opacity = "0.85";
+    center.style.pointerEvents = "none";
+    center.textContent = "Select";
+    ring.appendChild(center);
+
+    container.appendChild(ring);
+    nenRadialCache = { root: container, ring, center, options: [] };
+    return nenRadialCache;
+  }
+
+  function renderNenRadial(options = [], activeKey = null) {
+    const cache = ensureNenRadial();
+    if (!cache) return;
+    const { ring } = cache;
+    cache.options.forEach(entry => entry.button?.remove());
+    cache.options = [];
+    const count = options.length;
+    if (count === 0) {
+      cache.center.textContent = "No Options";
+      return;
+    }
+    cache.center.textContent = "";
+    const radius = 78;
+    options.forEach((opt, index) => {
+      const angle = (index / count) * Math.PI * 2 - Math.PI / 2;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.dataset.key = opt.key ?? String(index);
+      btn.className = "nen-radial-option";
+      btn.textContent = opt.label ?? btn.dataset.key;
+      btn.title = opt.hint ?? "";
+      btn.style.position = "absolute";
+      btn.style.left = "50%";
+      btn.style.top = "50%";
+      btn.style.transform = `translate(-50%, -50%) translate(${Math.cos(angle) * radius}px, ${Math.sin(angle) * radius}px)`;
+      btn.style.padding = "0.4rem 0.6rem";
+      btn.style.borderRadius = "999px";
+      btn.style.border = "1px solid rgba(156, 220, 255, 0.5)";
+      btn.style.background = opt.color || "rgba(22, 38, 58, 0.85)";
+      btn.style.color = "#f4fbff";
+      btn.style.fontSize = "0.74rem";
+      btn.style.letterSpacing = "0.08em";
+      btn.style.textTransform = "uppercase";
+      btn.style.pointerEvents = "auto";
+      btn.style.cursor = "pointer";
+      btn.style.transition = "transform 0.12s ease, box-shadow 0.18s ease, opacity 0.18s ease";
+      if (opt.icon) {
+        btn.textContent = `${opt.icon} ${btn.textContent}`.trim();
+      }
+      ring.appendChild(btn);
+      const entry = { key: btn.dataset.key, button: btn };
+      cache.options.push(entry);
+    });
+    updateNenRadialSelection(activeKey);
+  }
+
+  function showNenRadial(options, activeKey = null) {
+    const cache = ensureNenRadial();
+    if (!cache) return () => {};
+    renderNenRadial(options, activeKey);
+    cache.root.style.display = "block";
+    cache.root.style.pointerEvents = "auto";
+    cache.ring.querySelectorAll("button").forEach(btn => {
+      btn.addEventListener("mouseenter", () => updateNenRadialSelection(btn.dataset.key));
+    });
+    requestAnimationFrame(() => {
+      cache.root.style.opacity = "1";
+    });
+    return () => hideNenRadial();
+  }
+
+  function hideNenRadial() {
+    if (!nenRadialCache || !nenRadialCache.root) return;
+    nenRadialCache.root.style.display = "none";
+    nenRadialCache.root.style.opacity = "0";
+  }
+
+  function updateNenRadialSelection(activeKey = null) {
+    if (!nenRadialCache) return;
+    nenRadialCache.options.forEach(entry => {
+      if (!entry.button) return;
+      const active = entry.key === activeKey;
+      entry.button.classList.toggle("active", active);
+      entry.button.style.boxShadow = active
+        ? "0 0 16px rgba(90, 200, 255, 0.65)"
+        : "0 0 8px rgba(10, 20, 32, 0.6)";
+      entry.button.style.opacity = active ? "1" : "0.72";
+      entry.button.style.transform = entry.button.style.transform.replace(/scale\([0-9.]+\)/, "");
+      if (active) {
+        entry.button.style.transform += " scale(1.05)";
+      }
+    });
+  }
+
+  function bindNenRadialSelection(handler) {
+    const cache = ensureNenRadial();
+    if (!cache) return () => {};
+    const clickHandler = (event) => {
+      const target = event.target instanceof Element ? event.target.closest(".nen-radial-option") : null;
+      if (!target) return;
+      const key = target.dataset.key;
+      handler?.(key, event);
+    };
+    cache.ring.addEventListener("click", clickHandler);
+    return () => cache.ring.removeEventListener("click", clickHandler);
+  }
+
   function bindHotbar(handler) {
     const cache = ensureHotbar();
     if (!cache) return () => {};
@@ -198,6 +347,10 @@
     subscribeAura: (...a)=>H.subscribeAura?.(...a),
     getAuraState: (...a)=>H.getAuraState?.(...a),
     updateFlow: (...a)=>H.updateFlowHud?.(...a),
+    showNenRadial,
+    hideNenRadial,
+    updateNenRadialSelection,
+    bindNenRadialSelection,
     getFlowState: (...a)=>H.getFlowState?.(...a),
     getHudRoot: ensureHudRoot,
     ensureLayer(id, className = "") {
