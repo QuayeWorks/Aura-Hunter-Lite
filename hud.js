@@ -16,6 +16,9 @@
   let trainingMenuCache = null;
   let trainingGameState = null;
   let trainingButtonCache = null;
+  let statusTrayCache = null;
+  let grudgeWidgetCache = null;
+  let grudgeStyleInjected = false;
 
   const TRAINING_SPECS = [
     {
@@ -192,6 +195,262 @@
 
     hotbarCache = { root: container, slots };
     return hotbarCache;
+  }
+
+  function ensureStatusStyles() {
+    if (grudgeStyleInjected) return;
+    const css = `
+      #hud .hud-status-tray {
+        display: flex;
+        flex-direction: column;
+        gap: 0.55rem;
+        margin-top: 0.6rem;
+        pointer-events: auto;
+      }
+      #hud .hud-grudge-widget {
+        display: flex;
+        flex-direction: column;
+        gap: 0.4rem;
+        background: rgba(12, 22, 36, 0.7);
+        border: 1px solid rgba(120, 220, 255, 0.18);
+        border-radius: 10px;
+        padding: 0.55rem 0.65rem;
+        box-shadow: 0 4px 18px rgba(6, 12, 20, 0.28);
+        min-width: 200px;
+      }
+      #hud .hud-grudge-widget.full {
+        border-color: rgba(255, 148, 92, 0.65);
+        box-shadow: 0 6px 22px rgba(255, 92, 54, 0.25);
+      }
+      #hud .hud-grudge-widget.cursed {
+        border-color: rgba(255, 96, 160, 0.55);
+        box-shadow: 0 6px 24px rgba(255, 70, 160, 0.28);
+      }
+      #hud .hud-grudge-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 0.5rem;
+        font-size: 0.82rem;
+        font-weight: 600;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+      }
+      #hud .hud-grudge-value {
+        font-size: 0.9rem;
+        letter-spacing: 0.04em;
+      }
+      #hud .hud-grudge-bar {
+        position: relative;
+        width: 100%;
+        height: 10px;
+        border-radius: 6px;
+        background: rgba(255,255,255,0.12);
+        overflow: hidden;
+      }
+      #hud .hud-grudge-fill {
+        position: absolute;
+        inset: 0;
+        width: 0%;
+        background: linear-gradient(90deg, rgba(110, 210, 255, 0.85), rgba(252, 108, 152, 0.85));
+        transition: width 140ms ease;
+      }
+      #hud .hud-grudge-footer {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.5rem;
+        font-size: 0.76rem;
+      }
+      #hud .hud-grudge-curse {
+        display: none;
+        align-items: center;
+        gap: 0.3rem;
+        padding: 0.1rem 0.35rem;
+        border-radius: 999px;
+        background: rgba(255, 108, 168, 0.18);
+        border: 1px solid rgba(255, 108, 168, 0.4);
+      }
+      #hud .hud-grudge-quest {
+        display: none;
+        font-size: 0.7rem;
+        opacity: 0.8;
+      }
+      #hud .hud-grudge-widget.cursed .hud-grudge-curse {
+        display: inline-flex;
+      }
+      #hud .hud-grudge-widget.cursed .hud-grudge-quest {
+        display: inline;
+      }
+      #hud .hud-grudge-action {
+        padding: 0.25rem 0.6rem;
+        border-radius: 6px;
+        border: 1px solid rgba(120, 220, 255, 0.4);
+        background: rgba(18, 40, 62, 0.6);
+        color: #d8f5ff;
+        font-size: 0.72rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        cursor: pointer;
+        transition: background-color 120ms ease, border-color 140ms ease, opacity 120ms ease;
+      }
+      #hud .hud-grudge-action:disabled {
+        cursor: default;
+        opacity: 0.55;
+        border-color: rgba(255,255,255,0.16);
+      }
+    `;
+    const style = document.createElement("style");
+    style.id = "hud-status-style";
+    style.textContent = css;
+    ensureHead()?.appendChild(style);
+    grudgeStyleInjected = true;
+  }
+
+  function ensureStatusTray() {
+    const root = document.getElementById("hud-nen") || ensureHudRoot();
+    if (!root) return null;
+    ensureStatusStyles();
+    if (statusTrayCache && statusTrayCache.isConnected && root.contains(statusTrayCache)) {
+      return statusTrayCache;
+    }
+    let tray = root.querySelector?.("#hud-status-tray") || null;
+    if (!tray) {
+      tray = document.createElement("div");
+      tray.id = "hud-status-tray";
+      tray.className = "hud-status-tray";
+      tray.style.pointerEvents = "auto";
+      root.appendChild(tray);
+    }
+    statusTrayCache = tray;
+    return tray;
+  }
+
+  function ensureGrudgeWidget() {
+    const tray = ensureStatusTray();
+    if (!tray) return null;
+    if (grudgeWidgetCache && grudgeWidgetCache.root && tray.contains(grudgeWidgetCache.root)) {
+      return grudgeWidgetCache;
+    }
+    const widget = document.createElement("div");
+    widget.className = "hud-grudge-widget";
+
+    const header = document.createElement("div");
+    header.className = "hud-grudge-header";
+    const label = document.createElement("span");
+    label.textContent = "Grudge";
+    const value = document.createElement("strong");
+    value.className = "hud-grudge-value";
+    value.textContent = "0%";
+    header.appendChild(label);
+    header.appendChild(value);
+
+    const bar = document.createElement("div");
+    bar.className = "hud-grudge-bar";
+    const fill = document.createElement("div");
+    fill.className = "hud-grudge-fill";
+    bar.appendChild(fill);
+
+    const footer = document.createElement("div");
+    footer.className = "hud-grudge-footer";
+    const curse = document.createElement("span");
+    curse.className = "hud-grudge-curse";
+    curse.textContent = "";
+    const quest = document.createElement("span");
+    quest.className = "hud-grudge-quest";
+    quest.textContent = "";
+    const action = document.createElement("button");
+    action.type = "button";
+    action.className = "hud-grudge-action";
+    action.textContent = "Exorcise";
+    action.disabled = true;
+    footer.appendChild(curse);
+    footer.appendChild(quest);
+    footer.appendChild(action);
+
+    widget.appendChild(header);
+    widget.appendChild(bar);
+    widget.appendChild(footer);
+    tray.appendChild(widget);
+
+    grudgeWidgetCache = {
+      root: widget,
+      valueEl: value,
+      fillEl: fill,
+      curseEl: curse,
+      questEl: quest,
+      button: action,
+      last: null
+    };
+    return grudgeWidgetCache;
+  }
+
+  function updateGrudgeWidget({
+    value = 0,
+    max = 100,
+    full = false,
+    charges = 0,
+    cursed = false,
+    curseLabel = "",
+    curseStacks = 0,
+    questHint = "",
+    slowPct = 0
+  } = {}) {
+    const widget = ensureGrudgeWidget();
+    if (!widget) return;
+    const pct = max > 0 ? Math.max(0, Math.min(1, value / max)) : 0;
+    const pctText = `${Math.round(pct * 100)}%`;
+    if (!widget.last || widget.last.pctText !== pctText) {
+      widget.valueEl.textContent = pctText;
+    }
+    if (!widget.last || widget.last.pct !== pct) {
+      widget.fillEl.style.width = `${pct * 100}%`;
+    }
+    widget.root.classList.toggle("full", !!full);
+    widget.root.classList.toggle("cursed", !!cursed);
+    const label = curseLabel || (cursed ? `Lingering Curse${curseStacks > 1 ? ` x${curseStacks}` : ""}` : "");
+    if (!widget.last || widget.last.curseLabel !== label) {
+      widget.curseEl.textContent = label;
+    }
+    const slowText = cursed && slowPct > 0 ? `Slow -${Math.round(slowPct * 100)}%` : "";
+    const questText = questHint || slowText;
+    if (!widget.last || widget.last.questText !== questText) {
+      widget.questEl.textContent = questText;
+    }
+    const hasCharges = Number.isFinite(charges) && charges > 0;
+    const btnLabel = hasCharges ? `Exorcise (${Math.round(charges)})` : "Exorcise";
+    if (!widget.last || widget.last.btnLabel !== btnLabel) {
+      widget.button.textContent = btnLabel;
+    }
+    widget.button.disabled = !hasCharges || !cursed;
+    widget.button.title = !cursed
+      ? "No lingering curse detected."
+      : hasCharges
+        ? "Use an exorcism charm to purge lingering curses."
+        : "Acquire an exorcism charm to purge this curse.";
+    widget.last = {
+      pct,
+      pctText,
+      curseLabel: label,
+      questText,
+      btnLabel,
+      charges,
+      cursed,
+      full,
+      slowPct
+    };
+  }
+
+  function bindGrudgeExorcise(handler) {
+    const widget = ensureGrudgeWidget();
+    if (!widget) return () => {};
+    const button = widget.button;
+    const listener = (event) => {
+      event.preventDefault();
+      handler?.(event);
+    };
+    button.addEventListener("click", listener);
+    return () => button.removeEventListener("click", listener);
   }
 
   function renderHotbar(inventory) {
@@ -1795,6 +2054,8 @@
     hideNenRadial,
     updateNenRadialSelection,
     bindNenRadialSelection,
+    updateGrudgeWidget,
+    bindGrudgeExorcise,
     getFlowState: (...a)=>H.getFlowState?.(...a),
     getHudRoot: ensureHudRoot,
     ensureLayer(id, className = "") {
