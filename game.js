@@ -414,6 +414,9 @@
 
    const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
    const rand = (a, b) => a + Math.random() * (b - a);
+   const nowMs = () => (typeof performance === "object" && typeof performance.now === "function")
+      ? performance.now()
+      : Date.now();
    const COOLDOWNS = {
       meleehit: 0.25,
       nenblast: 2.0,
@@ -1026,6 +1029,239 @@
    const ENEMY_RENDER_RADIUS = 60;
    const ENEMY_ACTIVE_RADIUS_SQ = ENEMY_ACTIVE_RADIUS * ENEMY_ACTIVE_RADIUS;
    const ENEMY_RENDER_RADIUS_SQ = ENEMY_RENDER_RADIUS * ENEMY_RENDER_RADIUS;
+   const SIM_BEHAVIOR_SLEEP = "sleep";
+   const SIM_BEHAVIOR_DESPAWN = "despawn";
+   const SIM_STATE_ACTIVE = "active";
+   const SIM_STATE_SLEEPING = "sleeping";
+   const SIM_STATE_DESPAWNED = "despawned";
+   const simulationBubble = {
+      radius: ENEMY_ACTIVE_RADIUS,
+      sleepBuffer: 12,
+      wakeBuffer: 8,
+      cullBuffer: 140,
+      maxRadius: 420,
+      defaultBehavior: SIM_BEHAVIOR_SLEEP,
+      behaviors: new Map(),
+      derived: {}
+   };
+   const defaultSimulationBehaviorSeeds = [
+      ["ambient", SIM_BEHAVIOR_DESPAWN],
+      ["wildlife", SIM_BEHAVIOR_DESPAWN],
+      ["minion", SIM_BEHAVIOR_DESPAWN],
+      ["summon", SIM_BEHAVIOR_DESPAWN],
+      ["trash", SIM_BEHAVIOR_DESPAWN],
+      ["elite", SIM_BEHAVIOR_SLEEP],
+      ["boss", SIM_BEHAVIOR_SLEEP]
+   ];
+   for (const [key, behavior] of defaultSimulationBehaviorSeeds) {
+      simulationBubble.behaviors.set(key.toLowerCase(), behavior);
+   }
+
+   function normalizeSimBehavior(value) {
+      if (typeof value !== "string") return null;
+      const key = value.trim().toLowerCase();
+      if (!key) return null;
+      if (key === SIM_BEHAVIOR_SLEEP || key === "sleeping" || key === "idle") return SIM_BEHAVIOR_SLEEP;
+      if (key === SIM_BEHAVIOR_DESPAWN || key === "cull" || key === "remove") return SIM_BEHAVIOR_DESPAWN;
+      return null;
+   }
+
+   function updateSimulationBubbleDerived() {
+      const radius = clamp(Number.isFinite(simulationBubble.radius) ? simulationBubble.radius : ENEMY_ACTIVE_RADIUS, 8, simulationBubble.maxRadius);
+      simulationBubble.radius = radius;
+      const sleepBuffer = Math.max(0, Number.isFinite(simulationBubble.sleepBuffer) ? simulationBubble.sleepBuffer : 0);
+      const wakeBufferRaw = Math.max(0, Number.isFinite(simulationBubble.wakeBuffer) ? simulationBubble.wakeBuffer : 0);
+      const cullBuffer = Math.max(0, Number.isFinite(simulationBubble.cullBuffer) ? simulationBubble.cullBuffer : 0);
+      const wakeRadius = Math.max(4, radius - Math.min(radius - 4, wakeBufferRaw));
+      const sleepRadius = Math.min(simulationBubble.maxRadius, radius + sleepBuffer);
+      const cullRadius = Math.min(simulationBubble.maxRadius, Math.max(sleepRadius + 12, radius + cullBuffer));
+      const renderRadius = Math.min(simulationBubble.maxRadius, Math.max(ENEMY_RENDER_RADIUS, sleepRadius + 6));
+      simulationBubble.derived = {
+         radius,
+         radiusSq: radius * radius,
+         wakeRadius,
+         wakeRadiusSq: wakeRadius * wakeRadius,
+         sleepRadius,
+         sleepRadiusSq: sleepRadius * sleepRadius,
+         cullRadius,
+         cullRadiusSq: cullRadius * cullRadius,
+         renderRadius,
+         renderRadiusSq: renderRadius * renderRadius
+      };
+   }
+
+   function resolveSimulationBehavior(enemy, plan) {
+      if (!enemy) return simulationBubble.defaultBehavior;
+      const meta = plan?.meta ?? enemy.profileMeta ?? {};
+      const role = plan?.role ?? enemy.profileRole ?? meta?.role ?? null;
+      if (plan?.role && typeof plan.role === "string") {
+         enemy.profileRole = plan.role;
+      }
+      let raw = null;
+      const simSpec = meta?.simulation ?? meta?.simBubble ?? meta?.bubble ?? null;
+      if (typeof simSpec === "string") {
+         raw = simSpec;
+      } else if (simSpec && typeof simSpec === "object") {
+         if (typeof simSpec.behavior === "string") raw = simSpec.behavior;
+         else if (typeof simSpec.mode === "string") raw = simSpec.mode;
+         else if (typeof simSpec.type === "string") raw = simSpec.type;
+      }
+      if (!raw && typeof meta?.simulationBehavior === "string") raw = meta.simulationBehavior;
+      if (!raw && typeof meta?.despawn === "boolean") raw = meta.despawn ? SIM_BEHAVIOR_DESPAWN : SIM_BEHAVIOR_SLEEP;
+      if (!raw && typeof meta?.despawnWhenFar === "boolean") raw = meta.despawnWhenFar ? SIM_BEHAVIOR_DESPAWN : SIM_BEHAVIOR_SLEEP;
+      if (!raw && typeof meta?.persistent === "boolean" && meta.persistent === false) raw = SIM_BEHAVIOR_DESPAWN;
+      if (!raw && (meta?.ambient || meta?.ephemeral)) raw = SIM_BEHAVIOR_DESPAWN;
+      const lookupKeys = [];
+      if (typeof role === "string") lookupKeys.push(role);
+      if (meta && typeof meta.type === "string") lookupKeys.push(meta.type);
+      if (meta && typeof meta.category === "string") lookupKeys.push(meta.category);
+      if (typeof enemy.profileId === "string") lookupKeys.push(enemy.profileId);
+      if (typeof enemy.nenArchetype === "string") lookupKeys.push(enemy.nenArchetype);
+      for (const key of lookupKeys) {
+         if (!key) continue;
+         const normalizedKey = String(key).toLowerCase();
+         if (simulationBubble.behaviors.has(normalizedKey)) {
+            raw = simulationBubble.behaviors.get(normalizedKey);
+            break;
+         }
+      }
+      const normalized = normalizeSimBehavior(raw);
+      return normalized || simulationBubble.defaultBehavior;
+   }
+
+   function ensureEnemySimulationHandle(enemy, plan) {
+      if (!enemy) return null;
+      const sim = enemy.__sim || (enemy.__sim = { state: SIM_STATE_ACTIVE, lastStateChange: nowMs() });
+      if (!sim.state) {
+         sim.state = SIM_STATE_ACTIVE;
+      }
+      if (!Number.isFinite(sim.lastStateChange)) {
+         sim.lastStateChange = nowMs();
+      }
+      const behavior = resolveSimulationBehavior(enemy, plan);
+      if (!sim.behavior || sim.behavior !== behavior) {
+         sim.behavior = behavior;
+      }
+      return sim;
+   }
+
+   function configureEnemyForSimulation(enemy, plan) {
+      if (!enemy) return null;
+      const sim = ensureEnemySimulationHandle(enemy, plan);
+      if (sim) {
+         sim.state = SIM_STATE_ACTIVE;
+         sim.sleepAnchor = null;
+         sim.lastStateChange = nowMs();
+      }
+      return sim;
+   }
+
+   function refreshEnemySimulationAssignments() {
+      const stamp = nowMs();
+      enemies.forEach(enemy => {
+         if (!enemy) return;
+         const sim = ensureEnemySimulationHandle(enemy, null);
+         if (sim && !Number.isFinite(sim.lastStateChange)) {
+            sim.lastStateChange = stamp;
+         }
+      });
+   }
+
+   function getSimulationBubble() {
+      const overrides = {};
+      simulationBubble.behaviors.forEach((behavior, key) => {
+         overrides[key] = behavior;
+      });
+      return {
+         radius: simulationBubble.radius,
+         sleepBuffer: simulationBubble.sleepBuffer,
+         wakeBuffer: simulationBubble.wakeBuffer,
+         cullBuffer: simulationBubble.cullBuffer,
+         defaultBehavior: simulationBubble.defaultBehavior,
+         derived: { ...simulationBubble.derived },
+         overrides
+      };
+   }
+
+   function configureSimulationBubble(config = {}) {
+      if (!config || typeof config !== "object") config = {};
+      let changed = false;
+      if (Number.isFinite(config.radius)) {
+         const next = clamp(config.radius, 8, simulationBubble.maxRadius);
+         if (next !== simulationBubble.radius) {
+            simulationBubble.radius = next;
+            changed = true;
+         }
+      }
+      if (Number.isFinite(config.sleepBuffer)) {
+         const next = Math.max(0, config.sleepBuffer);
+         if (next !== simulationBubble.sleepBuffer) {
+            simulationBubble.sleepBuffer = next;
+            changed = true;
+         }
+      }
+      if (Number.isFinite(config.wakeBuffer)) {
+         const next = Math.max(0, config.wakeBuffer);
+         if (next !== simulationBubble.wakeBuffer) {
+            simulationBubble.wakeBuffer = next;
+            changed = true;
+         }
+      }
+      if (Number.isFinite(config.cullBuffer)) {
+         const next = Math.max(0, config.cullBuffer);
+         if (next !== simulationBubble.cullBuffer) {
+            simulationBubble.cullBuffer = next;
+            changed = true;
+         }
+      }
+      if (typeof config.defaultBehavior === "string") {
+         const normalized = normalizeSimBehavior(config.defaultBehavior);
+         if (normalized && normalized !== simulationBubble.defaultBehavior) {
+            simulationBubble.defaultBehavior = normalized;
+            changed = true;
+         }
+      }
+      if (config.behaviors && typeof config.behaviors === "object") {
+         for (const [key, value] of Object.entries(config.behaviors)) {
+            if (typeof key !== "string") continue;
+            const normalizedKey = key.trim().toLowerCase();
+            if (!normalizedKey) continue;
+            const normalized = normalizeSimBehavior(value);
+            if (!normalized) {
+               if (simulationBubble.behaviors.delete(normalizedKey)) changed = true;
+            } else if (simulationBubble.behaviors.get(normalizedKey) !== normalized) {
+               simulationBubble.behaviors.set(normalizedKey, normalized);
+               changed = true;
+            }
+         }
+      }
+      updateSimulationBubbleDerived();
+      if (changed) {
+         refreshEnemySimulationAssignments();
+      }
+      return getSimulationBubble();
+   }
+
+   function setSimulationBehaviorOverride(key, behavior) {
+      if (typeof key !== "string") return getSimulationBubble();
+      const normalizedKey = key.trim().toLowerCase();
+      if (!normalizedKey) return getSimulationBubble();
+      const normalized = normalizeSimBehavior(behavior);
+      let changed = false;
+      if (!normalized) {
+         changed = simulationBubble.behaviors.delete(normalizedKey);
+      } else if (simulationBubble.behaviors.get(normalizedKey) !== normalized) {
+         simulationBubble.behaviors.set(normalizedKey, normalized);
+         changed = true;
+      }
+      if (changed) {
+         refreshEnemySimulationAssignments();
+      }
+      return getSimulationBubble();
+   }
+
+   updateSimulationBubbleDerived();
+   refreshEnemySimulationAssignments();
    const BLOODLUST_CONE_COS = Math.cos(Math.PI / 4);
    const BLOODLUST_RANGE_SQ = 16 * 16;
    const BLOODLUST_WEAK_HP = 55;
@@ -4233,6 +4469,7 @@
          enemy.root.position.copyFrom(spawnPos);
          enemy.root.computeWorldMatrix(true);
          enemy.prevPos.copyFrom(spawnPos);
+         configureEnemyForSimulation(enemy, { role: "dummy", meta: { simulation: SIM_BEHAVIOR_SLEEP } });
          enemies.push(enemy);
          spawned += 1;
       }
@@ -5230,6 +5467,7 @@
          if (region) {
             enemy.regionId = region.id;
          }
+         configureEnemyForSimulation(enemy, entry);
          enemies.push(enemy);
       }
       if (waveEnemies.length) assignEliteTarget(waveEnemies);
@@ -6039,15 +6277,93 @@
       // enemies AI
       const playerPos = playerRoot.position;
       const stealthMult = state.aura.zetsu ? 0.4 : 1.0;
-      const activeRadius = ENEMY_ACTIVE_RADIUS * stealthMult;
-      const activeRadiusSq = activeRadius * activeRadius;
+      const bubbleInfo = simulationBubble.derived || {};
+      const bubbleRadius = Number.isFinite(bubbleInfo.radius) ? bubbleInfo.radius : ENEMY_ACTIVE_RADIUS;
+      const baseActiveRadius = Math.min(bubbleRadius, ENEMY_ACTIVE_RADIUS * stealthMult);
+      const activeRadiusSq = Math.max(4, baseActiveRadius * baseActiveRadius);
+      const sleepRadiusSq = Number.isFinite(bubbleInfo.sleepRadiusSq) ? bubbleInfo.sleepRadiusSq : ENEMY_RENDER_RADIUS_SQ;
+      const wakeRadiusSq = Number.isFinite(bubbleInfo.wakeRadiusSq) ? bubbleInfo.wakeRadiusSq : activeRadiusSq;
+      const renderRadiusSq = Number.isFinite(bubbleInfo.renderRadiusSq) ? bubbleInfo.renderRadiusSq : ENEMY_RENDER_RADIUS_SQ;
+      const cullRadiusSq = Number.isFinite(bubbleInfo.cullRadiusSq) ? bubbleInfo.cullRadiusSq : renderRadiusSq * 4;
       const renThreatActive = state.aura.renActive && !state.aura.zetsu;
       const bloodlustDir = renThreatActive ? playerAimDir() : null;
       const renFearStrength = renThreatActive ? state.aura.renCharge : 0;
+      const simTime = nowMs();
+      const toCull = [];
       for (const e of enemies) {
-         if (!e.alive) continue;
+         if (!e.alive || !e.root) continue;
+         const sim = ensureEnemySimulationHandle(e, null);
+         TMP_ENEMY_TO_PLAYER.copyFrom(playerPos);
+         TMP_ENEMY_TO_PLAYER.subtractInPlace(e.root.position);
+         const distSq = TMP_ENEMY_TO_PLAYER.lengthSquared();
+         if (sim) sim.lastDistanceSq = distSq;
+
+         if (sim && sim.behavior === SIM_BEHAVIOR_DESPAWN && distSq > cullRadiusSq) {
+            sim.state = SIM_STATE_DESPAWNED;
+            sim.lastStateChange = simTime;
+            sim.sleepAnchor = null;
+            e.alive = false;
+            try { e.root.dispose(); } catch {}
+            try { window.Enemies?.cleanup?.(e); } catch {}
+            toCull.push(e);
+            continue;
+         }
+
+         if (sim && sim.state === SIM_STATE_SLEEPING && distSq <= wakeRadiusSq) {
+            sim.state = SIM_STATE_ACTIVE;
+            sim.sleepAnchor = null;
+            sim.lastStateChange = simTime;
+         }
+
+         if (sim && sim.state !== SIM_STATE_SLEEPING && distSq > sleepRadiusSq) {
+            sim.state = SIM_STATE_SLEEPING;
+            sim.lastStateChange = simTime;
+            sim.sleepAnchor = e.root.position.clone();
+         }
+
+         if (sim && sim.state === SIM_STATE_SLEEPING) {
+            const anchor = sim.sleepAnchor || e.root.position.clone();
+            sim.sleepAnchor = anchor;
+            e.root.position.copyFrom(anchor);
+            e.root.computeWorldMatrix(true);
+            e.prevPos.copyFrom(e.root.position);
+            if (typeof e.vel?.set === "function") {
+               e.vel.set(0, 0, 0);
+            } else {
+               e.vel.x = 0;
+               e.vel.y = 0;
+               e.vel.z = 0;
+            }
+            e.grounded = true;
+            e.dormant = true;
+            if (e.attackAnimT > 0) e.attackAnimT = Math.max(0, e.attackAnimT - dt);
+            if (e.root.isEnabled()) e.root.setEnabled(false);
+            continue;
+         }
+
+         if (distSq > renderRadiusSq) {
+            if (e.root.isEnabled()) e.root.setEnabled(false);
+            e.dormant = true;
+            if (typeof e.vel?.set === "function") {
+               e.vel.set(0, e.vel.y, 0);
+            } else {
+               e.vel.x = 0;
+               e.vel.z = 0;
+            }
+            if (Math.abs(e.vel.y) < 0.01) e.vel.y = 0;
+            e.prevPos.copyFrom(e.root.position);
+            if (e.attackAnimT > 0) e.attackAnimT = Math.max(0, e.attackAnimT - dt);
+            continue;
+         }
+
+         if (!e.root.isEnabled()) e.root.setEnabled(true);
+         if (sim && sim.state !== SIM_STATE_ACTIVE) {
+            sim.state = SIM_STATE_ACTIVE;
+            sim.lastStateChange = simTime;
+            sim.sleepAnchor = null;
+         }
+
          if (e.qaDummy) {
-            if (!e.root.isEnabled()) e.root.setEnabled(true);
             e.vel.x = 0;
             e.vel.y = 0;
             e.vel.z = 0;
@@ -6063,22 +6379,6 @@
             applyFootIK(e.root, e.grounded);
             continue;
          }
-         TMP_ENEMY_TO_PLAYER.copyFrom(playerPos);
-         TMP_ENEMY_TO_PLAYER.subtractInPlace(e.root.position);
-         const distSq = TMP_ENEMY_TO_PLAYER.lengthSquared();
-
-         if (distSq > ENEMY_RENDER_RADIUS_SQ) {
-            if (e.root.isEnabled()) e.root.setEnabled(false);
-            e.dormant = true;
-            e.vel.x = 0;
-            e.vel.z = 0;
-            if (Math.abs(e.vel.y) < 0.01) e.vel.y = 0;
-            e.prevPos.copyFrom(e.root.position);
-            if (e.attackAnimT > 0) e.attackAnimT = Math.max(0, e.attackAnimT - dt);
-            continue;
-         }
-
-         if (!e.root.isEnabled()) e.root.setEnabled(true);
 
          if (e.fearT > 0) {
             e.fearT = Math.max(0, e.fearT - dt);
@@ -6207,6 +6507,13 @@
          applyFootIK(e.root, e.grounded);
          if (e.attackAnimT > 0) e.attackAnimT = Math.max(0, e.attackAnimT - dt);
          e.prevPos.copyFrom(e.root.position);
+      }
+
+      if (toCull.length) {
+         for (const enemy of toCull) {
+            const idx = enemies.indexOf(enemy);
+            if (idx >= 0) enemies.splice(idx, 1);
+         }
       }
 
       // player walk anim
@@ -6362,7 +6669,10 @@
       getTrainingCaps: () => getTrainingCapsSnapshot(),
       upgradeTraining: (key, opts) => upgradeTraining(key, opts || {}),
       openTrainingMenu,
-      closeTrainingMenu
+      closeTrainingMenu,
+      getSimulationBubble,
+      configureSimulationBubble,
+      setSimulationBehaviorOverride
    };
 // === Added: expose subsystems so auxiliary files can reuse them ===
 try {
@@ -6415,6 +6725,12 @@ try {
     refillResources,
     spawnTargetDummy,
     applyRuntimeSnapshot,
+    getSimulationBubble,
+    configureSimulationBubble,
+    setSimulationBehaviorOverride,
+    refreshEnemySimulationAssignments,
+    configureEnemyForSimulation,
+    simulationBubble,
   });
   // share rig definitions for the editor if available
   window.RigDefinitions = {
