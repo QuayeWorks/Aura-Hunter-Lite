@@ -541,6 +541,445 @@
 
    let fallbackTreeMaterials = null;
 
+   const INSTANCE_POOL = (() => {
+      const registry = new Map();
+      let idCounter = 1;
+
+      const toVector3 = (value, fallback = new BABYLON.Vector3(0, 0, 0)) => {
+         if (value instanceof BABYLON.Vector3) return value.clone();
+         if (Array.isArray(value) && value.length >= 3) {
+            return new BABYLON.Vector3(
+               Number(value[0]) || 0,
+               Number(value[1]) || 0,
+               Number(value[2]) || 0
+            );
+         }
+         if (value && typeof value === "object") {
+            const x = Number(value.x);
+            const y = Number(value.y);
+            const z = Number(value.z);
+            if (Number.isFinite(x) || Number.isFinite(y) || Number.isFinite(z)) {
+               return new BABYLON.Vector3(x || 0, y || 0, z || 0);
+            }
+         }
+         if (typeof value === "number" && Number.isFinite(value)) {
+            return new BABYLON.Vector3(value, value, value);
+         }
+         return fallback.clone();
+      };
+
+      const toQuaternion = (value) => {
+         if (value instanceof BABYLON.Quaternion) return value.clone();
+         if (Array.isArray(value) && value.length >= 4) {
+            return new BABYLON.Quaternion(
+               Number(value[0]) || 0,
+               Number(value[1]) || 0,
+               Number(value[2]) || 0,
+               Number(value[3]) || 1
+            );
+         }
+         if (value && typeof value === "object") {
+            const x = Number(value.x);
+            const y = Number(value.y);
+            const z = Number(value.z);
+            const w = Number(value.w);
+            if ([x, y, z, w].some(Number.isFinite)) {
+               return new BABYLON.Quaternion(x || 0, y || 0, z || 0, Number.isFinite(w) ? w : 1);
+            }
+         }
+         return BABYLON.Quaternion.Identity();
+      };
+
+      const normalizeTransform = (transform = {}) => {
+         const position = toVector3(transform.position);
+         let scaling = transform.scaling instanceof BABYLON.Vector3
+            ? transform.scaling.clone()
+            : toVector3(transform.scaling, new BABYLON.Vector3(1, 1, 1));
+         if (typeof transform.scaling === "number") {
+            scaling = new BABYLON.Vector3(transform.scaling, transform.scaling, transform.scaling);
+         }
+         let rotationQuat = null;
+         if (transform.rotationQuaternion) {
+            rotationQuat = toQuaternion(transform.rotationQuaternion);
+         } else if (transform.quaternion) {
+            rotationQuat = toQuaternion(transform.quaternion);
+         } else if (transform.rotation instanceof BABYLON.Vector3) {
+            rotationQuat = BABYLON.Quaternion.FromEulerVector(transform.rotation);
+         } else if (Array.isArray(transform.rotation) && transform.rotation.length >= 3) {
+            rotationQuat = BABYLON.Quaternion.FromEulerAngles(
+               Number(transform.rotation[0]) || 0,
+               Number(transform.rotation[1]) || 0,
+               Number(transform.rotation[2]) || 0
+            );
+         } else if (transform.rotation && typeof transform.rotation === "object") {
+            rotationQuat = BABYLON.Quaternion.FromEulerAngles(
+               Number(transform.rotation.x) || 0,
+               Number(transform.rotation.y) || 0,
+               Number(transform.rotation.z) || 0
+            );
+         } else if (Number.isFinite(transform.rotationY)) {
+            rotationQuat = BABYLON.Quaternion.FromEulerAngles(0, transform.rotationY, 0);
+         } else {
+            rotationQuat = BABYLON.Quaternion.Identity();
+         }
+
+         const matrix = BABYLON.Matrix.Compose(scaling, rotationQuat, position);
+         return { position, scaling, rotationQuaternion: rotationQuat, matrix };
+      };
+
+      const applyTransformToMesh = (mesh, transform) => {
+         if (!mesh || !transform) return;
+         if (!mesh.rotationQuaternion) {
+            mesh.rotationQuaternion = BABYLON.Quaternion.Identity();
+         }
+         mesh.position.copyFrom(transform.position);
+         mesh.scaling.copyFrom(transform.scaling);
+         mesh.rotationQuaternion.copyFrom(transform.rotationQuaternion);
+         if (mesh.rotation) {
+            mesh.rotation.set(0, 0, 0);
+         }
+      };
+
+      const rebuildThinBuffer = (entry) => {
+         const { thinMatrices, baseMesh } = entry;
+         if (!baseMesh) return;
+         if (!thinMatrices.length) {
+            baseMesh.thinInstanceSetBuffer("matrix", null, 16);
+            baseMesh.thinInstanceCount = 0;
+            baseMesh.isVisible = false;
+            return;
+         }
+         const data = new Float32Array(thinMatrices.length * 16);
+         for (let i = 0; i < thinMatrices.length; i += 1) {
+            thinMatrices[i].matrix.copyToArray(data, i * 16);
+         }
+         baseMesh.thinInstanceSetBuffer("matrix", data, 16, true);
+         baseMesh.thinInstanceCount = thinMatrices.length;
+         baseMesh.thinInstanceBufferUpdated = true;
+         baseMesh.thinInstanceRefreshBoundingInfo(true);
+         baseMesh.isVisible = true;
+      };
+
+      const ensureEntry = (type) => {
+         const key = typeof type === "string" ? type.trim().toLowerCase() : null;
+         if (!key) return null;
+         if (!registry.has(key)) {
+            registry.set(key, {
+               type: key,
+               baseMesh: null,
+               factory: null,
+               options: {
+                  allowThin: true,
+                  thinThreshold: 800,
+                  withCollisions: false
+               },
+               instanceRecords: new Map(),
+               thinMatrices: [],
+               thinIndex: new Map(),
+               mode: "instanced"
+            });
+         }
+         return registry.get(key);
+      };
+
+      const ensureBaseMesh = (entry) => {
+         if (entry.baseMesh && !entry.baseMesh.isDisposed() && (!scene || entry.baseMesh.getScene() === scene)) {
+            return entry.baseMesh;
+         }
+         if (entry.baseMesh && typeof entry.baseMesh.dispose === "function") {
+            try { entry.baseMesh.dispose(false, true); } catch (err) { /* ignore */ }
+         }
+         entry.baseMesh = null;
+         if (typeof entry.factory === "function" && scene) {
+            const mesh = entry.factory(scene, entry) || null;
+            if (mesh) {
+               mesh.isVisible = false;
+               mesh.alwaysSelectAsActiveMesh = false;
+               mesh.isPickable = false;
+               if (!entry.options.withCollisions) mesh.checkCollisions = false;
+               entry.baseMesh = mesh;
+            }
+         }
+         return entry.baseMesh;
+      };
+
+      const convertToThin = (entry) => {
+         if (entry.mode === "thin") return;
+         const baseMesh = ensureBaseMesh(entry);
+         if (!baseMesh) return;
+         const nextMatrices = [];
+         for (const [id, record] of entry.instanceRecords.entries()) {
+            nextMatrices.push({ id, matrix: record.transform.matrix.clone() });
+            if (record.mesh && typeof record.mesh.dispose === "function") {
+               try { record.mesh.dispose(); } catch (err) { /* ignore */ }
+            }
+         }
+         entry.instanceRecords.clear();
+         entry.thinMatrices = nextMatrices;
+         entry.thinIndex = new Map(nextMatrices.map((rec, idx) => [rec.id, idx]));
+         entry.mode = "thin";
+         rebuildThinBuffer(entry);
+      };
+
+      const registerType = (type, config = {}) => {
+         const entry = ensureEntry(type);
+         if (!entry) return null;
+         if (config.factory && typeof config.factory === "function") {
+            entry.factory = config.factory;
+         }
+         if (config.baseMesh instanceof BABYLON.Mesh) {
+            entry.baseMesh = config.baseMesh;
+         }
+         entry.options = {
+            allowThin: config.allowThin !== undefined ? !!config.allowThin : entry.options.allowThin,
+            thinThreshold: Number.isFinite(config.thinThreshold) ? config.thinThreshold : entry.options.thinThreshold,
+            withCollisions: config.withCollisions !== undefined ? !!config.withCollisions : entry.options.withCollisions
+         };
+         return entry;
+      };
+
+      const spawnInstances = (type, transforms = [], options = {}) => {
+         const entry = ensureEntry(type);
+         if (!entry) return [];
+         const baseMesh = ensureBaseMesh(entry);
+         if (!baseMesh) return [];
+         const list = Array.isArray(transforms) ? transforms : [transforms];
+         if (!list.length) return [];
+
+         const created = [];
+         const requestMode = typeof options.mode === "string" ? options.mode.toLowerCase() : null;
+         if (entry.mode !== "thin") {
+            const predicted = entry.instanceRecords.size + list.length;
+            const shouldThin = requestMode === "thin" || (
+               requestMode !== "instanced" && entry.options.allowThin && !entry.options.withCollisions && predicted >= entry.options.thinThreshold
+            );
+            if (shouldThin) {
+               convertToThin(entry);
+            }
+         }
+
+         if (entry.mode === "thin") {
+            const matrices = entry.thinMatrices;
+            const indexMap = entry.thinIndex;
+            for (const transformInput of list) {
+               const transform = normalizeTransform(transformInput);
+               const id = idCounter++;
+               matrices.push({ id, matrix: transform.matrix });
+               indexMap.set(id, matrices.length - 1);
+               created.push(id);
+            }
+            rebuildThinBuffer(entry);
+            return created;
+         }
+
+         for (const transformInput of list) {
+            const transform = normalizeTransform(transformInput);
+            const mesh = baseMesh.createInstance(`${type}-inst-${idCounter}`);
+            applyTransformToMesh(mesh, transform);
+            mesh.isVisible = true;
+            mesh.isPickable = false;
+            mesh.checkCollisions = !!entry.options.withCollisions;
+            const id = idCounter++;
+            entry.instanceRecords.set(id, { mesh, transform });
+            created.push(id);
+         }
+         return created;
+      };
+
+      const despawnInstances = (type, ids = []) => {
+         const entry = ensureEntry(type);
+         if (!entry || !ids || ids.length === 0) return 0;
+         let removed = 0;
+         if (entry.mode === "thin") {
+            const matrices = entry.thinMatrices;
+            const indexMap = entry.thinIndex;
+            for (const rawId of ids) {
+               const id = Number(rawId);
+               if (!indexMap.has(id)) continue;
+               const index = indexMap.get(id);
+               matrices.splice(index, 1);
+               indexMap.delete(id);
+               for (let i = index; i < matrices.length; i += 1) {
+                  indexMap.set(matrices[i].id, i);
+               }
+               removed += 1;
+            }
+            if (removed > 0) rebuildThinBuffer(entry);
+            return removed;
+         }
+
+         for (const rawId of ids) {
+            const id = Number(rawId);
+            if (!entry.instanceRecords.has(id)) continue;
+            const record = entry.instanceRecords.get(id);
+            if (record.mesh && typeof record.mesh.dispose === "function") {
+               try { record.mesh.dispose(); } catch (err) { /* ignore */ }
+            }
+            entry.instanceRecords.delete(id);
+            removed += 1;
+         }
+         return removed;
+      };
+
+      const reset = ({ disposeBase = false } = {}) => {
+         for (const entry of registry.values()) {
+            if (entry.mode === "thin") {
+               entry.thinMatrices = [];
+               entry.thinIndex.clear();
+               if (entry.baseMesh) {
+                  entry.baseMesh.thinInstanceSetBuffer("matrix", null, 16);
+                  entry.baseMesh.thinInstanceCount = 0;
+                  entry.baseMesh.isVisible = false;
+               }
+            } else {
+               for (const record of entry.instanceRecords.values()) {
+                  if (record.mesh && typeof record.mesh.dispose === "function") {
+                     try { record.mesh.dispose(); } catch (err) { /* ignore */ }
+                  }
+               }
+               entry.instanceRecords.clear();
+            }
+            entry.mode = "instanced";
+            if (disposeBase && entry.baseMesh) {
+               try { entry.baseMesh.dispose(false, true); } catch (err) { /* ignore */ }
+               entry.baseMesh = null;
+            }
+         }
+      };
+
+      return {
+         registerType,
+         spawnInstances,
+         despawnInstances,
+         reset,
+         _registry: registry
+      };
+   })();
+
+   const TREE_PROTOTYPES = {
+      trunk: null,
+      foliage: null,
+      crown: null,
+      mediumTrunk: null,
+      mediumFoliage: null,
+      mediumCrown: null,
+      billboard: null
+   };
+
+   function disposeTreePrototypes() {
+      for (const key of Object.keys(TREE_PROTOTYPES)) {
+         const mesh = TREE_PROTOTYPES[key];
+         if (mesh && typeof mesh.dispose === "function" && !mesh.isDisposed()) {
+            try { mesh.dispose(false, true); } catch (err) { /* ignore */ }
+         }
+         TREE_PROTOTYPES[key] = null;
+      }
+   }
+
+   function ensureTreePrototypes(scene) {
+      if (!scene) return TREE_PROTOTYPES;
+      const sameScene = (mesh) => mesh && !mesh.isDisposed() && mesh.getScene() === scene;
+      if (sameScene(TREE_PROTOTYPES.trunk) && sameScene(TREE_PROTOTYPES.foliage) && sameScene(TREE_PROTOTYPES.crown)) {
+         return TREE_PROTOTYPES;
+      }
+
+      disposeTreePrototypes();
+
+      const { trunkMat, leavesMat, billboardMat } = getFallbackTreeMaterials(scene);
+      const trunk = BABYLON.MeshBuilder.CreateCylinder("treePrototype-trunk", {
+         height: 4,
+         diameterTop: 0.55,
+         diameterBottom: 0.75
+      }, scene);
+      trunk.material = trunkMat;
+      trunk.position.y = 2;
+      trunk.isVisible = false;
+      trunk.isPickable = false;
+      trunk.checkCollisions = false;
+
+      const foliage = BABYLON.MeshBuilder.CreateSphere("treePrototype-foliage", {
+         diameterX: 3.2,
+         diameterY: 3.4,
+         diameterZ: 3.2,
+         segments: 2
+      }, scene);
+      foliage.material = leavesMat;
+      foliage.position.y = 4.5;
+      foliage.isVisible = false;
+      foliage.isPickable = false;
+      foliage.checkCollisions = false;
+
+      const crown = BABYLON.MeshBuilder.CreateSphere("treePrototype-crown", {
+         diameterX: 2.6,
+         diameterY: 2.8,
+         diameterZ: 2.6,
+         segments: 2
+      }, scene);
+      crown.material = leavesMat;
+      crown.position.y = 6;
+      crown.isVisible = false;
+      crown.isPickable = false;
+      crown.checkCollisions = false;
+
+      const mediumTrunk = BABYLON.MeshBuilder.CreateCylinder("treePrototype-lod-trunk", {
+         height: 4,
+         diameterTop: 0.5,
+         diameterBottom: 0.68,
+         tessellation: 5
+      }, scene);
+      mediumTrunk.material = trunkMat;
+      mediumTrunk.position.y = 2;
+      mediumTrunk.isVisible = false;
+      mediumTrunk.isPickable = false;
+      mediumTrunk.checkCollisions = false;
+
+      const mediumFoliage = BABYLON.MeshBuilder.CreateSphere("treePrototype-lod-foliage", {
+         diameterX: 3,
+         diameterY: 3,
+         diameterZ: 3,
+         segments: 1
+      }, scene);
+      mediumFoliage.material = leavesMat;
+      mediumFoliage.position.y = 4.4;
+      mediumFoliage.isVisible = false;
+      mediumFoliage.isPickable = false;
+      mediumFoliage.checkCollisions = false;
+
+      const mediumCrown = BABYLON.MeshBuilder.CreateSphere("treePrototype-lod-crown", {
+         diameterX: 2.4,
+         diameterY: 2.5,
+         diameterZ: 2.4,
+         segments: 1
+      }, scene);
+      mediumCrown.material = leavesMat;
+      mediumCrown.position.y = 5.8;
+      mediumCrown.isVisible = false;
+      mediumCrown.isPickable = false;
+      mediumCrown.checkCollisions = false;
+
+      const billboard = BABYLON.MeshBuilder.CreatePlane("treePrototype-lod-billboard", {
+         width: 3.8,
+         height: 6.2,
+         sideOrientation: BABYLON.Mesh.DOUBLESIDE
+      }, scene);
+      billboard.material = billboardMat;
+      billboard.position.y = 4.8;
+      billboard.billboardMode = BABYLON.AbstractMesh.BILLBOARDMODE_Y;
+      billboard.isVisible = false;
+      billboard.isPickable = false;
+      billboard.checkCollisions = false;
+
+      TREE_PROTOTYPES.trunk = trunk;
+      TREE_PROTOTYPES.foliage = foliage;
+      TREE_PROTOTYPES.crown = crown;
+      TREE_PROTOTYPES.mediumTrunk = mediumTrunk;
+      TREE_PROTOTYPES.mediumFoliage = mediumFoliage;
+      TREE_PROTOTYPES.mediumCrown = mediumCrown;
+      TREE_PROTOTYPES.billboard = billboard;
+
+      return TREE_PROTOTYPES;
+   }
+
    const GameSettings = {
       getTerrainSettings() {
          return { ...environment.terrainSettings };
@@ -1715,52 +2154,40 @@
       return mesh;
    }
 
-   function createTreeBillboard(scene, name, root, material) {
-      const billboard = BABYLON.MeshBuilder.CreatePlane(`${name}-lod-billboard`, {
-         width: 3.8,
-         height: 6.2,
-         sideOrientation: BABYLON.Mesh.DOUBLESIDE
-      }, scene);
-      billboard.material = material;
-      billboard.parent = root;
-      billboard.position.y = 4.8;
-      billboard.billboardMode = BABYLON.AbstractMesh.BILLBOARDMODE_Y;
-      return tagLodProxy(billboard);
+   function createTreeBillboard(scene, name, root, base) {
+      const source = base || ensureTreePrototypes(scene).billboard;
+      if (!source) return null;
+      const instance = source.createInstance(`${name}-lod-billboard`);
+      instance.parent = root;
+      return tagLodProxy(instance);
    }
 
    function createTreeLodMeshes(scene, root, parts) {
-      const { name, trunk, foliage, crown, trunkMat, leavesMat, billboardMat } = parts;
-      const mediumTrunk = tagLodProxy(BABYLON.MeshBuilder.CreateCylinder(`${name}-lod-trunk`, {
-         height: 4,
-         diameterTop: 0.5,
-         diameterBottom: 0.68,
-         tessellation: 5
-      }, scene));
-      mediumTrunk.material = trunkMat;
-      mediumTrunk.parent = root;
-      mediumTrunk.position.y = 2;
+      const { name, trunk, foliage, crown, prototypes } = parts;
+      const mediumTrunkSource = prototypes?.mediumTrunk;
+      const mediumFoliageSource = prototypes?.mediumFoliage;
+      const mediumCrownSource = prototypes?.mediumCrown;
+      const billboardSource = prototypes?.billboard;
 
-      const mediumFoliage = tagLodProxy(BABYLON.MeshBuilder.CreateSphere(`${name}-lod-foliage`, {
-         diameterX: 3,
-         diameterY: 3,
-         diameterZ: 3,
-         segments: 1
-      }, scene));
-      mediumFoliage.material = leavesMat;
-      mediumFoliage.parent = root;
-      mediumFoliage.position.y = 4.4;
+      const mediumTrunk = mediumTrunkSource ? mediumTrunkSource.createInstance(`${name}-lod-trunk`) : null;
+      if (mediumTrunk) {
+         mediumTrunk.parent = root;
+         tagLodProxy(mediumTrunk);
+      }
 
-      const mediumCrown = tagLodProxy(BABYLON.MeshBuilder.CreateSphere(`${name}-lod-crown`, {
-         diameterX: 2.4,
-         diameterY: 2.5,
-         diameterZ: 2.4,
-         segments: 1
-      }, scene));
-      mediumCrown.material = leavesMat;
-      mediumCrown.parent = root;
-      mediumCrown.position.y = 5.8;
+      const mediumFoliage = mediumFoliageSource ? mediumFoliageSource.createInstance(`${name}-lod-foliage`) : null;
+      if (mediumFoliage) {
+         mediumFoliage.parent = root;
+         tagLodProxy(mediumFoliage);
+      }
 
-      const farBillboard = createTreeBillboard(scene, name, root, billboardMat);
+      const mediumCrown = mediumCrownSource ? mediumCrownSource.createInstance(`${name}-lod-crown`) : null;
+      if (mediumCrown) {
+         mediumCrown.parent = root;
+         tagLodProxy(mediumCrown);
+      }
+
+      const farBillboard = billboardSource ? createTreeBillboard(scene, name, root, billboardSource) : null;
 
       const bindings = [
          { host: trunk, medium: mediumTrunk, far: farBillboard },
@@ -1774,45 +2201,33 @@
 
    function createFallbackTree(scene, name, position, scale) {
       const root = new BABYLON.TransformNode(name, scene);
-      const { trunkMat, leavesMat, billboardMat } = getFallbackTreeMaterials(scene);
+      const prototypes = ensureTreePrototypes(scene);
 
-      const trunk = BABYLON.MeshBuilder.CreateCylinder(`${name}-trunk`, {
-         height: 4,
-         diameterTop: 0.55,
-         diameterBottom: 0.75
-      }, scene);
-      trunk.material = trunkMat;
-      trunk.parent = root;
-      trunk.position.y = 2;
+      const trunkSource = prototypes.trunk;
+      const foliageSource = prototypes.foliage;
+      const crownSource = prototypes.crown;
 
-      const foliage = BABYLON.MeshBuilder.CreateSphere(`${name}-foliage`, {
-         diameterX: 3.2,
-         diameterY: 3.4,
-         diameterZ: 3.2,
-         segments: 2
-      }, scene);
-      foliage.material = leavesMat;
-      foliage.parent = root;
-      foliage.position.y = 4.5;
+      const trunk = trunkSource ? trunkSource.createInstance(`${name}-trunk`) : null;
+      if (trunk) {
+         trunk.parent = root;
+      }
 
-      const crown = BABYLON.MeshBuilder.CreateSphere(`${name}-crown`, {
-         diameterX: 2.6,
-         diameterY: 2.8,
-         diameterZ: 2.6,
-         segments: 2
-      }, scene);
-      crown.material = leavesMat;
-      crown.parent = root;
-      crown.position.y = 6;
+      const foliage = foliageSource ? foliageSource.createInstance(`${name}-foliage`) : null;
+      if (foliage) {
+         foliage.parent = root;
+      }
+
+      const crown = crownSource ? crownSource.createInstance(`${name}-crown`) : null;
+      if (crown) {
+         crown.parent = root;
+      }
 
       createTreeLodMeshes(scene, root, {
          name,
          trunk,
          foliage,
          crown,
-         trunkMat,
-         leavesMat,
-         billboardMat
+         prototypes
       });
 
       root.position.copyFrom(position);
@@ -2055,6 +2470,7 @@
    async function setupEnvironment(scene) {
       reseedEnvironment();
       clearTrees();
+      INSTANCE_POOL.reset();
       environment.sky?.dispose();
       environment.sunMesh?.dispose();
       environment.moonMesh?.dispose();
@@ -5966,6 +6382,10 @@ try {
     scatterVegetation, clearTrees, createCloudLayer, advanceEnvironment, updateEnvironment,
     getFallbackTreeMaterials, createFallbackTree,
     applyTreeLOD, refreshAllTreeLods, setEnvironmentLodProfile,
+    registerInstanceType: INSTANCE_POOL.registerType,
+    spawnInstances: (type, transforms, options) => INSTANCE_POOL.spawnInstances(type, transforms, options),
+    despawnInstances: (type, ids) => INSTANCE_POOL.despawnInstances(type, ids),
+    resetInstancePools: (opts) => INSTANCE_POOL.reset(opts),
 
     // HUD & cooldowns
     setCooldown, cdActive, markCooldownDirty, updateHealthHud, updateNenHud, updateXpHud, updateAuraHud, updateFlowHud, updateCooldownUI, updateHUD, msg,
