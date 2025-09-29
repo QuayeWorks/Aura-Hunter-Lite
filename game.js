@@ -56,6 +56,44 @@
 
    const HOTBAR_LENGTH = 9;
 
+   const TRAINING_KEYS = ["renHold", "gyoFocus", "ryuDrill", "shuEfficiency"];
+   const TRAINING_LIMITS = {
+      renHold: 5,
+      gyoFocus: 5,
+      ryuDrill: 5,
+      shuEfficiency: 5
+   };
+   const TRAINING_LABELS = {
+      renHold: "Ren hold meter",
+      gyoFocus: "Gyo numbers",
+      ryuDrill: "Ryu drill",
+      shuEfficiency: "Shu rock test"
+   };
+
+   function makeDefaultTrainingProgress() {
+      return {
+         renHold: 0,
+         gyoFocus: 0,
+         ryuDrill: 0,
+         shuEfficiency: 0
+      };
+   }
+
+   function makeDefaultTrainingCaps() {
+      return {
+         renDurationCap: 6,
+         renRecoveryRate: 1.5,
+         renBonusMul: 0,
+         gyoCritCap: 0.12,
+         gyoCritScale: 0.012,
+         ryuVulnFactor: 1,
+         ryuGuardBonus: 0,
+         shuDamageMul: 1.3,
+         shuDurabilityScalar: 0.65,
+         shuPierce: 1
+      };
+   }
+
    const parseHotbarKey = (code) => {
       if (typeof code !== "string") return null;
       if (code.startsWith("Digit")) {
@@ -195,6 +233,54 @@
          legendEntries.set(group.key, { row, value, swatch });
       }
       hud.flowLegendEntries = legendEntries;
+
+      const trainingRow = document.createElement("div");
+      trainingRow.style.display = "flex";
+      trainingRow.style.flexWrap = "wrap";
+      trainingRow.style.alignItems = "center";
+      trainingRow.style.gap = "0.5rem";
+      trainingRow.style.marginTop = "0.55rem";
+      flowInfo.appendChild(trainingRow);
+
+      const trainingBtn = document.createElement("button");
+      trainingBtn.id = "hud-training-button";
+      trainingBtn.type = "button";
+      trainingBtn.textContent = "Training Grounds";
+      trainingBtn.className = "hud-training-button";
+      const baseBg = "rgba(26, 44, 70, 0.85)";
+      const baseBorder = "1px solid rgba(120, 190, 255, 0.35)";
+      const activeBg = "rgba(80, 190, 255, 0.28)";
+      const activeBorder = "1px solid rgba(140, 220, 255, 0.7)";
+      trainingBtn.dataset.bgBase = baseBg;
+      trainingBtn.dataset.borderBase = baseBorder;
+      trainingBtn.dataset.bgActive = activeBg;
+      trainingBtn.dataset.borderActive = activeBorder;
+      trainingBtn.style.padding = "0.32rem 0.75rem";
+      trainingBtn.style.borderRadius = "999px";
+      trainingBtn.style.fontSize = "0.72rem";
+      trainingBtn.style.fontWeight = "600";
+      trainingBtn.style.letterSpacing = "0.04em";
+      trainingBtn.style.textTransform = "uppercase";
+      trainingBtn.style.background = baseBg;
+      trainingBtn.style.border = baseBorder;
+      trainingBtn.style.color = "#eff6ff";
+      trainingBtn.style.cursor = "pointer";
+      trainingBtn.style.transition = "background-color 0.18s ease, border-color 0.18s ease, transform 0.15s ease";
+      trainingBtn.setAttribute("aria-haspopup", "dialog");
+      trainingBtn.setAttribute("aria-pressed", "false");
+      trainingBtn.setAttribute("title", "Open training drills (Y)");
+      trainingRow.appendChild(trainingBtn);
+      hud.trainingButton = trainingBtn;
+
+      const trainingHint = document.createElement("span");
+      trainingHint.className = "hud-training-hint";
+      trainingHint.style.fontSize = "0.68rem";
+      trainingHint.style.opacity = "0.75";
+      trainingHint.style.flex = "1";
+      trainingHint.style.minWidth = "12ch";
+      trainingHint.textContent = "Ranks: —";
+      trainingRow.appendChild(trainingHint);
+      hud.trainingHint = trainingHint;
    }
 
    // Babylon exposes the wrap constant as WRAP_ADDRESSMODE (without the "ING").
@@ -348,7 +434,9 @@
    let enemies = [],
       projectiles = [];
    let inventoryUnsub = null,
-      hotbarUnsub = null;
+      hotbarUnsub = null,
+      trainingMenuDisposer = null,
+      trainingButtonUnsub = null;
    let lastTime = 0,
       paused = false;
    let startPos = new BABYLON.Vector3(0, 3, 0);
@@ -1406,8 +1494,19 @@
          power: 0,
          agility: 0,
          focus: 0
-      }
+      },
+      training: makeDefaultTrainingProgress()
    };
+
+   if (!progress.training || typeof progress.training !== "object") {
+      progress.training = makeDefaultTrainingProgress();
+   }
+   TRAINING_KEYS.forEach(key => {
+      const raw = Number(progress.training[key]);
+      const cap = TRAINING_LIMITS[key] ?? 0;
+      const clamped = Number.isFinite(raw) ? Math.max(0, Math.min(cap, Math.floor(raw))) : 0;
+      progress.training[key] = clamped;
+   });
 
    // migrate old alloc {nen, attack, hp, nenRegen, hpRegen} -> refund to unspent
    if (progress.alloc && ("nen" in progress.alloc || "hp" in progress.alloc)) {
@@ -1441,6 +1540,94 @@
       }
       updateHUD();
       saveProgress();
+   }
+
+   function getTrainingLevel(key) {
+      if (!TRAINING_KEYS.includes(key)) return 0;
+      const cap = TRAINING_LIMITS[key] ?? 0;
+      const raw = Number(progress.training?.[key]);
+      if (!Number.isFinite(raw)) return 0;
+      return Math.max(0, Math.min(cap, Math.floor(raw)));
+   }
+
+   function getTrainingProgressSnapshot() {
+      const snapshot = {};
+      TRAINING_KEYS.forEach(key => {
+         snapshot[key] = getTrainingLevel(key);
+      });
+      return snapshot;
+   }
+
+   function getTrainingCapsSnapshot() {
+      return { ...state.trainingCaps };
+   }
+
+   function recomputeTrainingEffects({ silent = false } = {}) {
+      const renLevel = getTrainingLevel("renHold");
+      const gyoLevel = getTrainingLevel("gyoFocus");
+      const ryuLevel = getTrainingLevel("ryuDrill");
+      const shuLevel = getTrainingLevel("shuEfficiency");
+
+      const renDurationCap = 6 + renLevel * 1.8;
+      const renRecoveryRate = 1.5 + renLevel * 0.45;
+      const renBonusMul = renLevel * 0.04;
+
+      const gyoCritCap = 0.12 + gyoLevel * 0.04;
+      const gyoCritScale = 0.012 + gyoLevel * 0.006;
+
+      const ryuVulnFactor = Math.max(0.42, 1 - 0.14 * ryuLevel);
+      const ryuGuardBonus = 0.02 * ryuLevel;
+
+      const shuDamageMul = 1.3 + shuLevel * 0.08;
+      const shuDurabilityScalar = Math.max(0.35, 0.65 - 0.05 * shuLevel);
+      const shuPierce = 1 + (shuLevel >= 4 ? 1 : 0);
+
+      state.trainingCaps = {
+         renDurationCap,
+         renRecoveryRate,
+         renBonusMul,
+         gyoCritCap,
+         gyoCritScale,
+         ryuVulnFactor,
+         ryuGuardBonus,
+         shuDamageMul,
+         shuDurabilityScalar,
+         shuPierce
+      };
+
+      const aura = state.aura;
+      if (aura) {
+         aura.renStaminaMax = renDurationCap;
+         if (!Number.isFinite(aura.renStamina)) {
+            aura.renStamina = renDurationCap;
+         } else {
+            aura.renStamina = Math.min(aura.renStamina, renDurationCap);
+         }
+      }
+
+      if (silent) {
+         updateAuraHud();
+      } else {
+         notifyAuraChange();
+      }
+   }
+
+   function upgradeTraining(key, { silent = false } = {}) {
+      if (!TRAINING_KEYS.includes(key)) {
+         return { success: false, level: 0 };
+      }
+      const cap = TRAINING_LIMITS[key] ?? 0;
+      const current = getTrainingLevel(key);
+      if (current >= cap) {
+         return { success: false, level: current, capped: true };
+      }
+      progress.training[key] = current + 1;
+      recomputeTrainingEffects({ silent });
+      saveProgress();
+      if (!silent) {
+         msg(`${TRAINING_LABELS[key] || key} advanced to rank ${current + 1}.`);
+      }
+      return { success: true, level: current + 1 };
    }
 
    function setCooldown(key, dur) {
@@ -1566,8 +1753,8 @@
          }
       }
       if (hud.flowWrap) {
-        const kenActive = !!state.aura?.ken && !state.aura?.zetsu;
-        hud.flowWrap.style.opacity = kenActive ? "1" : "0.6";
+         const kenActive = !!state.aura?.ken && !state.aura?.zetsu;
+         hud.flowWrap.style.opacity = kenActive ? "1" : "0.6";
       }
       const vulnerable = state.koVulnerabilityT > 0;
       if (hud.flowPie) {
@@ -1627,12 +1814,86 @@
 
    function updateAuraHud() {
       if (!hud.auraBadges) return;
+      const caps = state.trainingCaps || makeDefaultTrainingCaps();
+      const renRank = getTrainingLevel("renHold");
+      const gyoRank = getTrainingLevel("gyoFocus");
+      const ryuRank = getTrainingLevel("ryuDrill");
+      const shuRank = getTrainingLevel("shuEfficiency");
+      const renLimit = TRAINING_LIMITS.renHold;
+      const gyoLimit = TRAINING_LIMITS.gyoFocus;
+      const ryuLimit = TRAINING_LIMITS.ryuDrill;
+      const shuLimit = TRAINING_LIMITS.shuEfficiency;
+      const holdCap = caps.renDurationCap ?? 6;
+      const regenRate = caps.renRecoveryRate ?? 1.5;
+      const renBonusPct = Math.round(Math.max(0, (caps.renBonusMul ?? 0) * 100));
+      const gyoCapPct = Math.round(Math.max(0, (caps.gyoCritCap ?? 0) * 100));
+      const gyoScalePct = Math.round(Math.max(0, (caps.gyoCritScale ?? 0) * 100));
+      const vulnDrop = Math.round(Math.max(0, (1 - (caps.ryuVulnFactor ?? 1)) * 100));
+      const guardBonus = Math.round(Math.max(0, (caps.ryuGuardBonus ?? 0) * 100));
+      const shuDmgPct = Math.round(Math.max(0, ((caps.shuDamageMul ?? 1.3) - 1) * 100));
+      const shuDuraSave = Math.round(Math.max(0, (1 - (caps.shuDurabilityScalar ?? 0.65)) * 100));
+      const shuPierce = Math.max(1, Math.round(caps.shuPierce ?? 1));
       for (const [key, data] of hud.auraBadges.entries()) {
          const { badge, spec } = data;
          const active = key === "en" ? !!state.aura.en?.on : !!state.aura[key];
          badge.textContent = `${spec.label}: ${active ? "ON" : "OFF"}`;
          badge.style.background = active ? "rgba(80,200,255,0.25)" : "rgba(255,255,255,0.08)";
          badge.style.borderColor = active ? "rgba(120,220,255,0.55)" : "rgba(255,255,255,0.18)";
+         switch (key) {
+            case "ren": {
+               const rank = renRank;
+               const limit = renLimit;
+               const holdSec = holdCap;
+               const regen = regenRate;
+               const renTitle = [
+                  `Ren hold cap ${holdSec.toFixed(1)}s`,
+                  `Regen ${regen.toFixed(1)}s/s`,
+                  `Rank ${rank}/${limit}`,
+                  `Bonus +${renBonusPct}%`
+               ].join(" • ");
+               badge.title = renTitle;
+               break;
+            }
+            case "gyo": {
+               const rank = gyoRank;
+               const limit = gyoLimit;
+               badge.title = `Crit window cap +${gyoCapPct}% • ${gyoScalePct}% per Focus • Rank ${rank}/${limit}`;
+               break;
+            }
+            case "shu": {
+               const rank = shuRank;
+               const limit = shuLimit;
+               const shuTitle = [
+                  `Weapon aura +${shuDmgPct}%`,
+                  `Durability saved ${shuDuraSave}%`,
+                  `Pierce ${shuPierce}`,
+                  `Rank ${rank}/${limit}`
+               ].join(" • ");
+               badge.title = shuTitle;
+               break;
+            }
+            default:
+               if (!badge.title) badge.title = spec.label;
+               break;
+         }
+      }
+      if (hud.flowLabel) {
+         const rank = ryuRank;
+         const limit = ryuLimit;
+         hud.flowLabel.title = `Ryu drill rank ${rank}/${limit} — Ko vulnerability -${vulnDrop}% duration, guard bonus +${guardBonus}% on reads.`;
+      }
+      if (hud.trainingButton) {
+         const summary = [
+            `Ren ${holdCap.toFixed(1)}s`,
+            `Regen ${regenRate.toFixed(1)}s/s`,
+            `Gyo crit +${gyoCapPct}%`,
+            `Ryu guard +${guardBonus}%`,
+            `Shu dmg +${shuDmgPct}%`
+         ].join(" • ");
+         hud.trainingButton.title = `${summary} — ranks Ren ${renRank}/${renLimit}, Gyo ${gyoRank}/${gyoLimit}, Ryu ${ryuRank}/${ryuLimit}, Shu ${shuRank}/${shuLimit}`;
+      }
+      if (hud.trainingHint) {
+         hud.trainingHint.textContent = `Ren ${renRank}/${renLimit} • Gyo ${gyoRank}/${gyoLimit} • Ryu ${ryuRank}/${ryuLimit} • Shu ${shuRank}/${shuLimit}`;
       }
    }
 
@@ -2168,7 +2429,9 @@
          },
          renActive: false,
          renCharge: 0,
-         renMul: 1.0
+         renMul: 1.0,
+         renStamina: 6,
+         renStaminaMax: 6
       },
 
       flow: makeFlowFromGroups(FLOW_PRESETS[DEFAULT_FLOW_PRESET_INDEX]?.groups),
@@ -2180,10 +2443,13 @@
       koStrike: null,
       koLastFocus: null,
       lastKoWarning: 0,
+      lastRenExhaust: 0,
 
       vows: [],
       vowRuntime: null,
       vowWave: 0,
+
+      trainingCaps: makeDefaultTrainingCaps(),
 
       buffs: {},
       cooldowns: {},
@@ -2211,6 +2477,8 @@
       ultMaxDur: 8,
    };
 
+   recomputeTrainingEffects({ silent: true });
+
    function teardownInventorySystem() {
       if (inventoryUnsub) {
          try {
@@ -2228,6 +2496,14 @@
          }
          hotbarUnsub = null;
       }
+      if (typeof trainingButtonUnsub === "function") {
+         try {
+            trainingButtonUnsub();
+         } catch (err) {
+            console.warn("[HUD] Training button unbind failed", err);
+         }
+      }
+      trainingButtonUnsub = null;
       state.inventory = null;
       state.weapon = null;
    }
@@ -2262,13 +2538,21 @@
 
    function setupInventorySystem() {
       teardownInventorySystem();
+      const hudApi = window.HUD;
+      const trainingDisposer = hudApi?.bindTrainingButton?.(() => {
+         if (trainingMenuDisposer) {
+            closeTrainingMenu();
+         } else {
+            openTrainingMenu();
+         }
+      });
+      trainingButtonUnsub = typeof trainingDisposer === "function" ? trainingDisposer : null;
       const Items = getItemsModule();
       if (!Items) return;
       const inventory = typeof Items.bindPlayerState === "function" ? Items.bindPlayerState(state) : Items.inventory;
       if (!inventory) return;
       state.inventory = inventory;
       state.weapon = inventory.activeItem && !inventory.activeItem.broken ? inventory.activeItem : null;
-      const hudApi = window.HUD;
       if (hudApi && typeof hudApi.ensureHotbar === "function") {
          hudApi.ensureHotbar();
       }
@@ -2285,18 +2569,18 @@
             inventory.equip(index);
          });
       }
-   if (!inventory.slots.some(entry => entry)) {
-      inventory.add({
-         id: "rusty-blade",
-         slot: "weapon",
-         type: "melee",
-         dmg: 6,
-         dur: { current: 24, max: 24 },
-         tags: ["starter", "sword"],
-         stack: { count: 1, max: 1 }
-      }, { hotbarIndex: 0, autoEquip: true });
+      if (!inventory.slots.some(entry => entry)) {
+         inventory.add({
+            id: "rusty-blade",
+            slot: "weapon",
+            type: "melee",
+            dmg: 6,
+            dur: { current: 24, max: 24 },
+            tags: ["starter", "sword"],
+            stack: { count: 1, max: 1 }
+         }, { hotbarIndex: 0, autoEquip: true });
+      }
    }
-}
 
  function defaultVowTotals() {
     return {
@@ -3261,6 +3545,17 @@
    function updateAura(dt) {
       const aura = state.aura;
       let changed = false;
+      const caps = state.trainingCaps || makeDefaultTrainingCaps();
+      const now = typeof performance === "object" && typeof performance.now === "function"
+         ? performance.now()
+         : Date.now();
+
+      if (!Number.isFinite(aura.renStaminaMax)) {
+         aura.renStaminaMax = caps.renDurationCap;
+      }
+      if (!Number.isFinite(aura.renStamina)) {
+         aura.renStamina = aura.renStaminaMax;
+      }
 
       if (inputOnce["KeyT"]) {
          const exitingZetsu = aura.zetsu;
@@ -3346,18 +3641,33 @@
          aura.ren = holdingRen;
          changed = true;
       }
-      if (holdingRen && state.nen.cur > 0) {
+      if (holdingRen && state.nen.cur > 0 && aura.renStamina > 0.01) {
          aura.renActive = true;
          aura.renCharge = Math.min(1, aura.renCharge + dt / 1.2);
+         aura.renStamina = Math.max(0, aura.renStamina - dt);
       } else {
          aura.renCharge = Math.max(0, aura.renCharge - dt / 0.6);
          if (aura.renCharge <= 0.0001) {
             aura.renCharge = 0;
             aura.renActive = false;
          }
+         aura.renStamina = Math.min(aura.renStaminaMax, aura.renStamina + dt * caps.renRecoveryRate);
       }
 
-      aura.renMul = aura.renActive ? 1.3 + 0.9 * aura.renCharge : 1.0;
+      if (holdingRen && aura.renStamina <= 0.0001) {
+         aura.renStamina = 0;
+         aura.renActive = false;
+         aura.ren = false;
+         input["KeyR"] = false;
+         if (!state.lastRenExhaust || now - state.lastRenExhaust > 1800) {
+            state.lastRenExhaust = now;
+            msg("Ren exhausted — train to extend your hold.");
+         }
+         changed = true;
+      }
+
+      const renBonus = caps.renBonusMul ?? 0;
+      aura.renMul = aura.renActive ? 1.3 + 0.9 * aura.renCharge + renBonus : 1.0;
       if (aura.zetsu) {
          aura.renMul = 1.0;
       }
@@ -3402,7 +3712,8 @@
          multiplier: KO_MULTIPLIER * vowKoMul,
          focus: focus?.key ?? null
       };
-      state.koVulnerabilityT = KO_VULN_DURATION;
+      const vulnFactor = state.trainingCaps?.ryuVulnFactor ?? 1;
+      state.koVulnerabilityT = KO_VULN_DURATION * vulnFactor;
       state.koLastFocus = focus?.label ?? null;
       notifyFlowChange({ silent: true });
       if (focus?.label) {
@@ -3869,6 +4180,13 @@
       if (input["ShiftLeft"] || input["ShiftRight"]) dash();
       if (input["KeyE"]) special();
       if (inputOnce["KeyO"]) openVowMenu();
+      if (inputOnce["KeyY"]) {
+         if (trainingMenuDisposer) {
+            closeTrainingMenu();
+         } else {
+            openTrainingMenu();
+         }
+      }
 
       updateAura(dt);
 
@@ -4233,6 +4551,51 @@
       saveProgress();
    }));
 
+   function openTrainingMenu() {
+      const hudApi = window.HUD;
+      if (!hudApi?.openTrainingMenu) {
+         msg("Training grounds unavailable.");
+         return;
+      }
+      if (trainingMenuDisposer) {
+         closeTrainingMenu({ silent: true });
+         return;
+      }
+      paused = true;
+      const disposer = hudApi.openTrainingMenu({
+         progress: getTrainingProgressSnapshot(),
+         caps: getTrainingCapsSnapshot(),
+         limits: TRAINING_LIMITS,
+         onClose: () => closeTrainingMenu({ silent: false }),
+         onComplete: (key) => {
+            const outcome = upgradeTraining(key, { silent: false });
+            const snapshot = getTrainingProgressSnapshot();
+            const caps = getTrainingCapsSnapshot();
+            updateHUD();
+            return { outcome, progress: snapshot, caps };
+         }
+      });
+      trainingMenuDisposer = (silent = false) => {
+         const closeFn = typeof disposer === "function" ? disposer : null;
+         paused = false;
+         if (closeFn) {
+            try {
+               closeFn();
+            } catch (err) {
+               console.warn("[HUD] Training menu cleanup failed", err);
+            }
+         }
+         if (!silent) updateHUD();
+      };
+   }
+
+   function closeTrainingMenu({ silent = false } = {}) {
+      if (!trainingMenuDisposer) return;
+      const cleanup = trainingMenuDisposer;
+      trainingMenuDisposer = null;
+      cleanup(silent);
+   }
+
    // Pause UI
    hud.btnResume?.addEventListener("click", () => {
       paused = false;
@@ -4256,7 +4619,12 @@
       rigReady,
       getRig: () => RIG,
       applyOutgoingDamage: previousHXH.applyOutgoingDamage,
-      applyIncomingDamage: previousHXH.applyIncomingDamage
+      applyIncomingDamage: previousHXH.applyIncomingDamage,
+      getTrainingProgress: () => getTrainingProgressSnapshot(),
+      getTrainingCaps: () => getTrainingCapsSnapshot(),
+      upgradeTraining: (key, opts) => upgradeTraining(key, opts || {}),
+      openTrainingMenu,
+      closeTrainingMenu
    };
 // === Added: expose subsystems so auxiliary files can reuse them ===
 try {
@@ -4307,6 +4675,41 @@ try {
 } catch (e) {
   console.warn("[HXH] Export shim failed:", e);
 }
+
+   const prevApplyOutgoing = window.HXH.applyOutgoingDamage;
+   window.HXH.applyOutgoingDamage = function applyOutgoingWithTraining(src, limb, baseDamage) {
+      let result = typeof prevApplyOutgoing === "function"
+         ? prevApplyOutgoing(src, limb, baseDamage)
+         : baseDamage;
+      if (src && src === state) {
+         const aura = state.aura || {};
+         if (aura.gyo) {
+            const focusStat = Math.max(0, state.eff?.focus || 0);
+            const scale = state.trainingCaps?.gyoCritScale ?? 0;
+            const cap = state.trainingCaps?.gyoCritCap ?? 0;
+            const bonus = Math.min(cap, focusStat * scale);
+            if (bonus > 0) {
+               result *= 1 + bonus;
+            }
+         }
+      }
+      return result;
+   };
+
+   const prevApplyIncoming = window.HXH.applyIncomingDamage;
+   window.HXH.applyIncomingDamage = function applyIncomingWithTraining(dst, limb, baseDamage) {
+      let result = typeof prevApplyIncoming === "function"
+         ? prevApplyIncoming(dst, limb, baseDamage)
+         : baseDamage;
+      if (dst && dst === state) {
+         const aura = state.aura || {};
+         const guardBonus = state.trainingCaps?.ryuGuardBonus ?? 0;
+         if (guardBonus > 0 && aura.ken) {
+            result *= Math.max(0.55, 1 - guardBonus);
+         }
+      }
+      return result;
+   };
 
 })();
 
