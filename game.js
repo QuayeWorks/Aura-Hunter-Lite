@@ -455,6 +455,12 @@
       { key: "grass", color: [0.32, 0.62, 0.3], emissive: [0.1, 0.22, 0.1], destructible: true, thickness: 0.25 }
    ];
 
+   const DEFAULT_CHUNK_SIZE = 16;
+   const DEFAULT_STREAM_INTERVAL = 0.05;
+   const DEFAULT_STREAM_BUDGET_MS = 3.5;
+   const DEFAULT_STREAM_BUDGET_OPS = 96;
+   const DEFAULT_STREAM_BATCH = 12;
+
    const defaultTerrainSettings = {
       length: 32,
       width: 32,
@@ -462,7 +468,8 @@
       activeRadius: 48,
       streamingPadding: 6,
       layers: TERRAIN_LAYER_DEFS.length,
-      maxTrees: 18
+      maxTrees: 18,
+      chunkSize: DEFAULT_CHUNK_SIZE
    };
 
    const TERRAIN_SETTINGS_KEY = "hxh-terrain-settings";
@@ -480,6 +487,10 @@
       if (typeof next.activeRadius === "number") out.activeRadius = clampSetting(next.activeRadius, 6, 300, defaultTerrainSettings.activeRadius);
       if (typeof next.streamingPadding === "number") out.streamingPadding = clampSetting(next.streamingPadding, 2, 60, defaultTerrainSettings.streamingPadding);
       if (typeof next.maxTrees === "number") out.maxTrees = Math.round(clampSetting(next.maxTrees, 0, 400, defaultTerrainSettings.maxTrees));
+      if (typeof next.chunkSize === "number") {
+         const clampedChunk = clampSetting(next.chunkSize, 4, 96, defaultTerrainSettings.chunkSize);
+         out.chunkSize = Math.round(clampedChunk);
+      }
       out.layers = TERRAIN_LAYER_DEFS.length;
       return out;
    }
@@ -518,6 +529,9 @@
       updateInterval: 1 / 24
    };
 
+   let terrainRadiusControl = null;
+   let terrainRadiusUiScheduled = false;
+
    let fallbackTreeMaterials = null;
 
    const GameSettings = {
@@ -530,6 +544,7 @@
          saveTerrainSettings(merged);
          if (environment.terrain) {
             environment.terrain.settings = { ...merged };
+            initializeTerrainStreaming(environment.terrain, merged, { preserveOverride: true });
          }
          return merged;
       },
@@ -539,6 +554,7 @@
          saveTerrainSettings(merged);
          if (environment.terrain) {
             environment.terrain.settings = { ...merged };
+            initializeTerrainStreaming(environment.terrain, merged, { preserveOverride: true, forceRebuild: true });
          }
          return merged;
       }
@@ -760,23 +776,28 @@
 	  }
 
 	  // 2) Dispose per-layer templates if they exist (usually parented to root)
-	  if (terrain.layerTemplates) {
-		for (const tpl of terrain.layerTemplates) {
-		  if (tpl && !tpl.isDisposed()) {
-			try { tpl.dispose(); } catch (e) { /* ignore */ }
-		  }
-		}
-	  }
+         if (terrain.layerTemplates) {
+                for (const tpl of terrain.layerTemplates) {
+                  if (tpl && !tpl.isDisposed()) {
+                        try { tpl.dispose(); } catch (e) { /* ignore */ }
+                  }
+                }
+         }
 
-	  // 3) Dispose the terrain root (recursively) to catch any remaining children
-	  if (terrain.root && !terrain.root.isDisposed?.()) {
-		try { terrain.root.dispose(false); } catch (e) { /* ignore */ }
-	  }
+         // 3) Dispose the terrain root (recursively) to catch any remaining children
+         if (terrain.root && !terrain.root.isDisposed?.()) {
+                try { terrain.root.dispose(false); } catch (e) { /* ignore */ }
+         }
 
-	  // 4) Clear references
-	  environment.terrain = null;
-	  world.ground = null;
-	}
+         if (terrain.streaming) {
+                if (Array.isArray(terrain.streaming.queue)) terrain.streaming.queue.length = 0;
+                if (terrain.streaming.queueMap?.clear) terrain.streaming.queueMap.clear();
+         }
+
+         // 4) Clear references
+         environment.terrain = null;
+         world.ground = null;
+       }
 
 
 	function createTerrain(scene) {
@@ -915,9 +936,12 @@
                 layerThicknesses,
                 settings: { ...settings },
                 streamAccumulator: 0,
-                streamInterval: 0.25,
+                streamInterval: DEFAULT_STREAM_INTERVAL,
+                bounds: { minX: -halfX, maxX: halfX, minZ: -halfZ, maxZ: halfZ },
                 layerTemplates // keep a reference if other systems need access
           };
+          initializeTerrainStreaming(environment.terrain, settings, { preserveOverride: true });
+          updateTerrainRadiusControl();
         }
 
 
@@ -963,41 +987,515 @@
       }
    }
 
-   function updateTerrainStreaming(center, dt = 0, force = false) {
-      const terrain = environment.terrain;
-      if (!terrain) return;
-      const target = center || BABYLON.Vector3.Zero();
-      terrain.streamAccumulator += dt;
-      if (!force && terrain.streamAccumulator < terrain.streamInterval) return;
-      terrain.streamAccumulator = 0;
-      const { columnStates, columns, centers } = terrain;
-      const activeRadius = terrain.settings.activeRadius;
-      const padding = terrain.settings.streamingPadding;
-      const activeSq = activeRadius * activeRadius;
-      const inactiveSq = (activeRadius + padding) * (activeRadius + padding);
-      const px = target.x;
-      const pz = target.z;
-      for (let i = 0; i < columns.length; i++) {
-         const column = columns[i];
-         if (!column) continue;
-         const pos = centers[i];
-         const dx = pos.x - px;
-         const dz = pos.z - pz;
-         const distSq = dx * dx + dz * dz;
-         if (distSq <= activeSq) {
-            if (!columnStates[i]) {
-               enableTerrainColumn(column);
-               setTreeColumnEnabled(i, true);
-               columnStates[i] = true;
+   const STREAMING_STATES = {
+      UNLOADED: "unloaded",
+      LOADING: "loading",
+      LOADED: "loaded",
+      UNLOADING: "unloading"
+   };
+
+   function clampStreamingRadius(streaming, radius) {
+      if (!streaming) return 0;
+      const min = Number.isFinite(streaming.minRadius) ? streaming.minRadius : 0;
+      const max = Number.isFinite(streaming.maxRadius) ? streaming.maxRadius : radius;
+      if (!Number.isFinite(radius)) return clamp(min, min, max);
+      return clamp(radius, min, max);
+   }
+
+   function applyStreamingRadius(streaming) {
+      if (!streaming) return 0;
+      const base = clampStreamingRadius(streaming, Number.isFinite(streaming.baseRadius) ? streaming.baseRadius : streaming.defaultBaseRadius);
+      streaming.baseRadius = base;
+      const override = Number.isFinite(streaming.radiusOverride) ? clampStreamingRadius(streaming, streaming.radiusOverride) : null;
+      const target = override ?? base;
+      streaming.loadedRadius = target;
+      const unload = target + streaming.padding;
+      streaming.unloadRadius = unload > target ? unload : target + (streaming.innerMargin || 1);
+      return streaming.loadedRadius;
+   }
+
+   function buildChunkDescriptors(terrain, chunkSize) {
+      if (!terrain) return { chunks: [], chunkCountX: 0, chunkCountZ: 0 };
+      const colsX = Math.max(1, terrain.colsX | 0);
+      const colsZ = Math.max(1, terrain.colsZ | 0);
+      const chunkCountX = Math.max(1, Math.ceil(colsX / chunkSize));
+      const chunkCountZ = Math.max(1, Math.ceil(colsZ / chunkSize));
+      const chunks = new Array(chunkCountX * chunkCountZ);
+      const cubeSize = terrain.cubeSize;
+      const minWorldX = terrain.bounds?.minX ?? -terrain.halfX;
+      const minWorldZ = terrain.bounds?.minZ ?? -terrain.halfZ;
+      for (let cz = 0; cz < chunkCountZ; cz++) {
+         for (let cx = 0; cx < chunkCountX; cx++) {
+            const startX = cx * chunkSize;
+            const startZ = cz * chunkSize;
+            const spanX = Math.min(chunkSize, colsX - startX);
+            const spanZ = Math.min(chunkSize, colsZ - startZ);
+            const columnIndices = [];
+            for (let dz = 0; dz < spanZ; dz++) {
+               for (let dx = 0; dx < spanX; dx++) {
+                  const gridX = startX + dx;
+                  const gridZ = startZ + dz;
+                  columnIndices.push((startZ + dz) * colsX + (startX + dx));
+               }
             }
-         } else if (distSq >= inactiveSq) {
-            if (columnStates[i]) {
-               disableTerrainColumn(column);
-               setTreeColumnEnabled(i, false);
-               columnStates[i] = false;
-            }
+            const index = cz * chunkCountX + cx;
+            const minX = minWorldX + startX * cubeSize;
+            const maxX = minX + spanX * cubeSize;
+            const minZ = minWorldZ + startZ * cubeSize;
+            const maxZ = minZ + spanZ * cubeSize;
+            const centerX = minX + (maxX - minX) * 0.5;
+            const centerZ = minZ + (maxZ - minZ) * 0.5;
+            chunks[index] = {
+               index,
+               chunkX: cx,
+               chunkZ: cz,
+               startX,
+               startZ,
+               spanX,
+               spanZ,
+               columnIndices,
+               center: { x: centerX, z: centerZ },
+               bounds: { minX, maxX, minZ, maxZ },
+               state: STREAMING_STATES.UNLOADED,
+               pendingKey: null
+            };
          }
       }
+      return { chunks, chunkCountX, chunkCountZ };
+   }
+
+   function scheduleTerrainRadiusUiUpdate() {
+      if (terrainRadiusUiScheduled) return;
+      terrainRadiusUiScheduled = true;
+      const runner = () => {
+         terrainRadiusUiScheduled = false;
+         updateTerrainRadiusControl();
+      };
+      if (typeof requestAnimationFrame === "function") {
+         requestAnimationFrame(runner);
+      } else {
+         setTimeout(runner, 0);
+      }
+   }
+
+   function initializeTerrainStreaming(terrain, settings = {}, opts = {}) {
+      if (!terrain) return null;
+      const previous = terrain.streaming || null;
+      const preserveOverride = opts.preserveOverride !== false;
+      const prevOverride = preserveOverride ? previous?.radiusOverride ?? null : null;
+      const prevLastPos = previous?.lastPlayerPosition || null;
+      const desiredChunk = Math.max(1, Math.round(settings?.chunkSize ?? terrain.settings?.chunkSize ?? DEFAULT_CHUNK_SIZE));
+      const chunkSize = Math.max(1, Math.min(desiredChunk, Math.max(terrain.colsX, terrain.colsZ)));
+      const rebuild = !previous || previous.chunkSize !== chunkSize || opts.forceRebuild;
+      const descriptor = rebuild ? buildChunkDescriptors(terrain, chunkSize) : { chunks: previous.chunks, chunkCountX: previous.chunkCountX, chunkCountZ: previous.chunkCountZ };
+      if (!descriptor.chunks) descriptor.chunks = [];
+      if (!rebuild) {
+         for (const chunk of descriptor.chunks) {
+            if (!chunk) continue;
+            let loaded = false;
+            for (const idx of chunk.columnIndices) {
+               if (terrain.columnStates[idx]) {
+                  loaded = true;
+                  break;
+               }
+            }
+            chunk.state = loaded ? STREAMING_STATES.LOADED : STREAMING_STATES.UNLOADED;
+            chunk.pendingKey = null;
+         }
+      }
+      const padding = Number.isFinite(settings?.streamingPadding) ? settings.streamingPadding : terrain.settings?.streamingPadding ?? defaultTerrainSettings.streamingPadding;
+      const streaming = {
+         terrain,
+         chunkSize,
+         chunkCountX: descriptor.chunkCountX,
+         chunkCountZ: descriptor.chunkCountZ,
+         chunks: descriptor.chunks,
+         queue: [],
+         queueMap: new Map(),
+         batchSize: Math.max(1, Math.round(settings?.chunkBatchSize ?? previous?.batchSize ?? DEFAULT_STREAM_BATCH)),
+         budgetMs: Number.isFinite(settings?.chunkBudgetMs) ? clamp(settings.chunkBudgetMs, 0, 16) : (previous?.budgetMs ?? DEFAULT_STREAM_BUDGET_MS),
+         budgetOps: Number.isFinite(settings?.chunkBudgetOps) ? Math.max(1, Math.round(settings.chunkBudgetOps)) : (previous?.budgetOps ?? DEFAULT_STREAM_BUDGET_OPS),
+         interval: previous?.interval ?? DEFAULT_STREAM_INTERVAL,
+         accumulator: 0,
+         padding: Math.max(0, padding),
+         innerMargin: Math.max(terrain.cubeSize * 0.5, 0.5),
+         chunkWorldSize: terrain.cubeSize * chunkSize,
+         minRadius: 0,
+         maxRadius: 0,
+         defaultBaseRadius: Number.isFinite(settings?.activeRadius) ? settings.activeRadius : defaultTerrainSettings.activeRadius,
+         baseRadius: Number.isFinite(settings?.activeRadius) ? settings.activeRadius : defaultTerrainSettings.activeRadius,
+         radiusOverride: prevOverride,
+         lastPlayerPosition: prevLastPos,
+         stats: { lastOps: 0 }
+      };
+      streaming.minRadius = Math.max(6, streaming.chunkWorldSize * 0.75);
+      const maxRadiusEstimate = Math.sqrt((terrain.halfX + streaming.padding) ** 2 + (terrain.halfZ + streaming.padding) ** 2);
+      streaming.maxRadius = Math.max(streaming.minRadius, maxRadiusEstimate);
+      streaming.interval = DEFAULT_STREAM_INTERVAL;
+      streaming.baseRadius = clampStreamingRadius(streaming, streaming.defaultBaseRadius);
+      if (Number.isFinite(streaming.radiusOverride)) {
+         streaming.radiusOverride = clampStreamingRadius(streaming, streaming.radiusOverride);
+      } else {
+         streaming.radiusOverride = null;
+      }
+      applyStreamingRadius(streaming);
+      terrain.streaming = streaming;
+      terrain.chunkSize = chunkSize;
+      terrain.chunkCountX = descriptor.chunkCountX;
+      terrain.chunkCountZ = descriptor.chunkCountZ;
+      terrain.chunkWorldSize = streaming.chunkWorldSize;
+      terrain.streamInterval = streaming.interval;
+      terrain.streamAccumulator = 0;
+      scheduleTerrainRadiusUiUpdate();
+      return streaming;
+   }
+
+   function cancelStreamingTask(streaming, key) {
+      if (!streaming?.queueMap || !key) return false;
+      const task = streaming.queueMap.get(key);
+      if (!task) return false;
+      const idx = streaming.queue.indexOf(task);
+      if (idx >= 0) streaming.queue.splice(idx, 1);
+      streaming.queueMap.delete(key);
+      return true;
+   }
+
+   function insertStreamingTask(streaming, task) {
+      if (!streaming || !task) return null;
+      if (!Array.isArray(streaming.queue)) streaming.queue = [];
+      if (!streaming.queueMap) streaming.queueMap = new Map();
+      if (streaming.queueMap.has(task.key)) return streaming.queueMap.get(task.key);
+      let index = streaming.queue.length;
+      while (index > 0 && streaming.queue[index - 1].priority < task.priority) index--;
+      streaming.queue.splice(index, 0, task);
+      streaming.queueMap.set(task.key, task);
+      return task;
+   }
+
+   function bumpStreamingTaskPriority(streaming, key, priority) {
+      if (!streaming?.queueMap || !key) return null;
+      const task = streaming.queueMap.get(key);
+      if (!task || task.priority >= priority) return task;
+      const idx = streaming.queue.indexOf(task);
+      if (idx >= 0) streaming.queue.splice(idx, 1);
+      task.priority = priority;
+      insertStreamingTask(streaming, task);
+      return task;
+   }
+
+   function createChunkTask(streaming, chunk, mode, priority) {
+      const terrain = streaming.terrain;
+      const columns = terrain.columns;
+      const columnStates = terrain.columnStates;
+      const batchSize = Math.max(1, Math.floor(streaming.batchSize));
+      return {
+         key: `${mode}:${chunk.index}`,
+         chunk,
+         mode,
+         priority,
+         cursor: 0,
+         step() {
+            const indices = chunk.columnIndices || [];
+            if (!indices.length) {
+               chunk.state = mode === "load" ? STREAMING_STATES.LOADED : STREAMING_STATES.UNLOADED;
+               chunk.pendingKey = null;
+               return { done: true, opsUsed: 1 };
+            }
+            const start = this.cursor;
+            const limit = Math.min(indices.length, start + batchSize);
+            for (let i = start; i < limit; i++) {
+               const columnIndex = indices[i];
+               const column = columns[columnIndex];
+               if (!column) continue;
+               if (mode === "load") {
+                  if (!columnStates[columnIndex]) {
+                     enableTerrainColumn(column);
+                     setTreeColumnEnabled(columnIndex, true);
+                     columnStates[columnIndex] = true;
+                  }
+               } else if (columnStates[columnIndex]) {
+                  disableTerrainColumn(column);
+                  setTreeColumnEnabled(columnIndex, false);
+                  columnStates[columnIndex] = false;
+               }
+            }
+            this.cursor = limit;
+            const done = this.cursor >= indices.length;
+            if (done) {
+               chunk.state = mode === "load" ? STREAMING_STATES.LOADED : STREAMING_STATES.UNLOADED;
+               chunk.pendingKey = null;
+            }
+            return { done, opsUsed: Math.max(1, limit - start) };
+         }
+      };
+   }
+
+   function queueChunkLoad(streaming, chunk, opts = {}) {
+      if (!streaming || !chunk) return;
+      if (chunk.state === STREAMING_STATES.LOADED) return;
+      const urgent = !!opts.urgent;
+      const desiredPriority = urgent ? 4 : 2;
+      if (chunk.state === STREAMING_STATES.LOADING) {
+         if (chunk.pendingKey && urgent) bumpStreamingTaskPriority(streaming, chunk.pendingKey, desiredPriority);
+         return;
+      }
+      if (chunk.state === STREAMING_STATES.UNLOADING && chunk.pendingKey) {
+         cancelStreamingTask(streaming, chunk.pendingKey);
+      }
+      const task = createChunkTask(streaming, chunk, "load", desiredPriority);
+      chunk.state = STREAMING_STATES.LOADING;
+      chunk.pendingKey = task.key;
+      insertStreamingTask(streaming, task);
+   }
+
+   function queueChunkUnload(streaming, chunk) {
+      if (!streaming || !chunk) return;
+      if (chunk.state === STREAMING_STATES.UNLOADED || chunk.state === STREAMING_STATES.UNLOADING) return;
+      if (chunk.state === STREAMING_STATES.LOADING && chunk.pendingKey) {
+         cancelStreamingTask(streaming, chunk.pendingKey);
+      }
+      const task = createChunkTask(streaming, chunk, "unload", 1);
+      chunk.state = STREAMING_STATES.UNLOADING;
+      chunk.pendingKey = task.key;
+      insertStreamingTask(streaming, task);
+   }
+
+   function refreshChunkTargets(streaming, position = { x: 0, z: 0 }, force = false) {
+      if (!streaming?.chunks) return;
+      const px = Number.isFinite(position.x) ? position.x : 0;
+      const pz = Number.isFinite(position.z) ? position.z : 0;
+      const loadSq = streaming.loadedRadius * streaming.loadedRadius;
+      const unloadRadius = streaming.unloadRadius;
+      const unloadSq = unloadRadius * unloadRadius;
+      const margin = streaming.innerMargin || 0.5;
+      for (const chunk of streaming.chunks) {
+         if (!chunk) continue;
+         const { bounds } = chunk;
+         const inside = bounds && px >= bounds.minX - margin && px <= bounds.maxX + margin && pz >= bounds.minZ - margin && pz <= bounds.maxZ + margin;
+         if (inside) {
+            queueChunkLoad(streaming, chunk, { urgent: true });
+            continue;
+         }
+         const dx = chunk.center.x - px;
+         const dz = chunk.center.z - pz;
+         const distSq = dx * dx + dz * dz;
+         if (distSq <= loadSq) {
+            queueChunkLoad(streaming, chunk);
+         } else if (distSq >= unloadSq || (force && distSq > loadSq)) {
+            queueChunkUnload(streaming, chunk);
+         }
+      }
+   }
+
+   function processStreamingQueue(streaming, force = false) {
+      if (!streaming?.queue?.length) return;
+      const queue = streaming.queue;
+      const start = typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
+      const msBudget = force ? Infinity : Math.max(0, streaming.budgetMs ?? DEFAULT_STREAM_BUDGET_MS);
+      const opsBudget = force ? Infinity : Math.max(1, streaming.budgetOps ?? DEFAULT_STREAM_BUDGET_OPS);
+      let ops = 0;
+      while (queue.length > 0) {
+         if (opsBudget !== Infinity && ops >= opsBudget) break;
+         if (msBudget !== Infinity) {
+            const now = typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
+            if (now - start >= msBudget) break;
+         }
+         const task = queue[0];
+         const result = task.step();
+         const usedOps = result && Number.isFinite(result.opsUsed) ? result.opsUsed : 1;
+         ops += usedOps;
+         if (result?.done) {
+            queue.shift();
+            streaming.queueMap?.delete(task.key);
+         } else if (queue.length > 1) {
+            queue.push(queue.shift());
+         }
+      }
+      streaming.stats.lastOps = ops;
+   }
+
+   function ensureTerrainRadiusControl() {
+      const panel = document.getElementById("hud-dev-panel");
+      if (!panel) {
+         terrainRadiusControl = null;
+         return null;
+      }
+      if (terrainRadiusControl?.root?.isConnected && panel.contains(terrainRadiusControl.root)) {
+         return terrainRadiusControl;
+      }
+      const control = document.createElement("div");
+      control.dataset.role = "terrain-radius";
+      control.style.display = "flex";
+      control.style.flexDirection = "column";
+      control.style.gap = "0.3rem";
+      control.style.marginTop = "0.2rem";
+
+      const label = document.createElement("span");
+      label.textContent = "Terrain Radius";
+      label.style.fontSize = "0.78rem";
+      label.style.opacity = "0.8";
+
+      const wrap = document.createElement("div");
+      wrap.style.display = "flex";
+      wrap.style.alignItems = "center";
+      wrap.style.gap = "0.4rem";
+
+      const slider = document.createElement("input");
+      slider.type = "range";
+      slider.style.flex = "1";
+
+      const value = document.createElement("span");
+      value.style.minWidth = "3ch";
+      value.style.fontSize = "0.78rem";
+      value.style.textAlign = "right";
+
+      const reset = document.createElement("button");
+      reset.type = "button";
+      reset.textContent = "Auto";
+      reset.style.padding = "0.25rem 0.4rem";
+      reset.style.fontSize = "0.68rem";
+      reset.style.borderRadius = "6px";
+      reset.style.border = "1px solid rgba(120, 200, 255, 0.28)";
+      reset.style.background = "rgba(20, 34, 50, 0.7)";
+      reset.style.color = "#e4f4ff";
+      reset.style.cursor = "pointer";
+
+      wrap.appendChild(slider);
+      wrap.appendChild(value);
+      wrap.appendChild(reset);
+
+      control.appendChild(label);
+      control.appendChild(wrap);
+
+      const actions = Array.from(panel.children).find(node => node.style?.gridTemplateColumns);
+      if (actions) {
+         panel.insertBefore(control, actions);
+      } else {
+         panel.appendChild(control);
+      }
+
+      const applyValue = (val) => {
+         value.textContent = `${Math.round(val)}m`;
+      };
+
+      slider.addEventListener("input", () => {
+         const val = Number.parseFloat(slider.value);
+         if (!Number.isFinite(val)) return;
+         applyValue(val);
+         setTerrainStreamingRadius(val, { mode: "manual" });
+      });
+
+      reset.addEventListener("click", () => {
+         const radius = setTerrainStreamingRadius(null, { mode: "manual" });
+         if (Number.isFinite(radius)) {
+            slider.value = `${Math.round(radius)}`;
+            applyValue(radius);
+         }
+      });
+
+      terrainRadiusControl = { root: control, slider, value, reset, applyValue };
+      return terrainRadiusControl;
+   }
+
+   function updateTerrainRadiusControl() {
+      const streaming = environment.terrain?.streaming;
+      if (!streaming) {
+         terrainRadiusControl = null;
+         return;
+      }
+      const control = ensureTerrainRadiusControl();
+      if (!control) return;
+      const min = Math.max(4, Math.round(streaming.minRadius));
+      const max = Math.max(min + 2, Math.round(streaming.maxRadius));
+      control.slider.min = `${min}`;
+      control.slider.max = `${max}`;
+      const step = Math.max(1, Math.round((streaming.chunkWorldSize || 4) * 0.25));
+      control.slider.step = `${step}`;
+      control.slider.value = `${Math.round(streaming.loadedRadius)}`;
+      control.applyValue?.(streaming.loadedRadius);
+   }
+
+   function setTerrainStreamingRadius(radius, opts = {}) {
+      const streaming = environment.terrain?.streaming;
+      if (!streaming) return null;
+      const mode = opts.mode === "base" ? "base" : "manual";
+      if (mode === "base") {
+         const base = Number.isFinite(radius) ? clampStreamingRadius(streaming, radius) : streaming.defaultBaseRadius;
+         streaming.baseRadius = clampStreamingRadius(streaming, base);
+         if (opts.resetOverride) streaming.radiusOverride = null;
+      } else if (Number.isFinite(radius)) {
+         streaming.radiusOverride = clampStreamingRadius(streaming, radius);
+      } else {
+         streaming.radiusOverride = null;
+      }
+      applyStreamingRadius(streaming);
+      const center = opts.position || streaming.lastPlayerPosition || { x: 0, z: 0 };
+      refreshChunkTargets(streaming, center, true);
+      processStreamingQueue(streaming, opts.forceImmediate === true);
+      scheduleTerrainRadiusUiUpdate();
+      return streaming.loadedRadius;
+   }
+
+   function getTerrainStreamingRadius() {
+      const streaming = environment.terrain?.streaming;
+      if (!streaming) return null;
+      return {
+         radius: streaming.loadedRadius,
+         base: streaming.baseRadius,
+         override: Number.isFinite(streaming.radiusOverride) ? streaming.radiusOverride : null,
+         padding: streaming.padding,
+         min: streaming.minRadius,
+         max: streaming.maxRadius
+      };
+   }
+
+   function setTerrainStreamingBudget(update = {}) {
+      const streaming = environment.terrain?.streaming;
+      if (!streaming) return null;
+      if (typeof update.ms === "number" && update.ms >= 0) {
+         streaming.budgetMs = clamp(update.ms, 0, 16);
+      }
+      if (typeof update.ops === "number" && update.ops > 0) {
+         streaming.budgetOps = Math.max(1, Math.floor(update.ops));
+      }
+      if (typeof update.batchSize === "number" && update.batchSize > 0) {
+         streaming.batchSize = Math.max(1, Math.floor(update.batchSize));
+      }
+      return { ms: streaming.budgetMs, ops: streaming.budgetOps, batchSize: streaming.batchSize };
+   }
+
+   function getTerrainStreamingStats() {
+      const streaming = environment.terrain?.streaming;
+      if (!streaming) return null;
+      return {
+         queue: streaming.queue?.length || 0,
+         radius: streaming.loadedRadius,
+         baseRadius: streaming.baseRadius,
+         override: Number.isFinite(streaming.radiusOverride) ? streaming.radiusOverride : null,
+         chunkSize: streaming.chunkSize,
+         chunkCount: streaming.chunks?.length || 0,
+         budgetMs: streaming.budgetMs,
+         budgetOps: streaming.budgetOps,
+         batchSize: streaming.batchSize,
+         lastOps: streaming.stats?.lastOps || 0
+      };
+   }
+
+   function updateTerrainStreaming(center, dt = 0, force = false) {
+      const terrain = environment.terrain;
+      if (!terrain?.streaming) return;
+      const streaming = terrain.streaming;
+      const target = center || BABYLON.Vector3.Zero();
+      streaming.accumulator += dt;
+      const px = Number.isFinite(target.x) ? target.x : 0;
+      const pz = Number.isFinite(target.z) ? target.z : 0;
+      streaming.lastPlayerPosition = { x: px, z: pz };
+      const shouldRefresh = force || streaming.accumulator >= streaming.interval;
+      if (shouldRefresh) {
+         streaming.accumulator = 0;
+         refreshChunkTargets(streaming, streaming.lastPlayerPosition, force);
+      }
+      processStreamingQueue(streaming, force);
    }
 
    function recomputeColumnHeight(column) {
@@ -3738,6 +4236,7 @@
             }
          });
          hudApi.updateDevPanelState?.(getAuraSnapshot());
+         scheduleTerrainRadiusUiUpdate();
       }
 
       if (typeof regionChangeUnsub === "function") {
@@ -5219,6 +5718,7 @@ try {
 
     // terrain & environment
     createTerrain, disposeTerrain, getTerrainHeight, updateTerrainStreaming, removeTerrainCubeAtPoint,
+    getTerrainStreamingRadius, setTerrainStreamingRadius, setTerrainStreamingBudget, getTerrainStreamingStats,
     scatterVegetation, clearTrees, createCloudLayer, advanceEnvironment, updateEnvironment,
     getFallbackTreeMaterials, createFallbackTree,
 
