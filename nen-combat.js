@@ -350,7 +350,8 @@ export function applyIncomingDamage(dst, limb, baseDamage) {
     }
   }
   const context = H.__lastOutgoingContext;
-  if (context && context.src === playerState && dst && dst !== playerState) {
+  const isPlayerOutgoing = context && context.src === playerState && dst && dst !== playerState;
+  if (isPlayerOutgoing) {
     if (typeof H.applyVowToIncoming === "function") {
       try {
         const vowRes = H.applyVowToIncoming({ target: dst, damage: result, context });
@@ -369,7 +370,20 @@ export function applyIncomingDamage(dst, limb, baseDamage) {
       }
     }
   }
-  H.__lastOutgoingContext = null;
+  if (isPlayerOutgoing) {
+    if (typeof setTimeout === "function") {
+      setTimeout(() => {
+        const hx = getHXH();
+        if (hx.__lastOutgoingContext === context) {
+          hx.__lastOutgoingContext = null;
+        }
+      }, 0);
+    } else if (H.__lastOutgoingContext === context) {
+      H.__lastOutgoingContext = null;
+    }
+  } else {
+    H.__lastOutgoingContext = null;
+  }
   console.log("[HXH] applyIncomingDamage", limb, baseDamage, "->", result);
   return result;
 }
