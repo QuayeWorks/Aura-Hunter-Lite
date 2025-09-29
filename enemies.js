@@ -4,6 +4,8 @@
   const watchers = new Set();
   const processed = new WeakSet();
   const limbKeys = ["head", "torso", "rArm", "lArm", "rLeg", "lLeg"];
+  const SIM_STATE_SLEEPING = "sleeping";
+  const SIM_STATE_DESPAWNED = "despawned";
   const archetypeById = new Map([
     ["glacier-brute", "bruiser"],
     ["cinder-brute", "bruiser"],
@@ -52,6 +54,13 @@
         console.warn("[Enemies] Spawn plan listener failed", err);
       }
     }
+  }
+
+  function cleanupEnemy(enemy) {
+    if (!enemy) return;
+    disposeMarkers(enemy);
+    disposeOrbs(enemy);
+    setEnemyVisibility(enemy, 1);
   }
 
   const rand = (min, max) => {
@@ -374,9 +383,7 @@
   function purgeInactiveEnemies(list) {
     ensureArray(list).forEach(enemy => {
       if (enemy?.alive) return;
-      disposeMarkers(enemy);
-      disposeOrbs(enemy);
-      setEnemyVisibility(enemy, 1);
+      cleanupEnemy(enemy);
     });
   }
 
@@ -393,6 +400,10 @@
     const intel = [];
     for (const enemy of list) {
       if (!enemy || !enemy.root) continue;
+      const sim = enemy.__sim || enemy.simulationBubble || null;
+      if (sim && (sim.state === SIM_STATE_SLEEPING || sim.state === SIM_STATE_DESPAWNED)) {
+        continue;
+      }
       assignArchetype(enemy);
       switch (enemy.nenArchetype) {
         case "bruiser":
@@ -441,7 +452,8 @@
     },
     __notifySpawnPlan(plan) {
       notify(plan);
-    }
+    },
+    cleanup: cleanupEnemy
   };
 
   window.Enemies = API;
