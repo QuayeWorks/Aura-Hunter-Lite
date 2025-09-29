@@ -15,9 +15,51 @@
     return entries.map((entry) => `${entry.label} ${entry.value.toFixed(1)}/s`).join(", ");
   };
 
+  function ensureNenType(state) {
+    if (!state || typeof state !== "object") return null;
+    const existing = state.nenType;
+    if (existing && typeof existing === "string") return existing;
+    const inferred = typeof state.ch?.nen === "string" ? state.ch.nen : null;
+    if (inferred) state.nenType = inferred;
+    return inferred;
+  }
+
+  function getVowSeverity(vows) {
+    if (!Array.isArray(vows) || vows.length === 0) return 0;
+    return vows.reduce((acc, vow) => {
+      if (!vow || vow.disabled) return acc;
+      const active = vow.active ?? true;
+      if (!active) return acc;
+      const severity = typeof vow.severity === "number" ? vow.severity : (typeof vow.rank === "number" ? vow.rank : 1);
+      return acc + clamp(severity, 0, 5);
+    }, 0);
+  }
+
+  function tuneSpecialistUlt(state) {
+    if (!state || ensureNenType(state) !== "Specialist") return;
+    const focus = clamp(Number(state.eff?.focus) || 0, 0, 12);
+    const vowSeverity = clamp(getVowSeverity(state.vows), 0, 18);
+    const baseDrain = 20;
+    const focusMit = 1 - clamp(focus * 0.04, 0, 0.55);
+    const vowBoost = 1 + vowSeverity * 0.08;
+    const tunedDrain = clamp(baseDrain * focusMit / vowBoost, 5, 20);
+    state.ultDrainRate = tunedDrain;
+    const baseDur = 8 + focus * 0.35 + vowSeverity * 0.25;
+    state.ultMaxDur = clamp(baseDur, 8, 24);
+    if (state.timeStop && state.nen && state.nen.cur <= (state.ultMinNen ?? 0)) {
+      state.timeStop = false;
+      const focus = clamp(Number(state.eff?.focus) || 0, 0, 12);
+      const baseCd = 10 * (1 - focus * 0.03);
+      H.setCooldown?.("special", baseCd);
+      H.msg?.("Time distortion collapses — Nen exhausted.");
+    }
+  }
+
   function nenTick(dt){
     if (!H.state || !Number.isFinite(dt) || dt <= 0) return;
     const state = H.state;
+    ensureNenType(state);
+    tuneSpecialistUlt(state);
     const aura = state.aura || {};
     const nen = state.nen || (state.nen = { cur: 0, max: 0, regen: 0 });
 

@@ -14,6 +14,23 @@
     enemyHighlights: new Map(),
     styleReady: false,
     lastFrameTs: null,
+    nenType: null,
+    originalSpecial: null,
+    radial: {
+      active: false,
+      unsubscribe: null,
+      options: [],
+      selectedKey: null
+    },
+    transmute: {
+      mode: "sticky",
+      lastSelection: "sticky"
+    },
+    boundSigil: null,
+    boundSigilSelection: null,
+    manipulator: {
+      lastCleanup: 0
+    },
     inStatus: {
       prepared: false,
       pending: false,
@@ -36,7 +53,8 @@
       highlightLayer: null,
       senseEntries: new Map(),
       slowedProjectiles: new Map(),
-      senseColor: null
+      senseColor: null,
+      pulseActiveUntil: 0
     },
     shuStatus: {
       intent: false,
@@ -113,6 +131,531 @@
     } else {
       console.log("[HXH]", text);
     }
+  }
+
+  function inferNenType(state) {
+    if (!state || typeof state !== "object") return null;
+    if (typeof state.nenType === "string" && state.nenType) return state.nenType;
+    if (typeof state.ch?.nen === "string" && state.ch.nen) return state.ch.nen;
+    return null;
+  }
+
+  function updateNenType(state) {
+    advState.nenType = inferNenType(state || advState.currentState);
+    return advState.nenType;
+  }
+
+  function ensureTransmuteMode(state) {
+    const type = updateNenType(state);
+    if (type !== "Transmuter") return null;
+    const mode = advState.transmute.mode || "sticky";
+    advState.transmute.mode = mode;
+    advState.transmute.lastSelection = mode;
+    return mode;
+  }
+
+  function formatTitleCase(value) {
+    if (typeof value !== "string" || !value) return "";
+    return value
+      .split(/[-_\s]+/)
+      .filter(Boolean)
+      .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(" ");
+  }
+
+  function resolveVowOptions(state) {
+    const vows = Array.isArray(state?.vows) && state.vows.length ? state.vows : null;
+    if (!vows) {
+      return [
+        { key: "discipline", label: "Discipline", hint: "Boosts guard & focus." },
+        { key: "mercy", label: "Mercy", hint: "Improves regen." },
+        { key: "resolve", label: "Resolve", hint: "Raises attack output." }
+      ];
+    }
+    return vows.map((vow, index) => ({
+      key: vow.key || vow.id || `vow-${index}`,
+      label: vow.label || vow.name || formatTitleCase(vow.key || `Vow ${index + 1}`),
+      hint: vow.summary || `Severity ${vow.severity ?? vow.rank ?? 1}`
+    }));
+  }
+
+  function buildNenRadialOptions(state) {
+    const type = updateNenType(state);
+    if (type === "Transmuter") {
+      return [
+        { key: "sticky", label: "Sticky", hint: "Lingers & slows", color: "rgba(110,210,180,0.85)" },
+        { key: "elastic", label: "Elastic", hint: "Curves mid-flight", color: "rgba(120,170,255,0.85)" },
+        { key: "conductive", label: "Conductive", hint: "Charged bursts", color: "rgba(220,220,120,0.85)" }
+      ];
+    }
+    if (type === "Conjurer") {
+      return resolveVowOptions(state);
+    }
+    return [];
+  }
+
+  function closeNenRadial() {
+    if (!advState.radial.active) return;
+    const HUD = getHUD();
+    HUD?.hideNenRadial?.();
+    if (advState.radial.unsubscribe) {
+      try { advState.radial.unsubscribe(); } catch (err) { console.warn("[HXH] radial unsubscribe failed", err); }
+      advState.radial.unsubscribe = null;
+    }
+    advState.radial.active = false;
+    advState.radial.options = [];
+  }
+
+  function handleNenRadialSelection(key) {
+    if (!key) return;
+    const state = advState.currentState;
+    const type = updateNenType(state);
+    const HUD = getHUD();
+    advState.radial.selectedKey = key;
+    HUD?.updateNenRadialSelection?.(key);
+    if (type === "Transmuter") {
+      advState.transmute.mode = key;
+      advState.transmute.lastSelection = key;
+      hudMessage(`Transmutation attuned: ${formatTitleCase(key)}.`);
+    } else if (type === "Conjurer") {
+      advState.boundSigilSelection = key;
+      if (advState.boundSigil) advState.boundSigil.selectedKey = key;
+      hudMessage(`Bound Sigil vow focus set to ${formatTitleCase(key)}.`);
+    }
+  }
+
+  function openNenRadial(state) {
+    const options = buildNenRadialOptions(state);
+    if (!options.length) return false;
+    const HUD = getHUD();
+    if (!HUD?.showNenRadial) return false;
+    const type = updateNenType(state);
+    let selected = advState.radial.selectedKey;
+    if (type === "Transmuter") {
+      selected = advState.transmute.mode;
+    } else if (type === "Conjurer") {
+      selected = advState.boundSigilSelection || options[0]?.key;
+    }
+    HUD.showNenRadial(options, selected);
+    advState.radial.active = true;
+    advState.radial.options = options;
+    advState.radial.selectedKey = selected;
+    if (advState.radial.unsubscribe) {
+      try { advState.radial.unsubscribe(); } catch (err) {}
+    }
+    advState.radial.unsubscribe = HUD.bindNenRadialSelection?.(handleNenRadialSelection) || null;
+    return true;
+  }
+
+  function tintProjectile(projectile, hex) {
+    const BABYLON = getBABYLON();
+    if (!BABYLON || !projectile?.mesh) return;
+    if (!projectile.mesh.material) {
+      projectile.mesh.material = new BABYLON.StandardMaterial("transmuteMat", projectile.mesh.getScene?.());
+    }
+    const mat = projectile.mesh.material;
+    if (!mat) return;
+    const color = BABYLON.Color3.FromHexString(hex);
+    if (mat.diffuseColor?.copyFrom) mat.diffuseColor.copyFrom(color.scale(0.45));
+    if (mat.emissiveColor?.copyFrom) mat.emissiveColor.copyFrom(color);
+    if (typeof mat.alpha === "number") mat.alpha = 0.9;
+  }
+
+  function handleTransmuterProjectile(projectile) {
+    const state = advState.currentState;
+    if (!state || inferNenType(state) !== "Transmuter") return;
+    if (!projectile || projectile.source !== state) return;
+    const limb = typeof projectile.limb === "string" ? projectile.limb.toLowerCase() : "";
+    if (!limb.startsWith("nen")) return;
+    const mode = ensureTransmuteMode(state) || "sticky";
+    projectile.__transmuteMode = mode;
+    projectile.__transmuteInitSpeed = projectile.speed;
+    projectile.__transmuteBaseDir = projectile.dir?.clone ? projectile.dir.clone() : null;
+    switch (mode) {
+      case "sticky": {
+        if (projectile.life && typeof projectile.life.t === "number") {
+          projectile.life.t += 1.2;
+        }
+        projectile.speed *= 0.85;
+        projectile.radius = (projectile.radius || 0.5) + 0.25;
+        tintProjectile(projectile, "#6fd6b8");
+        break;
+      }
+      case "elastic": {
+        projectile.__transmutePhase = Math.random() * Math.PI * 2;
+        projectile.__transmutePhaseSpeed = 5 + Math.random() * 3;
+        projectile.__transmuteAmplitude = 0.35;
+        tintProjectile(projectile, "#78b6ff");
+        break;
+      }
+      case "conductive": {
+        projectile.__transmuteConductive = true;
+        projectile.dmg = (projectile.dmg || 0) * 1.12;
+        tintProjectile(projectile, "#f5e66b");
+        break;
+      }
+    }
+  }
+
+  function updateTransmuterProjectiles(dt) {
+    if (!advState.trackedProjectiles) return;
+    const BABYLON = getBABYLON();
+    const H = getHXH();
+    const enemies = Array.isArray(H?.enemies) ? H.enemies : [];
+    for (const projectile of advState.trackedProjectiles) {
+      const mode = projectile?.__transmuteMode;
+      if (!mode) continue;
+      if (mode === "sticky") {
+        if (projectile.speed && projectile.__transmuteInitSpeed) {
+          const target = Math.max(projectile.__transmuteInitSpeed * 0.45, projectile.speed * 0.92);
+          projectile.speed = BABYLON ? BABYLON.Scalar.Lerp(projectile.speed, target, dt * 2.4) : target;
+        }
+      } else if (mode === "elastic" && BABYLON && projectile.dir && projectile.__transmuteBaseDir) {
+        const base = projectile.__transmuteBaseDir;
+        const right = new BABYLON.Vector3(base.z, 0, -base.x);
+        if (right.length() < 1e-3) right.set(1, 0, 0);
+        right.normalize();
+        const phase = (projectile.__transmutePhase ?? 0) + (projectile.__transmutePhaseSpeed ?? 6) * dt;
+        projectile.__transmutePhase = phase;
+        const sway = Math.sin(phase) * (projectile.__transmuteAmplitude ?? 0.3);
+        const dir = base.clone();
+        dir.addInPlace(right.scale(sway));
+        dir.normalize();
+        if (projectile.dir.copyFrom) {
+          projectile.dir.copyFrom(dir);
+        }
+      } else if (mode === "conductive" && projectile.__transmuteConductive && BABYLON) {
+        const pos = projectile.mesh?.position;
+        if (!pos) continue;
+        for (const enemy of enemies) {
+          if (!enemy?.alive) continue;
+          const ePos = enemy.root?.position;
+          if (!ePos) continue;
+          const dist = BABYLON.Vector3.Distance(pos, ePos);
+          if (dist <= 4) {
+            enemy.__conductiveT = Math.max(enemy.__conductiveT || 0, 0.35);
+            if (enemy.root?.material?.emissiveColor?.scaleInPlace) {
+              enemy.root.material.emissiveColor.scaleInPlace(1.02);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  function handleEmitterProjectile(projectile) {
+    const state = advState.currentState;
+    if (!state || inferNenType(state) !== "Emitter") return;
+    if (!projectile || projectile.source !== state) return;
+    const limb = typeof projectile.limb === "string" ? projectile.limb.toLowerCase() : "";
+    if (limb === "nenblast") {
+      if (projectile.life && typeof projectile.life.t === "number") {
+        projectile.life.t += 1.6;
+      }
+      projectile.radius = (projectile.radius || 0.55) + 0.1;
+    } else if (limb === "nenvolley") {
+      projectile.__emitterVolley = true;
+      projectile.__emitterHomeStrength = 0.075;
+      projectile.__emitterLastSeek = 0;
+    }
+  }
+
+  function updateEmitterProjectiles(nowMs, dt) {
+    if (!advState.trackedProjectiles) return;
+    const BABYLON = getBABYLON();
+    const H = getHXH();
+    const enemies = Array.isArray(H?.enemies) ? H.enemies : [];
+    if (inferNenType(advState.currentState) !== "Emitter") return;
+    const pulseActive = advState.enStatus.pulseActiveUntil > nowMs;
+    if (!BABYLON || !pulseActive) return;
+    const playerPos = getPlayerPosition();
+    if (!playerPos) return;
+    const seekInterval = 0.08;
+    for (const projectile of advState.trackedProjectiles) {
+      if (!projectile?.__emitterVolley) continue;
+      if (!projectile.mesh?.position) continue;
+      projectile.__emitterLastSeek = (projectile.__emitterLastSeek || 0) + dt;
+      if (projectile.__emitterLastSeek < seekInterval) continue;
+      projectile.__emitterLastSeek = 0;
+      let bestEnemy = null;
+      let bestDist = Infinity;
+      for (const enemy of enemies) {
+        if (!enemy?.alive) continue;
+        const ePos = enemy.root?.position;
+        if (!ePos) continue;
+        const dist = BABYLON.Vector3.Distance(projectile.mesh.position, ePos);
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestEnemy = enemy;
+        }
+      }
+      if (!bestEnemy?.root?.position) continue;
+      const dir = bestEnemy.root.position.clone();
+      dir.subtractInPlace(projectile.mesh.position);
+      dir.normalize();
+      if (projectile.dir?.copyFrom) {
+        projectile.dir.addInPlace(dir.scale(projectile.__emitterHomeStrength ?? 0.07));
+        projectile.dir.normalize();
+      }
+    }
+  }
+
+  function getSceneFromState(state) {
+    if (!state) return null;
+    if (state.nenLight?.getScene) {
+      try { return state.nenLight.getScene(); } catch (err) {}
+    }
+    const BABYLON = getBABYLON();
+    return BABYLON?.Engine?.LastCreatedScene || null;
+  }
+
+  function disposeBoundSigil() {
+    const data = advState.boundSigil;
+    if (!data) return;
+    if (data.mesh && data.mesh.dispose) {
+      try { data.mesh.dispose(); } catch (err) { console.warn("[HXH] dispose sigil failed", err); }
+    }
+    advState.boundSigil = null;
+    const state = advState.currentState;
+    if (state?.buffs?.boundSigil) {
+      state.buffs.boundSigil.active = false;
+      state.buffs.boundSigil.expireAt = 0;
+    }
+  }
+
+  function resolveVowSeverity(state, key) {
+    if (!state || !key) return 1;
+    const vow = Array.isArray(state.vows) ? state.vows.find(v => (v.key || v.id) === key) : null;
+    if (!vow) return 1;
+    const severity = typeof vow.severity === "number" ? vow.severity : (typeof vow.rank === "number" ? vow.rank : 1);
+    return Math.max(1, severity);
+  }
+
+  function placeBoundSigil() {
+    const state = advState.currentState;
+    if (!state || inferNenType(state) !== "Conjurer") return false;
+    const scene = getSceneFromState(state);
+    const BABYLON = getBABYLON();
+    if (!scene || !BABYLON) return false;
+    const playerPos = getPlayerPosition();
+    if (!playerPos) return false;
+    disposeBoundSigil();
+    const radius = 6;
+    const mesh = BABYLON.MeshBuilder.CreateCylinder("bound-sigil", { diameter: radius * 2, height: 0.05, tessellation: 48 }, scene);
+    mesh.position = new BABYLON.Vector3(playerPos.x, (playerPos.y || 0) - 0.1, playerPos.z);
+    mesh.rotation.x = Math.PI / 2;
+    mesh.isPickable = false;
+    mesh.renderingGroupId = 1;
+    const mat = new BABYLON.StandardMaterial("boundSigilMat", scene);
+    mat.diffuseColor = BABYLON.Color3.FromHexString("#5c9bff").scale(0.2);
+    mat.emissiveColor = BABYLON.Color3.FromHexString("#9fbfff");
+    mat.alpha = advState.gyoActive ? 0.85 : 0.0;
+    mesh.material = mat;
+    const key = advState.boundSigilSelection || advState.boundSigil?.selectedKey || (resolveVowOptions(state)[0]?.key ?? "discipline");
+    const severity = resolveVowSeverity(state, key);
+    const damageBonus = 0.08 + severity * 0.03;
+    const duration = 12000;
+    advState.boundSigil = {
+      mesh,
+      radius,
+      expiresAt: getNow() + duration,
+      vowKey: key,
+      damageBonus,
+      selectedKey: key
+    };
+    advState.boundSigilSelection = key;
+    hudMessage(`Bound Sigil anchors ${formatTitleCase(key)} for ${Math.round(duration / 1000)}s.`);
+    return true;
+  }
+
+  function updateBoundSigil(nowMs, dt) {
+    const data = advState.boundSigil;
+    const state = advState.currentState;
+    if (!data || !state) return;
+    const mesh = data.mesh;
+    if (!mesh || mesh.isDisposed?.()) {
+      disposeBoundSigil();
+      return;
+    }
+    if (nowMs >= data.expiresAt) {
+      disposeBoundSigil();
+      hudMessage("Bound Sigil fades.");
+      return;
+    }
+    if (mesh.material && typeof mesh.material.alpha === "number") {
+      mesh.material.alpha = advState.gyoActive ? 0.85 : 0.0;
+    }
+    const playerPos = getPlayerPosition();
+    if (!playerPos) return;
+    const distSq = distanceSq(playerPos, mesh.position);
+    const inside = distSq <= data.radius * data.radius;
+    const buff = state.buffs || (state.buffs = {});
+    if (!buff.boundSigil) {
+      buff.boundSigil = { active: false, damageBonus: data.damageBonus, vowKey: data.vowKey, expireAt: 0 };
+    }
+    if (inside) {
+      buff.boundSigil.active = true;
+      buff.boundSigil.damageBonus = data.damageBonus;
+      buff.boundSigil.vowKey = data.vowKey;
+      buff.boundSigil.expireAt = nowMs + 200;
+    } else if (buff.boundSigil.expireAt && nowMs > buff.boundSigil.expireAt) {
+      buff.boundSigil.active = false;
+    }
+  }
+
+  function updateManipulatorEffects(nowMs, dt) {
+    const state = advState.currentState;
+    if (!state || inferNenType(state) !== "Manipulator") return;
+    const H = getHXH();
+    const BABYLON = getBABYLON();
+    const enemies = Array.isArray(H?.enemies) ? H.enemies : [];
+    const playerPos = getPlayerPosition();
+    for (const enemy of enemies) {
+      if (!enemy) continue;
+      if (enemy.__conductiveT) {
+        enemy.__conductiveT = Math.max(0, enemy.__conductiveT - dt);
+      }
+      const effect = enemy.__manipulatorEffect;
+      if (!effect) {
+        if (typeof enemy.__manipulatorOriginalSpeed === "number") {
+          enemy.speed = enemy.__manipulatorOriginalSpeed;
+          delete enemy.__manipulatorOriginalSpeed;
+        }
+        continue;
+      }
+      const elapsed = (nowMs - effect.appliedAt) / 1000;
+      if (elapsed >= effect.duration) {
+        if (typeof enemy.__manipulatorOriginalSpeed === "number") {
+          enemy.speed = enemy.__manipulatorOriginalSpeed;
+          delete enemy.__manipulatorOriginalSpeed;
+        }
+        delete enemy.__manipulatorEffect;
+        continue;
+      }
+      if (effect.mode === "compel" && BABYLON && playerPos && enemy.root?.position) {
+        const dir = playerPos.clone ? playerPos.clone() : new BABYLON.Vector3(playerPos.x, playerPos.y, playerPos.z);
+        dir.subtractInPlace(enemy.root.position);
+        dir.y = 0;
+        if (dir.lengthSquared() > 1e-4) {
+          dir.normalize();
+          if (enemy.vel && typeof enemy.vel.x === "number") {
+            enemy.vel.x += dir.x * 18 * dt;
+            enemy.vel.z += dir.z * 18 * dt;
+          } else {
+            enemy.vel = new BABYLON.Vector3(dir.x * 18 * dt, 0, dir.z * 18 * dt);
+          }
+        }
+      } else if (effect.mode === "jam") {
+        enemy.attackCd = Math.max(enemy.attackCd || 0, effect.duration - elapsed);
+      }
+    }
+  }
+
+  function emitEnhancerShockwave(strike, ctx) {
+    const state = advState.currentState;
+    if (!state || inferNenType(state) !== "Enhancer") return;
+    const BABYLON = getBABYLON();
+    const H = getHXH();
+    const playerPos = getPlayerPosition();
+    if (!BABYLON || !playerPos) return;
+    const scene = getSceneFromState(state);
+    const radius = 4.5;
+    if (scene) {
+      const ring = BABYLON.MeshBuilder.CreateCylinder("ko-shock", { diameter: radius * 2, height: 0.08, tessellation: 24 }, scene);
+      ring.position = new BABYLON.Vector3(playerPos.x, playerPos.y - 0.1, playerPos.z);
+      ring.rotation.x = Math.PI / 2;
+      ring.isPickable = false;
+      const mat = new BABYLON.StandardMaterial("koShockMat", scene);
+      mat.diffuseColor = BABYLON.Color3.FromHexString("#ffb347").scale(0.25);
+      mat.emissiveColor = BABYLON.Color3.FromHexString("#ffde73");
+      mat.alpha = 0.8;
+      ring.material = mat;
+      const fade = () => {
+        if (!ring || ring.isDisposed?.()) return;
+        mat.alpha = Math.max(0, mat.alpha - 0.12);
+        ring.scaling.x += 0.25;
+        ring.scaling.z += 0.25;
+        if (mat.alpha <= 0.05) {
+          ring.dispose();
+        } else {
+          requestAnimationFrame(fade);
+        }
+      };
+      requestAnimationFrame(fade);
+    }
+    const enemies = Array.isArray(H?.enemies) ? H.enemies : [];
+    enemies.forEach(enemy => {
+      if (!enemy?.alive) return;
+      const pos = enemy.root?.position;
+      if (!pos) return;
+      const dist = BABYLON.Vector3.Distance(playerPos, pos);
+      if (dist > radius) return;
+      const dir = pos.clone();
+      dir.subtractInPlace(playerPos);
+      if (dir.lengthSquared() > 1e-4) {
+        dir.normalize();
+        if (enemy.vel && typeof enemy.vel.x === "number") {
+          enemy.vel.x += dir.x * 12;
+          enemy.vel.z += dir.z * 12;
+        } else {
+          enemy.vel = new BABYLON.Vector3(dir.x * 12, 0, dir.z * 12);
+        }
+      }
+      const base = 10 + (state.eff?.power || 0) * 1.2;
+      const outgoing = H?.applyOutgoingDamage ? H.applyOutgoingDamage(state, "koShock", base) : base;
+      const applied = H?.applyIncomingDamage ? H.applyIncomingDamage(enemy, "koShock", outgoing) : outgoing;
+      enemy.hp = (enemy.hp || 0) - applied;
+      if (enemy.hp <= 0) {
+        enemy.alive = false;
+        enemy.root?.dispose?.();
+        H?.gainXP?.(20);
+      }
+    });
+  }
+
+  function computeSpecialCooldown(state) {
+    const focus = Math.max(0, Number(state?.eff?.focus) || 0);
+    return 10 * (1 - focus * 0.03);
+  }
+
+  function spendNen(state, cost, failureMessage) {
+    if (!state?.nen) return false;
+    if (state.nen.cur < cost) {
+      if (failureMessage) hudMessage(failureMessage);
+      return false;
+    }
+    state.nen.cur -= cost;
+    getHXH()?.updateNenHud?.();
+    return true;
+  }
+
+  function performConjurerSpecial(state) {
+    const cost = 24;
+    if (!spendNen(state, cost, "Not enough Nen for Bound Sigil.")) return;
+    const cooldown = computeSpecialCooldown(state);
+    getHXH()?.setCooldown?.("special", cooldown);
+    placeBoundSigil();
+    closeNenRadial();
+  }
+
+  function ensureSpecialOverride(state) {
+    const H = getHXH();
+    if (!H) return;
+    if (!advState.originalSpecial) {
+      advState.originalSpecial = H.special || null;
+    }
+    H.special = function(...args) {
+      const currentState = advState.currentState || H.state;
+      const type = inferNenType(currentState);
+      if (type === "Conjurer") {
+        if (H.cdActive?.("special")) return;
+        performConjurerSpecial(currentState);
+        return;
+      }
+      if (typeof advState.originalSpecial === "function") {
+        advState.originalSpecial.apply(this, args);
+      }
+    };
   }
 
   function ensureStyles() {
@@ -444,7 +987,11 @@
 
   function refreshShuProjectiles() {
     if (!Array.isArray(advState.trackedProjectiles)) return;
-    advState.trackedProjectiles.forEach(handleShuProjectile);
+    advState.trackedProjectiles.forEach(projectile => {
+      handleShuProjectile(projectile);
+      handleTransmuterProjectile(projectile);
+      handleEmitterProjectile(projectile);
+    });
   }
 
   function resetInStatus() {
@@ -809,6 +1356,7 @@
     status.maintainRadius = 0;
     status.maintainStart = 0;
     status.lastAuraRadius = 0;
+    status.pulseActiveUntil = 0;
     setAuraEn(false, 0, { skipHud: opts.skipHud });
     clearProjectileSlows();
     clearSenseEntries();
@@ -840,19 +1388,20 @@
         }
       });
       const projectiles = Array.isArray(H?.projectiles) ? H.projectiles : [];
-      projectiles.forEach(proj => {
-        const pos = proj?.mesh?.position;
-        if (!pos) return;
-        if (distanceSq(pos, playerPos) <= radiusSq) {
-          applyProjectileSlow(proj, nowMs, EN_PULSE_SLOW_DURATION);
-        }
-      });
-    }
-    advState.enStatus.pendingPulse = false;
-    hudMessage("En pulse ripples outward.");
-    setAuraEn(false, 0);
-    return true;
+    projectiles.forEach(proj => {
+      const pos = proj?.mesh?.position;
+      if (!pos) return;
+      if (distanceSq(pos, playerPos) <= radiusSq) {
+        applyProjectileSlow(proj, nowMs, EN_PULSE_SLOW_DURATION);
+      }
+    });
   }
+  advState.enStatus.pendingPulse = false;
+  advState.enStatus.pulseActiveUntil = nowMs + 700;
+  hudMessage("En pulse ripples outward.");
+  setAuraEn(false, 0);
+  return true;
+}
 
   function updateEn(nowMs, dtSec = 0) {
     updateProjectileSlows(nowMs);
@@ -947,7 +1496,8 @@
     return true;
   }
 
-  function handleKoStrike() {
+  function handleKoStrike(strike, context) {
+    emitEnhancerShockwave(strike, context);
     if (!advState.inStatus.prepared) return;
     cancelIn("Ko focus disrupts In concealment.");
   }
@@ -1249,6 +1799,8 @@
       items.forEach(item => {
         handleConjured(item);
         handleShuProjectile(item);
+        handleTransmuterProjectile(item);
+        handleEmitterProjectile(item);
       });
       return result;
     };
@@ -1274,10 +1826,23 @@
     advState.gyoActive = active;
     setOverlayActive(active);
     updateConcealed();
+    if (advState.boundSigil?.mesh?.material && typeof advState.boundSigil.mesh.material.alpha === "number") {
+      advState.boundSigil.mesh.material.alpha = active ? 0.85 : 0.0;
+    }
   }
 
   function attachState(state) {
     advState.currentState = state;
+    updateNenType(state);
+    ensureSpecialOverride(state);
+    if (inferNenType(state) === "Transmuter") {
+      ensureTransmuteMode(state);
+    } else if (inferNenType(state) === "Conjurer") {
+      const options = resolveVowOptions(state);
+      if (options.length && !advState.boundSigilSelection) {
+        advState.boundSigilSelection = options[0].key;
+      }
+    }
     resetEnState({ skipHud: true, disposeLayer: true });
     ensureOverlay();
     ensureInIndicator();
@@ -1304,6 +1869,12 @@
   }
 
   function detachState() {
+    const H = getHXH();
+    if (H && advState.originalSpecial) {
+      H.special = advState.originalSpecial;
+    }
+    disposeBoundSigil();
+    closeNenRadial();
     resetEnState({ skipHud: true, disposeLayer: true });
     if (advState.unsubscribeAura) {
       try { advState.unsubscribeAura(); } catch (err) { console.warn("[HXH] Aura unsubscribe failed", err); }
@@ -1363,27 +1934,40 @@
         setAuraEn(false, 0);
       }
     }
+    if (e.code === "Tab" && isGameScreenVisible()) {
+      e.preventDefault();
+      if (!advState.radial.active) {
+        openNenRadial(advState.currentState);
+        ensureTransmuteMode(advState.currentState);
+      }
+    }
   }
 
   function handleKeyup(e) {
-    if (e.code !== "KeyV") return;
-    const status = advState.enStatus;
-    const now = getNow();
-    if (status.maintainActive) {
-      stopEnMaintain(null, { silent: true });
-    } else if (status.pendingPulse && !status.maintainFailed) {
-      const held = now - status.keyDownAt;
-      if (held <= status.holdThresholdMs + 80) {
-        performEnPulse(now);
+    if (e.code === "KeyV") {
+      const status = advState.enStatus;
+      const now = getNow();
+      if (status.maintainActive) {
+        stopEnMaintain(null, { silent: true });
+      } else if (status.pendingPulse && !status.maintainFailed) {
+        const held = now - status.keyDownAt;
+        if (held <= status.holdThresholdMs + 80) {
+          performEnPulse(now);
+        } else {
+          setAuraEn(false, 0);
+        }
       } else {
         setAuraEn(false, 0);
       }
-    } else {
-      setAuraEn(false, 0);
+      status.keyHeld = false;
+      status.pendingPulse = false;
+      status.maintainFailed = false;
+      return;
     }
-    status.keyHeld = false;
-    status.pendingPulse = false;
-    status.maintainFailed = false;
+    if (e.code === "Tab") {
+      e.preventDefault();
+      closeNenRadial();
+    }
   }
 
   function frame(ts) {
@@ -1400,6 +1984,7 @@
     updateEn(ts, dt);
 
     if (advState.currentState) {
+      updateNenType(advState.currentState);
       if (H?.projectiles && H.projectiles !== advState.trackedProjectiles) {
         attachProjectiles(H.projectiles);
       }
@@ -1413,6 +1998,10 @@
       }
       updateConcealed();
       updateEnemyHighlights(ts);
+      updateTransmuterProjectiles(dt);
+      updateEmitterProjectiles(ts, dt);
+      updateBoundSigil(ts, dt);
+      updateManipulatorEffects(ts, dt);
     }
 
     globalObj.requestAnimationFrame(frame);
