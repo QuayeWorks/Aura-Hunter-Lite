@@ -21,6 +21,12 @@
     ranged: "caster"
   };
 
+  const CURSE_PROFILES = {
+    bruiser: { chance: 0.12, duration: 5200, dot: 4.5, slow: 0.08, maxStacks: 3 },
+    assassin: { chance: 0.18, duration: 6400, dot: 5.5, slow: 0.12, maxStacks: 4 },
+    caster: { chance: 0.22, duration: 7200, dot: 6, slow: 0.1, maxStacks: 4 }
+  };
+
   const intelState = {
     list: [],
     updatedAt: 0
@@ -164,6 +170,8 @@
     }
     enemy.nenArchetype = archetype;
     enemy.nenLiteracy = true;
+    const curseProfile = archetype ? CURSE_PROFILES[archetype] || null : null;
+    enemy.__curseProfile = curseProfile ? { ...curseProfile } : null;
     processed.add(enemy);
     if (archetype === "bruiser") {
       enemy.__nenTelegraph = {
@@ -421,6 +429,10 @@
     },
     getAuraIntel() {
       return intelState.list.slice();
+    },
+    getCurseProfile(enemy) {
+      if (!enemy) return null;
+      return enemy.__curseProfile || null;
     },
     onSpawnPlan(cb) {
       if (typeof cb !== "function") return () => {};

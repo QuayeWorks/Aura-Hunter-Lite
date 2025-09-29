@@ -65,7 +65,37 @@
       weapon: null,
       glyph: null,
       warned: false
-    }
+    },
+    grudge: {
+      value: 0,
+      max: 100,
+      decayPerSec: 4.2,
+      gainScale: 1.45,
+      charges: 0,
+      uiReady: false,
+      hudSnapshot: null,
+      fullNotified: false
+    },
+    lastPlayerHp: null,
+    playerDead: false,
+    lastDamageContext: null,
+    curseMarks: new Map(),
+    lingeringCurse: {
+      active: false,
+      stacks: 0,
+      damagePerSec: 0,
+      slow: 0,
+      expireAt: 0,
+      lastTick: 0,
+      notified: false,
+      questHintShown: false,
+      lastSource: null
+    },
+    hooks: {
+      incomingWrapper: null,
+      incomingOriginal: null
+    },
+    exorciseUnsub: null
   };
 
   const IN_UPFRONT_COST = 8;
@@ -79,10 +109,20 @@
   const EN_MAX_RADIUS = 18;
   const EN_EXPAND_DURATION = 1.0;
 
+  const GRUDGE_FULL_THRESHOLD = 0.98;
+  const CURSE_MARK_DURATION = 7200;
+  const CURSE_MARK_DOT = 12;
+  const CURSE_MARK_SLOW = 0.35;
+  const CURSE_MARK_XP_MIN = 26;
+  const CURSE_MARK_XP_MAX = 42;
+  const LINGERING_SLOW_CAP = 0.6;
+  const EXORCISM_HINT = "Find an exorcism charm from cursed foes.";
+
   const getHXH = () => (typeof globalObj.HXH === "object" ? globalObj.HXH : null);
   const getHUD = () => (typeof globalObj.HUD === "object" ? globalObj.HUD : null);
   const getBABYLON = () => globalObj.BABYLON || null;
   const getItems = () => (typeof globalObj.Items === "object" && globalObj.Items ? globalObj.Items : null);
+  const getEnemiesModule = () => (typeof globalObj.Enemies === "object" && globalObj.Enemies ? globalObj.Enemies : null);
 
   const DEFAULT_SHU_MODIFIERS = { damageMul: 1.3, durabilityScalar: 0.65, pierceCount: 1 };
   const clampNumber = (value, min, max) => Math.min(max, Math.max(min, value));
@@ -309,6 +349,327 @@
     } else {
       console.log("[HXH]", text);
     }
+  }
+
+  function clamp01(value) {
+    if (!Number.isFinite(value)) return 0;
+    if (value <= 0) return 0;
+    if (value >= 1) return 1;
+    return value;
+  }
+
+  function ensureDamageHooks() {
+    const H = getHXH();
+    if (!H) return;
+    const current = H.applyIncomingDamage;
+    if (current === advState.hooks.incomingWrapper) return;
+    const original = typeof current === "function" ? current : null;
+    const wrapper = function patchedIncoming(dst, limb, baseDamage) {
+      const context = H.__lastOutgoingContext || null;
+      const result = original ? original.apply(this, arguments) : baseDamage;
+      if (advState.currentState && dst === advState.currentState) {
+        const attacker = context && context.src && context.src !== advState.currentState ? context.src : null;
+        handlePlayerIncomingDamage(result, attacker, limb);
+      }
+      return result;
+    };
+    advState.hooks.incomingOriginal = original;
+    advState.hooks.incomingWrapper = wrapper;
+    H.applyIncomingDamage = wrapper;
+  }
+
+  function gainGrudge(amount) {
+    if (!Number.isFinite(amount) || amount <= 0) return;
+    const grudge = advState.grudge;
+    const next = clampNumber(grudge.value + amount, 0, grudge.max);
+    const crossed = next >= grudge.max && grudge.value < grudge.max;
+    grudge.value = next;
+    if (crossed && !grudge.fullNotified) {
+      hudMessage("Grudge surges — the curse mark is primed.");
+      grudge.fullNotified = true;
+    }
+  }
+
+  function decayGrudge(dt) {
+    const grudge = advState.grudge;
+    if (grudge.value <= 0) return;
+    const rate = Number.isFinite(grudge.decayPerSec) ? grudge.decayPerSec : 0;
+    if (rate <= 0) return;
+    grudge.value = Math.max(0, grudge.value - rate * dt);
+    if (grudge.value < grudge.max * 0.9) grudge.fullNotified = false;
+  }
+
+  function ensureGrudgeHud() {
+    if (advState.grudge.uiReady) return true;
+    const HUD = getHUD();
+    if (!HUD || typeof HUD.updateGrudgeWidget !== "function") return false;
+    HUD.updateGrudgeWidget({
+      value: advState.grudge.value,
+      max: advState.grudge.max,
+      full: advState.grudge.value >= advState.grudge.max * GRUDGE_FULL_THRESHOLD,
+      charges: advState.grudge.charges,
+      cursed: advState.lingeringCurse.active,
+      curseStacks: advState.lingeringCurse.stacks,
+      slowPct: advState.lingeringCurse.slow,
+      questHint: advState.lingeringCurse.active && advState.grudge.charges <= 0 ? EXORCISM_HINT : ""
+    });
+    if (!advState.exorciseUnsub && typeof HUD.bindGrudgeExorcise === "function") {
+      advState.exorciseUnsub = HUD.bindGrudgeExorcise(() => requestExorcism());
+    }
+    advState.grudge.uiReady = true;
+    advState.grudge.hudSnapshot = null;
+    return true;
+  }
+
+  function updateGrudgeHud(force = false) {
+    if (!ensureGrudgeHud()) return;
+    const HUD = getHUD();
+    if (!HUD || typeof HUD.updateGrudgeWidget !== "function") return;
+    const grudge = advState.grudge;
+    const curse = advState.lingeringCurse;
+    const payload = {
+      value: grudge.value,
+      max: grudge.max,
+      full: grudge.value >= grudge.max * GRUDGE_FULL_THRESHOLD,
+      charges: grudge.charges,
+      cursed: curse.active,
+      curseStacks: curse.stacks,
+      curseLabel: curse.active ? `Lingering Curse${curse.stacks > 1 ? ` x${curse.stacks}` : ""}` : "",
+      questHint: curse.active && grudge.charges <= 0 ? EXORCISM_HINT : "",
+      slowPct: curse.slow
+    };
+    const last = grudge.hudSnapshot;
+    if (!force && last && last.value === payload.value && last.max === payload.max && last.full === payload.full
+      && last.charges === payload.charges && last.cursed === payload.cursed && last.curseStacks === payload.curseStacks
+      && last.questHint === payload.questHint && last.slowPct === payload.slowPct && last.curseLabel === payload.curseLabel) {
+      return;
+    }
+    HUD.updateGrudgeWidget(payload);
+    grudge.hudSnapshot = { ...payload };
+  }
+
+  function maybeApplyEnemyCurse(attacker) {
+    if (!attacker || typeof attacker !== "object") return;
+    const enemiesApi = getEnemiesModule();
+    const profile = attacker.__curseProfile || enemiesApi?.getCurseProfile?.(attacker) || null;
+    if (!profile) return;
+    const chance = clamp01(Number(profile.chance) || 0);
+    const H = getHXH();
+    const roll = typeof H?.rand === "function" ? clamp01(H.rand(0, 1)) : Math.random();
+    if (roll > chance) return;
+    applyLingeringCurse(profile, attacker);
+  }
+
+  function handlePlayerIncomingDamage(amount, attacker, limb) {
+    if (!Number.isFinite(amount) || amount <= 0) return;
+    const scale = Number.isFinite(advState.grudge.gainScale) ? advState.grudge.gainScale : 1;
+    gainGrudge(amount * scale);
+    advState.lastDamageContext = {
+      source: attacker || null,
+      amount,
+      limb: typeof limb === "string" ? limb : null,
+      ts: getNow()
+    };
+    if (attacker) maybeApplyEnemyCurse(attacker);
+    updateGrudgeHud();
+  }
+
+  function applyLingeringCurse(profile = {}, enemy = null) {
+    const curse = advState.lingeringCurse;
+    const now = getNow();
+    const baseDuration = Number.isFinite(profile.duration) ? profile.duration : 6000;
+    const dot = Number.isFinite(profile.dot) ? profile.dot : 4;
+    const slow = Number.isFinite(profile.slow) ? profile.slow : 0.08;
+    const maxStacks = Math.max(1, Math.floor(profile.maxStacks || 3));
+    const nextStacks = Math.min(maxStacks, curse.active ? curse.stacks + 1 : 1);
+    curse.active = true;
+    curse.stacks = nextStacks;
+    curse.damagePerSec = dot * nextStacks;
+    curse.slow = Math.min(LINGERING_SLOW_CAP, slow * nextStacks);
+    const expire = now + baseDuration;
+    curse.expireAt = curse.expireAt && curse.expireAt > now ? Math.max(curse.expireAt, expire) : expire;
+    curse.lastTick = now;
+    curse.lastSource = enemy || null;
+    if (!curse.notified) {
+      hudMessage("A lingering curse clings to you — seek an exorcism charm.");
+      curse.notified = true;
+    } else {
+      hudMessage("The lingering curse intensifies.");
+    }
+    if (!curse.questHintShown && advState.grudge.charges <= 0) {
+      hudMessage(`Quest: ${EXORCISM_HINT}`);
+      curse.questHintShown = true;
+    }
+    updateGrudgeHud(true);
+  }
+
+  function clearLingeringCurse(reason, opts = {}) {
+    const curse = advState.lingeringCurse;
+    if (!curse.active) {
+      if (reason && !opts.silent) hudMessage(reason);
+      return false;
+    }
+    curse.active = false;
+    curse.stacks = 0;
+    curse.damagePerSec = 0;
+    curse.slow = 0;
+    curse.expireAt = 0;
+    curse.lastTick = 0;
+    curse.notified = false;
+    curse.questHintShown = false;
+    curse.lastSource = null;
+    if (reason && !opts.silent) hudMessage(reason);
+    updateGrudgeHud(true);
+    return true;
+  }
+
+  function updatePlayerCurse(nowMs, dt) {
+    const curse = advState.lingeringCurse;
+    if (!curse.active) return;
+    if (curse.expireAt && nowMs >= curse.expireAt) {
+      clearLingeringCurse("The lingering curse dissipates.");
+      return;
+    }
+    const state = advState.currentState;
+    if (!state) return;
+    const damage = curse.damagePerSec * dt;
+    if (damage > 0) {
+      const prev = Number(state.hp) || 0;
+      const next = Math.max(0, prev - damage);
+      if (next !== prev) {
+        state.hp = next;
+        getHXH()?.updateHealthHud?.();
+      }
+    }
+    const slowFactor = Math.max(0, Math.min(LINGERING_SLOW_CAP, curse.slow));
+    if (slowFactor > 0 && state.vel) {
+      state.vel.x *= Math.max(0, 1 - slowFactor * dt);
+      state.vel.z *= Math.max(0, 1 - slowFactor * dt);
+    }
+    updateGrudgeHud();
+  }
+
+  function requestExorcism() {
+    if (!advState.lingeringCurse.active) {
+      hudMessage("No lingering curse to purge.");
+      return false;
+    }
+    if (!Number.isFinite(advState.grudge.charges) || advState.grudge.charges <= 0) {
+      hudMessage("You need an exorcism charm to purge the curse.");
+      updateGrudgeHud();
+      return false;
+    }
+    advState.grudge.charges = Math.max(0, advState.grudge.charges - 1);
+    clearLingeringCurse("You burn an exorcism charm — the curse lifts.");
+    updateGrudgeHud(true);
+    return true;
+  }
+
+  function grantExorcismCharge(count = 1, opts = {}) {
+    const amount = Math.max(1, Math.floor(count));
+    advState.grudge.charges = Math.max(0, (advState.grudge.charges || 0) + amount);
+    if (!opts.silent) {
+      hudMessage(amount > 1 ? `Exorcism charms acquired (${amount}).` : "Recovered an exorcism charm.");
+    }
+    updateGrudgeHud(true);
+    return advState.grudge.charges;
+  }
+
+  function applyCurseMark(enemy, options = {}) {
+    if (!enemy || typeof enemy !== "object" || !enemy.alive) return false;
+    let mark = advState.curseMarks.get(enemy);
+    if (!mark) {
+      mark = {};
+      advState.curseMarks.set(enemy, mark);
+    }
+    const now = getNow();
+    mark.appliedAt = now;
+    mark.expireAt = now + (Number.isFinite(options.duration) ? options.duration : CURSE_MARK_DURATION);
+    mark.damagePerSec = Number.isFinite(options.damagePerSec) ? options.damagePerSec : CURSE_MARK_DOT;
+    mark.slowFactor = clampNumber(Number.isFinite(options.slowFactor) ? options.slowFactor : CURSE_MARK_SLOW, 0, 0.9);
+    if (typeof mark.originalSpeed !== "number" && typeof enemy.speed === "number") {
+      mark.originalSpeed = enemy.speed;
+      enemy.speed = enemy.speed * (1 - mark.slowFactor);
+    }
+    mark.lastTick = now;
+    if (!options.silent) {
+      hudMessage("Death grudge brands your killer with a curse mark.");
+    }
+    return true;
+  }
+
+  function clearCurseMark(enemy, mark) {
+    if (!enemy) return;
+    if (mark && typeof mark.originalSpeed === "number" && enemy.alive && typeof enemy.speed === "number") {
+      enemy.speed = Math.max(enemy.speed, mark.originalSpeed);
+    }
+    advState.curseMarks.delete(enemy);
+  }
+
+  function updateCurseMarks(nowMs, dt) {
+    if (!advState.curseMarks.size) return;
+    const H = getHXH();
+    const list = Array.isArray(H?.enemies) ? H.enemies : [];
+    const seen = new Set(list);
+    for (const [enemy, mark] of Array.from(advState.curseMarks.entries())) {
+      if (!enemy || !enemy.alive || !seen.has(enemy)) {
+        clearCurseMark(enemy, mark);
+        continue;
+      }
+      if (mark.expireAt && nowMs >= mark.expireAt) {
+        clearCurseMark(enemy, mark);
+        continue;
+      }
+      if (mark.originalSpeed && typeof enemy.speed === "number") {
+        const target = mark.originalSpeed * (1 - mark.slowFactor);
+        if (enemy.speed > target) enemy.speed = target;
+      }
+      const damage = mark.damagePerSec * dt;
+      if (damage > 0) {
+        const prevHp = Number(enemy.hp) || 0;
+        const nextHp = Math.max(0, prevHp - damage);
+        if (nextHp !== prevHp) enemy.hp = nextHp;
+        if (nextHp <= 0) {
+          enemy.alive = false;
+          enemy.hp = 0;
+          try { enemy.root?.dispose?.(); } catch (err) { console.warn("[HXH] curse mark cleanup failed", err); }
+          const randFn = typeof H?.rand === "function" ? H.rand.bind(H) : null;
+          const xp = randFn ? Math.round(randFn(CURSE_MARK_XP_MIN, CURSE_MARK_XP_MAX)) : Math.round(CURSE_MARK_XP_MIN + Math.random() * (CURSE_MARK_XP_MAX - CURSE_MARK_XP_MIN));
+          H?.gainXP?.(xp);
+          hudMessage("The curse mark consumes its victim — an exorcism charm drops.");
+          clearCurseMark(enemy, mark);
+          grantExorcismCharge(1, { silent: true });
+          updateGrudgeHud(true);
+          continue;
+        }
+      }
+    }
+  }
+
+  function updateGrudge(dt) {
+    decayGrudge(dt);
+    updateGrudgeHud();
+  }
+
+  function handlePlayerDeath(killer) {
+    if (advState.playerDead) return;
+    advState.playerDead = true;
+    const grudge = advState.grudge;
+    const ready = grudge.value >= grudge.max * GRUDGE_FULL_THRESHOLD;
+    if (ready && killer && killer.alive) {
+      applyCurseMark(killer, { slowFactor: CURSE_MARK_SLOW, damagePerSec: CURSE_MARK_DOT, duration: CURSE_MARK_DURATION });
+    }
+    grudge.value = 0;
+    grudge.fullNotified = false;
+    advState.lastDamageContext = null;
+    updateGrudgeHud(true);
+  }
+
+  function handlePlayerRevive() {
+    if (!advState.playerDead) return;
+    advState.playerDead = false;
+    advState.lastDamageContext = null;
+    updateGrudgeHud(true);
   }
 
   function inferNenType(state) {
@@ -2044,6 +2405,9 @@
     }
     attachProjectiles(H?.projectiles);
     updateShu(0);
+    advState.lastPlayerHp = Number(state?.hp) || 0;
+    advState.playerDead = advState.lastPlayerHp <= 0;
+    updateGrudgeHud(true);
   }
 
   function detachState() {
@@ -2079,6 +2443,20 @@
       glyph.classList.add("hidden");
       glyph.classList.remove("active", "intent", "armed");
     }
+    if (advState.exorciseUnsub) {
+      try { advState.exorciseUnsub(); } catch (err) { console.warn("[HXH] exorcise unsubscribe failed", err); }
+      advState.exorciseUnsub = null;
+    }
+    for (const [enemy, mark] of Array.from(advState.curseMarks.entries())) {
+      clearCurseMark(enemy, mark);
+    }
+    advState.curseMarks.clear();
+    clearLingeringCurse(null, { silent: true });
+    advState.grudge.uiReady = false;
+    advState.grudge.hudSnapshot = null;
+    advState.lastPlayerHp = null;
+    advState.playerDead = false;
+    advState.lastDamageContext = null;
     Object.assign(advState.shuStatus, {
       intent: false,
       active: false,
@@ -2155,6 +2533,8 @@
       if (advState.currentState) detachState();
       if (state) attachState(state);
     }
+    ensureDamageHooks();
+    ensureGrudgeHud();
     if (!advState.lastFrameTs) advState.lastFrameTs = ts;
     const dt = Math.max(0, (ts - advState.lastFrameTs) / 1000);
     advState.lastFrameTs = ts;
@@ -2180,6 +2560,21 @@
       updateEmitterProjectiles(ts, dt);
       updateBoundSigil(ts, dt);
       updateManipulatorEffects(ts, dt);
+      updateGrudge(dt);
+      updateCurseMarks(ts, dt);
+      updatePlayerCurse(ts, dt);
+      const hp = Number(advState.currentState.hp) || 0;
+      if (advState.lastPlayerHp === null) {
+        advState.lastPlayerHp = hp;
+      } else {
+        if (hp <= 0 && advState.lastPlayerHp > 0) {
+          const attacker = advState.lastDamageContext?.source || null;
+          handlePlayerDeath(attacker && attacker.alive ? attacker : null);
+        } else if (hp > 0 && advState.playerDead) {
+          handlePlayerRevive();
+        }
+        advState.lastPlayerHp = hp;
+      }
     }
 
     globalObj.requestAnimationFrame(frame);
@@ -2207,7 +2602,23 @@
       inPrepared: advState.inStatus.prepared,
       inUpkeep: advState.inStatus.upkeep,
       concealedCount: advState.concealedRecords.size
-    })
+    }),
+    getGrudgeState() {
+      return {
+        value: advState.grudge.value,
+        max: advState.grudge.max,
+        charges: advState.grudge.charges,
+        full: advState.grudge.value >= advState.grudge.max * GRUDGE_FULL_THRESHOLD,
+        curseActive: advState.lingeringCurse.active,
+        curseStacks: advState.lingeringCurse.stacks,
+        curseSlow: advState.lingeringCurse.slow
+      };
+    },
+    requestExorcism,
+    grantExorcismCharge,
+    clearLingeringCurse(reason, silent = !reason) {
+      return clearLingeringCurse(reason || null, { silent });
+    }
   });
 
   api.__state = advState;
