@@ -200,6 +200,8 @@
 
   function isOpaque(block) {
     if (!block) return false;
+    if (block.type === "air" || block.id === 0) return false;
+    if (block.render === false || block.invisible === true) return false;
     if (block.opaque === false) return false;
     if (block.transparent === true) return false;
     if (typeof block.alpha === "number" && block.alpha < 1) return false;
