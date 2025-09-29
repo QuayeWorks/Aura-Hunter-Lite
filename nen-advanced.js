@@ -2031,8 +2031,8 @@
   globalObj.NenAdvanced = api;
 
   try {
-    globalObj.addEventListener("keydown", handleKeydown, { passive: true });
-    globalObj.addEventListener("keyup", handleKeyup, { passive: true });
+    globalObj.addEventListener("keydown", handleKeydown, { passive: false });
+    globalObj.addEventListener("keyup", handleKeyup, { passive: false });
   } catch (err) {
     console.warn("[HXH] NenAdvanced key handler failed", err);
   }
