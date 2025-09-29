@@ -6,6 +6,25 @@
   let activeRegionId = null;
   let lastCommand = null;
 
+  const DEFAULT_LOD_CONFIG = Object.freeze({
+    version: 1,
+    assets: Object.freeze({
+      tree: Object.freeze({ mediumDistance: 48, farDistance: 96, cullDistance: 160, billboard: true }),
+      rock: Object.freeze({ mediumDistance: 36, farDistance: 78, cullDistance: 148, billboard: false }),
+      structure: Object.freeze({ mediumDistance: 60, farDistance: 130, cullDistance: 220, billboard: false })
+    }),
+    regionOverrides: Object.freeze({
+      "frost-hollow": Object.freeze({
+        tree: { mediumDistance: 44, farDistance: 88 },
+        rock: { mediumDistance: 32, farDistance: 70 }
+      }),
+      "ember-ridge": Object.freeze({
+        tree: { mediumDistance: 54, farDistance: 112 },
+        structure: { mediumDistance: 66, farDistance: 140 }
+      })
+    })
+  });
+
   const DEFAULT_REGIONS = [
     {
       id: "emerald-basin",
@@ -86,6 +105,61 @@
     }
   ];
 
+  function clone(value) {
+    if (value == null) return value;
+    try {
+      return JSON.parse(JSON.stringify(value));
+    } catch (err) {
+      if (typeof value === "object") {
+        return { ...value };
+      }
+      return value;
+    }
+  }
+
+  function normalizeLodAssetConfig(source) {
+    if (!source || typeof source !== "object") return null;
+    const medium = Number(source.mediumDistance);
+    const far = Number(source.farDistance);
+    const cull = Number(source.cullDistance);
+    const result = {};
+    if (Number.isFinite(medium) && medium > 0) result.mediumDistance = medium;
+    if (Number.isFinite(far) && far > 0) result.farDistance = far;
+    if (Number.isFinite(cull) && cull > 0) result.cullDistance = cull;
+    if (typeof source.billboard === "boolean") result.billboard = source.billboard;
+    return Object.keys(result).length ? result : null;
+  }
+
+  function normalizeLodOverrides(source) {
+    if (!source || typeof source !== "object") return null;
+    const result = {};
+    for (const key of Object.keys(source)) {
+      const normalized = normalizeLodAssetConfig(source[key]);
+      if (normalized) result[key] = normalized;
+    }
+    return Object.keys(result).length ? result : null;
+  }
+
+  function buildRegionLodProfile(regionId) {
+    const baseAssets = clone(DEFAULT_LOD_CONFIG.assets) || {};
+    const overrides = [];
+    if (regionId && DEFAULT_LOD_CONFIG.regionOverrides && DEFAULT_LOD_CONFIG.regionOverrides[regionId]) {
+      overrides.push(DEFAULT_LOD_CONFIG.regionOverrides[regionId]);
+    }
+    if (regionId && registry.has(regionId)) {
+      const region = registry.get(regionId);
+      if (region?.lod) overrides.push(region.lod);
+    }
+    for (const override of overrides) {
+      for (const key of Object.keys(override)) {
+        const normalized = normalizeLodAssetConfig(override[key]);
+        if (!normalized) continue;
+        baseAssets[key] = { ...(baseAssets[key] || {}), ...normalized };
+      }
+    }
+    return { version: DEFAULT_LOD_CONFIG.version, assets: baseAssets };
+  }
+
   function normalizeRegion(def) {
     if (!def || typeof def !== "object") return null;
     const id = typeof def.id === "string" ? def.id.trim().toLowerCase() : null;
@@ -95,6 +169,7 @@
       const streamRadius = Number.isFinite(def.terrain.streamRadius) ? def.terrain.streamRadius : null;
       terrain = { streamRadius };
     }
+    const lod = normalizeLodOverrides(def.lod);
     const region = {
       id,
       name: typeof def.name === "string" && def.name.trim() ? def.name.trim() : id,
@@ -103,7 +178,8 @@
       spawnTable: def.spawnTable || null,
       difficulty: typeof def.difficulty === "number" ? def.difficulty : 1,
       meta: def.meta || null,
-      terrain
+      terrain,
+      lod
     };
     return region;
   }
@@ -132,6 +208,8 @@
     window.WorldUtils?.applyRegionVisuals?.(region);
     const streamRadius = Number.isFinite(region.terrain?.streamRadius) ? region.terrain.streamRadius : null;
     window.WorldUtils?.setTerrainStreamingRadius?.(streamRadius, { mode: "base" });
+    const lodProfile = buildRegionLodProfile(region.id);
+    window.HXH?.setEnvironmentLodProfile?.(clone(lodProfile.assets));
     if (!opts.silent && typeof H.msg === "function") {
       const cadence = window.Spawns?.getNextCadence?.();
       const cadenceInfo = cadence ? ` Cadence ~${cadence.toFixed(0)}s.` : "";
@@ -255,6 +333,8 @@
     onRegionChange,
     runCommand,
     getLastCommand,
+    getLODConfig: id => buildRegionLodProfile(id || activeRegionId),
+    getDefaultLODConfig: () => ({ version: DEFAULT_LOD_CONFIG.version, assets: clone(DEFAULT_LOD_CONFIG.assets) }),
     setTerrainRadius: (radius, opts) => window.WorldUtils?.setTerrainStreamingRadius?.(radius, opts),
     getTerrainRadius: () => window.WorldUtils?.getTerrainStreamingRadius?.() || null,
     showMenu: (...a)=>window.MenuScreen?.showMenu?.(...a)
