@@ -509,6 +509,12 @@
 
    const savedTerrainSettings = normalizeTerrainSettings(loadTerrainSettings());
 
+   const DEFAULT_ENVIRONMENT_LOD_PROFILE = Object.freeze({
+      tree: Object.freeze({ mediumDistance: 48, farDistance: 96, cullDistance: 160, billboard: true }),
+      rock: Object.freeze({ mediumDistance: 36, farDistance: 78, cullDistance: 148, billboard: false }),
+      structure: Object.freeze({ mediumDistance: 60, farDistance: 130, cullDistance: 220, billboard: false })
+   });
+
    const environment = {
       seed: 1,
       time: 0,
@@ -525,6 +531,7 @@
       treeColumns: [],
       terrain: null,
       terrainSettings: { ...savedTerrainSettings },
+      lodProfile: JSON.parse(JSON.stringify(DEFAULT_ENVIRONMENT_LOD_PROFILE)),
       updateAccumulator: 0,
       updateInterval: 1 / 24
    };
@@ -1657,13 +1664,117 @@
       leavesMat.diffuseColor = new BABYLON.Color3(0.18, 0.35, 0.16);
       leavesMat.specularColor = new BABYLON.Color3(0.05, 0.1, 0.05);
       leavesMat.emissiveColor = new BABYLON.Color3(0.02, 0.05, 0.02);
-      fallbackTreeMaterials = { trunkMat, leavesMat };
+
+      const billboardTexture = new BABYLON.DynamicTexture("fallbackTreeBillboardTex", { width: 128, height: 192 }, scene, false);
+      const ctx = billboardTexture.getContext();
+      if (ctx) {
+         ctx.fillStyle = "rgba(0,0,0,0)";
+         ctx.fillRect(0, 0, billboardTexture.getSize().width, billboardTexture.getSize().height);
+         const width = billboardTexture.getSize().width;
+         const height = billboardTexture.getSize().height;
+         ctx.fillStyle = "#5a9c55";
+         ctx.beginPath();
+         ctx.moveTo(width * 0.15, height * 0.7);
+         ctx.lineTo(width * 0.5, height * 0.08);
+         ctx.lineTo(width * 0.85, height * 0.7);
+         ctx.closePath();
+         ctx.fill();
+         ctx.fillStyle = "#1e3a17";
+         ctx.globalAlpha = 0.6;
+         ctx.beginPath();
+         ctx.moveTo(width * 0.2, height * 0.74);
+         ctx.lineTo(width * 0.5, height * 0.18);
+         ctx.lineTo(width * 0.8, height * 0.74);
+         ctx.closePath();
+         ctx.fill();
+         ctx.globalAlpha = 1;
+         ctx.fillStyle = "#4b311f";
+         ctx.fillRect(width * 0.47, height * 0.7, width * 0.06, height * 0.28);
+         billboardTexture.update();
+         billboardTexture.hasAlpha = true;
+      }
+      const billboardMat = new BABYLON.StandardMaterial("fallbackTreeBillboardMat", scene);
+      billboardMat.diffuseTexture = billboardTexture;
+      billboardMat.emissiveColor = new BABYLON.Color3(0.14, 0.22, 0.14);
+      billboardMat.specularColor = BABYLON.Color3.Black();
+      billboardMat.backFaceCulling = false;
+      billboardMat.disableLighting = false;
+      fallbackTreeMaterials = { trunkMat, leavesMat, billboardMat };
       return fallbackTreeMaterials;
+   }
+
+   function tagLodProxy(mesh) {
+      if (!mesh) return mesh;
+      mesh.isPickable = false;
+      mesh.checkCollisions = false;
+      mesh.isVisible = false;
+      if (typeof mesh.setEnabled === "function") mesh.setEnabled(false);
+      mesh.alwaysSelectAsActiveMesh = false;
+      if (!mesh.metadata) mesh.metadata = {};
+      mesh.metadata.lodProxy = true;
+      return mesh;
+   }
+
+   function createTreeBillboard(scene, name, root, material) {
+      const billboard = BABYLON.MeshBuilder.CreatePlane(`${name}-lod-billboard`, {
+         width: 3.8,
+         height: 6.2,
+         sideOrientation: BABYLON.Mesh.DOUBLESIDE
+      }, scene);
+      billboard.material = material;
+      billboard.parent = root;
+      billboard.position.y = 4.8;
+      billboard.billboardMode = BABYLON.AbstractMesh.BILLBOARDMODE_Y;
+      return tagLodProxy(billboard);
+   }
+
+   function createTreeLodMeshes(scene, root, parts) {
+      const { name, trunk, foliage, crown, trunkMat, leavesMat, billboardMat } = parts;
+      const mediumTrunk = tagLodProxy(BABYLON.MeshBuilder.CreateCylinder(`${name}-lod-trunk`, {
+         height: 4,
+         diameterTop: 0.5,
+         diameterBottom: 0.68,
+         tessellation: 5
+      }, scene));
+      mediumTrunk.material = trunkMat;
+      mediumTrunk.parent = root;
+      mediumTrunk.position.y = 2;
+
+      const mediumFoliage = tagLodProxy(BABYLON.MeshBuilder.CreateSphere(`${name}-lod-foliage`, {
+         diameterX: 3,
+         diameterY: 3,
+         diameterZ: 3,
+         segments: 1
+      }, scene));
+      mediumFoliage.material = leavesMat;
+      mediumFoliage.parent = root;
+      mediumFoliage.position.y = 4.4;
+
+      const mediumCrown = tagLodProxy(BABYLON.MeshBuilder.CreateSphere(`${name}-lod-crown`, {
+         diameterX: 2.4,
+         diameterY: 2.5,
+         diameterZ: 2.4,
+         segments: 1
+      }, scene));
+      mediumCrown.material = leavesMat;
+      mediumCrown.parent = root;
+      mediumCrown.position.y = 5.8;
+
+      const farBillboard = createTreeBillboard(scene, name, root, billboardMat);
+
+      const bindings = [
+         { host: trunk, medium: mediumTrunk, far: farBillboard },
+         { host: foliage, medium: mediumFoliage, far: null },
+         { host: crown, medium: mediumCrown, far: null }
+      ];
+
+      root.metadata = { ...(root.metadata || {}), lodBindings: bindings, lodType: "tree" };
+      return bindings;
    }
 
    function createFallbackTree(scene, name, position, scale) {
       const root = new BABYLON.TransformNode(name, scene);
-      const { trunkMat, leavesMat } = getFallbackTreeMaterials(scene);
+      const { trunkMat, leavesMat, billboardMat } = getFallbackTreeMaterials(scene);
 
       const trunk = BABYLON.MeshBuilder.CreateCylinder(`${name}-trunk`, {
          height: 4,
@@ -1694,14 +1805,29 @@
       crown.parent = root;
       crown.position.y = 6;
 
+      createTreeLodMeshes(scene, root, {
+         name,
+         trunk,
+         foliage,
+         crown,
+         trunkMat,
+         leavesMat,
+         billboardMat
+      });
+
       root.position.copyFrom(position);
       root.scaling.set(scale, scale, scale);
 
       const childMeshes = root.getChildMeshes();
       childMeshes.forEach(mesh => {
-         mesh.isPickable = false;
-         mesh.checkCollisions = true;
          mesh.computeWorldMatrix(true);
+         if (mesh.metadata?.lodProxy) {
+            mesh.isPickable = false;
+            mesh.checkCollisions = false;
+         } else {
+            mesh.isPickable = false;
+            mesh.checkCollisions = true;
+         }
       });
 
       let minY = Infinity;
@@ -1718,6 +1844,111 @@
 
       return root;
    }
+
+   function sanitizeLodDistance(value, fallback, min) {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) return fallback;
+      const lowerBound = Number.isFinite(min) ? min : 0;
+      return Math.max(numeric, lowerBound + 0.01);
+   }
+
+   function resolveTreeLodProfile() {
+      const defaults = DEFAULT_ENVIRONMENT_LOD_PROFILE.tree;
+      const current = environment.lodProfile?.tree || defaults;
+      return {
+         mediumDistance: Number.isFinite(current.mediumDistance) && current.mediumDistance > 0 ? current.mediumDistance : defaults.mediumDistance,
+         farDistance: Number.isFinite(current.farDistance) && current.farDistance > 0 ? current.farDistance : defaults.farDistance,
+         cullDistance: Number.isFinite(current.cullDistance) && current.cullDistance > 0 ? current.cullDistance : defaults.cullDistance,
+         billboard: current.billboard !== undefined ? !!current.billboard : defaults.billboard
+      };
+   }
+
+   function applyTreeLodBindings(bindings) {
+      if (!Array.isArray(bindings) || bindings.length === 0) return;
+      const profile = resolveTreeLodProfile();
+      let medium = sanitizeLodDistance(profile.mediumDistance, DEFAULT_ENVIRONMENT_LOD_PROFILE.tree.mediumDistance, 6);
+      let far = sanitizeLodDistance(profile.farDistance, medium + 8, medium + 2);
+      if (far <= medium + 2) far = medium + 8;
+      let cull = sanitizeLodDistance(profile.cullDistance, far + 48, far);
+      if (cull <= far + 2) cull = far + 32;
+      const useBillboard = profile.billboard !== false;
+
+      for (const binding of bindings) {
+         const host = binding?.host;
+         if (!host || typeof host.addLODLevel !== "function") continue;
+         if (typeof host.clearLODLevels === "function") {
+            host.clearLODLevels();
+         } else if (Array.isArray(host._LODLevels)) {
+            host._LODLevels.length = 0;
+         }
+
+         const mediumMesh = binding.medium || null;
+         const farMesh = binding.far || null;
+
+         if (mediumMesh) {
+            mediumMesh.isPickable = false;
+            mediumMesh.checkCollisions = false;
+            mediumMesh.isVisible = false;
+         }
+         if (farMesh) {
+            farMesh.isPickable = false;
+            farMesh.checkCollisions = false;
+            farMesh.isVisible = false;
+         }
+
+         if (mediumMesh) {
+            host.addLODLevel(medium, mediumMesh);
+         }
+
+         if (Number.isFinite(far)) {
+            const resolvedFarMesh = useBillboard ? farMesh : null;
+            host.addLODLevel(Math.max(far, medium + 0.1), resolvedFarMesh);
+         }
+
+         if (Number.isFinite(cull)) {
+            host.addLODLevel(Math.max(cull, Math.max(far, medium) + 0.1), null);
+         }
+      }
+   }
+
+   function applyTreeLOD(entry) {
+      if (!entry || entry.destroyed) return;
+      const bindings = entry.lodBindings || entry.root?.metadata?.lodBindings;
+      if (!bindings) return;
+      applyTreeLodBindings(bindings);
+   }
+
+   function refreshAllTreeLods() {
+      for (const entry of environment.trees) {
+         if (!entry || entry.destroyed) continue;
+         applyTreeLOD(entry);
+      }
+   }
+
+   function mergeLodEntry(base, override) {
+      const target = { ...base };
+      if (override && typeof override === "object") {
+         if (Number.isFinite(override.mediumDistance) && override.mediumDistance > 0) target.mediumDistance = override.mediumDistance;
+         if (Number.isFinite(override.farDistance) && override.farDistance > 0) target.farDistance = override.farDistance;
+         if (Number.isFinite(override.cullDistance) && override.cullDistance > 0) target.cullDistance = override.cullDistance;
+         if (typeof override.billboard === "boolean") target.billboard = override.billboard;
+      }
+      return target;
+   }
+
+   function setEnvironmentLodProfile(profile = {}) {
+      const assets = profile.assets && typeof profile.assets === "object" ? profile.assets : profile;
+      const next = {
+         tree: mergeLodEntry(DEFAULT_ENVIRONMENT_LOD_PROFILE.tree, assets.tree || {}),
+         rock: mergeLodEntry(DEFAULT_ENVIRONMENT_LOD_PROFILE.rock, assets.rock || {}),
+         structure: mergeLodEntry(DEFAULT_ENVIRONMENT_LOD_PROFILE.structure, assets.structure || {})
+      };
+      environment.lodProfile = next;
+      refreshAllTreeLods();
+      return next;
+   }
+
+   setEnvironmentLodProfile(environment.lodProfile);
 
    async function scatterVegetation(scene) {
       const terrain = environment.terrain;
@@ -1758,19 +1989,32 @@
          const fallbackRoot = createFallbackTree(scene, `tree${spawned}`, new BABYLON.Vector3(x, dirtTop, z), scale);
          fallbackRoot.rotation.y = rand(0, Math.PI * 2);
          const childMeshes = fallbackRoot.getChildMeshes();
+         const interactiveMeshes = [];
+         const lodMeshes = [];
+         const lodBindings = fallbackRoot.metadata?.lodBindings || [];
          const entry = {
             root: fallbackRoot,
             columnIndex,
-            meshes: childMeshes,
+            meshes: interactiveMeshes,
+            lodMeshes,
+            lodBindings,
             destroyed: false
          };
          fallbackRoot.metadata = { ...(fallbackRoot.metadata || {}), tree: entry };
          for (const mesh of childMeshes) {
             if (!mesh.metadata) mesh.metadata = {};
+            if (mesh.metadata.lodProxy) {
+               lodMeshes.push(mesh);
+               mesh.isPickable = false;
+               mesh.checkCollisions = false;
+               continue;
+            }
             mesh.metadata.treePart = entry;
             mesh.isPickable = true;
             mesh.checkCollisions = true;
+            interactiveMeshes.push(mesh);
          }
+         applyTreeLOD(entry);
          if (!environment.treeColumns[columnIndex]) environment.treeColumns[columnIndex] = [];
          environment.treeColumns[columnIndex].push(entry);
          environment.trees.push(entry);
@@ -5721,6 +5965,7 @@ try {
     getTerrainStreamingRadius, setTerrainStreamingRadius, setTerrainStreamingBudget, getTerrainStreamingStats,
     scatterVegetation, clearTrees, createCloudLayer, advanceEnvironment, updateEnvironment,
     getFallbackTreeMaterials, createFallbackTree,
+    applyTreeLOD, refreshAllTreeLods, setEnvironmentLodProfile,
 
     // HUD & cooldowns
     setCooldown, cdActive, markCooldownDirty, updateHealthHud, updateNenHud, updateXpHud, updateAuraHud, updateFlowHud, updateCooldownUI, updateHUD, msg,
