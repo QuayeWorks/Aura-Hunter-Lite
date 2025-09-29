@@ -20,6 +20,9 @@
         sun: "#ffd7a0",
         fogDensity: 0.0065
       },
+      terrain: {
+        streamRadius: 32
+      },
       spawnTable: {
         waveSize: { base: 6, variance: 2, ramp: 1.2 },
         cadence: { min: 22, max: 30 },
@@ -43,6 +46,9 @@
         moon: "#b6d3ff",
         fogDensity: 0.0085
       },
+      terrain: {
+        streamRadius: 34
+      },
       spawnTable: {
         waveSize: { base: 7, variance: 2, ramp: 1.6 },
         cadence: { min: 26, max: 34 },
@@ -65,6 +71,9 @@
         sun: "#ff9757",
         fogDensity: 0.01
       },
+      terrain: {
+        streamRadius: 36
+      },
       spawnTable: {
         waveSize: { base: 8, variance: 3, ramp: 2.1 },
         cadence: { min: 18, max: 26 },
@@ -81,6 +90,11 @@
     if (!def || typeof def !== "object") return null;
     const id = typeof def.id === "string" ? def.id.trim().toLowerCase() : null;
     if (!id) return null;
+    let terrain = null;
+    if (def.terrain && typeof def.terrain === "object") {
+      const streamRadius = Number.isFinite(def.terrain.streamRadius) ? def.terrain.streamRadius : null;
+      terrain = { streamRadius };
+    }
     const region = {
       id,
       name: typeof def.name === "string" && def.name.trim() ? def.name.trim() : id,
@@ -88,7 +102,8 @@
       ambient: def.ambient || {},
       spawnTable: def.spawnTable || null,
       difficulty: typeof def.difficulty === "number" ? def.difficulty : 1,
-      meta: def.meta || null
+      meta: def.meta || null,
+      terrain
     };
     return region;
   }
@@ -115,6 +130,8 @@
     activeRegionId = region.id;
     window.Spawns?.useRegion?.(region);
     window.WorldUtils?.applyRegionVisuals?.(region);
+    const streamRadius = Number.isFinite(region.terrain?.streamRadius) ? region.terrain.streamRadius : null;
+    window.WorldUtils?.setTerrainStreamingRadius?.(streamRadius, { mode: "base" });
     if (!opts.silent && typeof H.msg === "function") {
       const cadence = window.Spawns?.getNextCadence?.();
       const cadenceInfo = cadence ? ` Cadence ~${cadence.toFixed(0)}s.` : "";
@@ -238,6 +255,8 @@
     onRegionChange,
     runCommand,
     getLastCommand,
+    setTerrainRadius: (radius, opts) => window.WorldUtils?.setTerrainStreamingRadius?.(radius, opts),
+    getTerrainRadius: () => window.WorldUtils?.getTerrainStreamingRadius?.() || null,
     showMenu: (...a)=>window.MenuScreen?.showMenu?.(...a)
   };
 
