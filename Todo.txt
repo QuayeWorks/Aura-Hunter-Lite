@@ -9,67 +9,110 @@ Constraints: Do not break existing HUD buttons, attacks, gameplay, or terrain ge
 
 Deliverables per task:
 
-The code per the rules above
+• The code per the rules above
+• A short “What changed / Why” note
+• Quick manual test steps
 
-A short “What changed / Why” note
+Task 16 — Streamed Chunks + Budgeted Queue
 
-Quick manual test steps
-
-
-Task 12 — Enemies & counterplay
-
-Files: enemies.js, nen-combat.js, hud.js
+Files: world-utils.js, region-manager.js, game.js
 Prompt:
+Implement Minecraft-style chunk streaming with a bounded work queue. Define a CHUNK_SIZE (e.g., 16×16×16 for voxels; parametric) and maintain a “loaded radius” around the player. Add a per-frame budget (e.g., N ms or N ops) to enqueue/dequeue chunk (load/gen/mesh/dispose) work so no frame exceeds budget. Persist existing terrain generation API; do not break current gameplay. Provide hooks to adjust loaded radius via HUD dev toggle.
+Done check: Moving quickly in any direction never drops below target FPS due to chunk spikes; profiler shows chunk tasks spread over frames.
+Quick manual test: Sprint diagonally across the map with FPS counter visible; toggle radius up/down; confirm no stutter when chunks swap.
 
-Add archetypes with Nen literacy:
+Task 17 — Voxel Mesh Builder: Face Culling + (Optional) Greedy Meshing
 
-Bruiser: telegraphs Ko to a limb (glow); blocking with correct Ryu distribution mitigates it.
-
-Assassin: enters Zetsu and attempts backstab; Gyo counters.
-
-Emitter/Conjurer adds: ranged traps/orbs that interact with In/En.
-HUD subtly indicates detected enemy aura flows when Gyo is active. Follow my output rules.
-
-Done check: Player technique choice (Gyo/Ryu) measurably changes survival.
-
-Task 13 — Training minigames & progression caps
-
-Files: hud.js, nen-advanced.js, game.js
+Files: world-utils.js
 Prompt:
+Add mesh generation that omits hidden faces (adjacent opaque neighbors). Gate an optional “greedy meshing” pass behind a feature flag for merging coplanar quads. Keep materials/UVs compatible with current block textures. Expose buildChunkMesh(blockData, opts) with {faceCulling:true, greedy:false}.
+Done check: Triangle count per solid chunk reduced ~8–10× with face culling; greedy flag further reduces in large flat areas without visual regressions.
+Quick manual test: Generate a flat stone platform and a solid cube; compare vertex counts with/without flags; walk around to verify visuals.
 
-Implement four lightweight minigames that permanently raise caps or efficiencies:
+Task 18 — Distance LOD for Major Meshes (Trees/Rocks/Structures)
 
-Ren hold meter (extends Ren duration cap)
-
-Gyo numbers (accuracy → crit window bonus cap)
-
-Ryu drill (faster/more precise redistribution)
-
-Shu rock test (Shu efficiency)
-Persist results; show ceilings in HUD tooltips. Follow my output rules.
-
-Done check: Successful minigames increase the displayed caps and change gameplay feel.
-
-Task 14 — Post-Mortem Nen, curses, exorcism
-
-Files: nen-advanced.js, enemies.js, hud.js
+Files: game.js, region-manager.js
 Prompt:
+Introduce Babylon LOD for repeated assets: add at least two LOD levels per major prop (high/low), and set mesh.addLODLevel(distance, lodMesh). Ensure LOD works with instances/thin instances where applicable. Provide JSON config for LOD distances and per-asset overrides.
+Done check: Camera fly-through shows smooth LOD swaps; draw calls and active vertices drop at distance.
+Quick manual test: Place a dense forest; fly from far → near and watch LOD transitions; verify no popping/shader errors.
 
-Add Grudge bar; on player death with full Grudge, apply a Curse Mark (DoT+slow) to killer.
+Task 19 — Instancing / Thin Instances for Repeated Props
 
-Enemies can leave lingering curses; add consumable/quest to exorcise.
-Follow my output rules.
+Files: game.js, region-manager.js
+Prompt:
+Replace cloned meshes for repeated props (foliage, rocks, pickups) with hardware instancing; upgrade to thin instances for very large counts. Add an instance pool API: spawnInstances(type, transforms) and despawnInstances(type, ids). Keep material compatibility with LOD from Task 18.
+Done check: Same scene renders with drastically fewer draw calls; FPS improves measurably.
+Quick manual test: Spawn 1k+ small props via pool; toggle “instances vs clones” in a dev menu; compare FPS & draw calls.
 
-Done check: The effect triggers on death appropriately; exorcism clears it.
+Task 20 — AI & Physics Activation Bubble
 
-Task 15 — Save/Load + QA polish
+Files: enemies.js, game.js
+Prompt:
+Add a configurable “simulation bubble” centered on player. Inside bubble: full AI ticks + physics; outside: sleep or despawn according to type. Provide graceful reactivation when re-entering bubble. Preserve combat logic and spawns.
+Done check: CPU usage scales with nearby entities only; no “zombie” AI far away.
+Quick manual test: Lure enemies away; walk 100m; return—entities resume correctly without duplicates.
+
+Task 21 — Web Worker Offload (Chunk Gen / Pathfinding)
+
+Files: world-utils.js, enemies.js, game.js
+Prompt:
+Move expensive chunk generation and (if used) pathfinding to Web Workers. Use transferable TypedArrays for block data/paths. Add a simple job system: main thread posts jobs; worker returns results; main thread integrates meshes or paths next frame.
+Done check: Main thread frame time drops during generation spikes; no visible hitching when entering new areas.
+Quick manual test: Force rapid travel across new terrain; observe stable FPS while chunks appear.
+
+Task 22 — Texture Atlas / Array + KTX2 (BasisU) Compression
+
+Files: game.js, index.html
+Prompt:
+Combine terrain/block textures into a single atlas or texture array and switch materials to atlas sampling. Add KTX2 loader path for compressed textures; fall back gracefully if unsupported. Do not alter styles.css.
+Done check: VRAM usage drops, fewer material switches; scene looks identical.
+Quick manual test: Open Spector/Inspector; confirm single terrain material and compressed textures loaded.
+
+Task 23 — Adaptive Quality: SceneOptimizer + Dynamic Resolution
+
+Files: hud.js, game.js
+Prompt:
+Expose a “Performance Target” HUD control. Integrate Babylon SceneOptimizer to step down shadows/postfx when FPS < target for several seconds, and recover quality on stability. Add optional dynamic resolution scaler (render at scale <1.0, upscale to canvas).
+Done check: Heavy scenes auto-stabilize above target FPS without manual tweaking; quality restores when load drops.
+Quick manual test: Toggle a “Stress Test” spawn; watch optimizer gradually reduce features; confirm recovery after despawn.
+
+Task 24 — Profiler Overlay & Dev Toggles
+
+Files: hud.js, game.js
+Prompt:
+Add an in-game dev overlay showing FPS, draw calls, active vertices, GPU frame time, chunks loaded/pending, worker queue depth. Include toggles for: LOD on/off, instances vs clones, chunk radius, greedy meshing, dynamic resolution. Dev-only; hidden in production.
+Done check: Overlay reflects live metrics; toggles flip features without reload.
+Quick manual test: Flip each toggle and verify metric deltas and visual effect.
+
+Task 25 — Asset Region Streaming & Eviction
+
+Files: region-manager.js, game.js
+Prompt:
+Implement a simple region graph (biomes/zones). When entering a region, prefetch meshes/textures; when exiting, schedule eviction of region-scoped assets not referenced elsewhere. Respect current loading paths; add a small “look-ahead” distance to prefetch.
+Done check: Fast travel across region boundaries shows minimal pop-in; memory plateaus over time.
+Quick manual test: Traverse City→Desert→City loop; verify old region assets get disposed; memory Inspector shows reclaim.
+
+Task 26 — Interior/Portal Occlusion Hints
+
+Files: region-manager.js, game.js
+Prompt:
+Add lightweight occlusion hints: interior sets (disabled unless player inside trigger) and “portal quads” at doorways to toggle groups. When outside, interior props/FX are not rendered/ticked. Preserve existing building interactions.
+Done check: Looking at a city block culls most interior meshes; GPU time drops when outside.
+Quick manual test: Stand outside a large building; confirm interiors off; enter—interiors enable smoothly.
+
+Task 27 — Physics Budget & Simplified Colliders
+
+Files: game.js
+Prompt:
+Introduce a physics step budget and lower-cost impostors for scenery (boxes/capsules). Add sleep thresholds on resting bodies. Non-critical physics can tick at reduced frequency under load.
+Done check: Physics spikes are bounded; no gameplay regressions.
+Quick manual test: Pile many dynamic props; confirm stability and acceptable performance.
+
+Task 28 — Settings Save/Load for Perf Features (pairs with Task 23/24)
 
 Files: game.js, hud.js
 Prompt:
-
-Serialize: inventory, vows, nenType, stat ceilings, region progress, and Nen pools. On load, restore HUD and all toggles. Add a quick in-game test panel (dev-only) to flip modes and spawn target dummies. Follow my output rules.
-
-
-Done check: Quit/reload returns to the same state; dev panel toggles help QA.
-
-
+Persist optimization settings (chunk radius, LOD enabled, dynamic res scale, optimizer level, worker on/off, greedy meshing flag) to localStorage. On load, restore HUD and states.
+Done check: Quit/reload returns to identical perf configuration.
+Quick manual test: Change multiple toggles; reload page; verify restored.
