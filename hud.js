@@ -13,6 +13,65 @@
   let gyoIntelLoopType = null;
   let gyoIntelKey = "";
   let gyoIntelActive = false;
+  let trainingMenuCache = null;
+  let trainingGameState = null;
+  let trainingButtonCache = null;
+
+  const TRAINING_SPECS = [
+    {
+      key: "renHold",
+      title: "Ren Hold Meter",
+      description: "Hold the channel button and release while the charge is within the glowing band.",
+      effect: (caps = {}) => {
+        const hold = Number.isFinite(caps.renDurationCap) ? caps.renDurationCap.toFixed(1) : "6.0";
+        const regen = Number.isFinite(caps.renRecoveryRate) ? caps.renRecoveryRate.toFixed(1) : "1.5";
+        return `Hold cap ${hold}s • Regen ${regen}s/s`;
+      },
+      run: runRenHoldMinigame
+    },
+    {
+      key: "gyoFocus",
+      title: "Gyo Numbers",
+      description: "Tap the glowing numbers in ascending order before the timer expires.",
+      effect: (caps = {}) => {
+        const cap = Number.isFinite(caps.gyoCritCap) ? Math.round(caps.gyoCritCap * 100) : 12;
+        const scale = Number.isFinite(caps.gyoCritScale) ? Math.round(caps.gyoCritScale * 1000) / 10 : 1.2;
+        return `Crit window +${cap}% • +${scale}% per Focus`;
+      },
+      run: runGyoNumbersMinigame
+    },
+    {
+      key: "ryuDrill",
+      title: "Ryu Drill",
+      description: "Match your limb distribution to the target percentages within the tolerance window.",
+      effect: (caps = {}) => {
+        const vuln = Number.isFinite(caps.ryuVulnFactor) ? Math.round((1 - caps.ryuVulnFactor) * 100) : 0;
+        const guard = Number.isFinite(caps.ryuGuardBonus) ? Math.round(caps.ryuGuardBonus * 100) : 0;
+        return `Ko vuln -${vuln}% • Guard bonus +${guard}%`;
+      },
+      run: runRyuDrillMinigame
+    },
+    {
+      key: "shuEfficiency",
+      title: "Shu Rock Test",
+      description: "Shatter the stone before time runs out by striking with controlled bursts.",
+      effect: (caps = {}) => {
+        const dmg = Number.isFinite(caps.shuDamageMul) ? Math.round((caps.shuDamageMul - 1) * 100) : 30;
+        const dura = Number.isFinite(caps.shuDurabilityScalar) ? Math.round((1 - caps.shuDurabilityScalar) * 100) : 35;
+        const pierce = Number.isFinite(caps.shuPierce) ? caps.shuPierce : 1;
+        return `Damage +${dmg}% • Durability saved ${dura}% • Pierce ${pierce}`;
+      },
+      run: runShuRockMinigame
+    }
+  ];
+
+  function shuffleArray(arr = []) {
+    for (let i = arr.length - 1; i > 0; i -= 1) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+    return arr;
+  }
 
   function formatItemLabel(item) {
     if (!item) return "";
@@ -920,6 +979,808 @@
     root.style.pointerEvents = "none";
   }
 
+  function resolveTrainingButton() {
+    if (trainingButtonCache?.isConnected) return trainingButtonCache;
+    const btn = document.getElementById("hud-training-button");
+    if (btn) trainingButtonCache = btn;
+    return trainingButtonCache;
+  }
+
+  function ensureTrainingMenu() {
+    if (trainingMenuCache?.root?.isConnected) return trainingMenuCache;
+    const hudRoot = ensureHudRoot();
+    if (!hudRoot) return null;
+
+    const root = document.createElement("div");
+    root.id = "hud-training-overlay";
+    root.style.position = "absolute";
+    root.style.left = "0";
+    root.style.top = "0";
+    root.style.width = "100%";
+    root.style.height = "100%";
+    root.style.display = "none";
+    root.style.alignItems = "center";
+    root.style.justifyContent = "center";
+    root.style.background = "rgba(6, 12, 20, 0.78)";
+    root.style.backdropFilter = "blur(6px)";
+    root.style.zIndex = "16";
+    root.style.pointerEvents = "none";
+    root.style.opacity = "0";
+    root.style.transition = "opacity 0.18s ease";
+
+    const panel = document.createElement("div");
+    panel.className = "hud-training-panel";
+    panel.style.background = "rgba(14, 22, 36, 0.96)";
+    panel.style.border = "1px solid rgba(90, 150, 220, 0.32)";
+    panel.style.borderRadius = "14px";
+    panel.style.padding = "1.6rem";
+    panel.style.width = "min(720px, 94vw)";
+    panel.style.maxHeight = "82vh";
+    panel.style.display = "flex";
+    panel.style.flexDirection = "column";
+    panel.style.gap = "1rem";
+    panel.style.boxShadow = "0 18px 40px rgba(0,0,0,0.45)";
+    panel.style.pointerEvents = "auto";
+
+    const title = document.createElement("h2");
+    title.textContent = "Training Grounds";
+    title.style.margin = "0";
+    title.style.fontSize = "1.45rem";
+    panel.appendChild(title);
+
+    const subtitle = document.createElement("p");
+    subtitle.textContent = "Master each discipline to raise your Nen caps permanently.";
+    subtitle.style.margin = "0";
+    subtitle.style.opacity = "0.78";
+    subtitle.style.fontSize = "0.92rem";
+    panel.appendChild(subtitle);
+
+    const cardsWrap = document.createElement("div");
+    cardsWrap.style.display = "grid";
+    cardsWrap.style.gridTemplateColumns = "repeat(auto-fit, minmax(220px, 1fr))";
+    cardsWrap.style.gap = "0.8rem";
+    panel.appendChild(cardsWrap);
+
+    const minigameWrap = document.createElement("div");
+    minigameWrap.style.background = "rgba(10, 18, 30, 0.92)";
+    minigameWrap.style.border = "1px solid rgba(80, 130, 190, 0.28)";
+    minigameWrap.style.borderRadius = "10px";
+    minigameWrap.style.padding = "1rem";
+    minigameWrap.style.minHeight = "180px";
+    minigameWrap.style.display = "flex";
+    minigameWrap.style.flexDirection = "column";
+    minigameWrap.style.gap = "0.75rem";
+    panel.appendChild(minigameWrap);
+
+    const footer = document.createElement("div");
+    footer.style.display = "flex";
+    footer.style.justifyContent = "flex-end";
+    footer.style.gap = "0.6rem";
+
+    const closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.textContent = "Done";
+    closeBtn.className = "primary";
+    closeBtn.style.minWidth = "110px";
+    footer.appendChild(closeBtn);
+    panel.appendChild(footer);
+
+    const cards = new Map();
+    TRAINING_SPECS.forEach(spec => {
+      const card = document.createElement("div");
+      card.style.background = "rgba(10, 18, 30, 0.9)";
+      card.style.border = "1px solid rgba(80, 130, 190, 0.28)";
+      card.style.borderRadius = "10px";
+      card.style.padding = "0.85rem";
+      card.style.display = "flex";
+      card.style.flexDirection = "column";
+      card.style.gap = "0.55rem";
+
+      const head = document.createElement("div");
+      head.style.display = "flex";
+      head.style.flexDirection = "column";
+      head.style.gap = "0.25rem";
+      const name = document.createElement("strong");
+      name.textContent = spec.title;
+      name.style.fontSize = "0.95rem";
+      head.appendChild(name);
+      const desc = document.createElement("span");
+      desc.textContent = spec.description;
+      desc.style.fontSize = "0.78rem";
+      desc.style.opacity = "0.82";
+      head.appendChild(desc);
+      card.appendChild(head);
+
+      const effect = document.createElement("div");
+      effect.style.fontSize = "0.8rem";
+      effect.style.opacity = "0.85";
+      effect.textContent = spec.effect?.();
+      card.appendChild(effect);
+
+      const progress = document.createElement("div");
+      progress.style.fontSize = "0.78rem";
+      progress.style.opacity = "0.82";
+      progress.textContent = "Rank 0/0";
+      card.appendChild(progress);
+
+      const action = document.createElement("button");
+      action.type = "button";
+      action.textContent = "Train";
+      action.className = "secondary";
+      action.style.alignSelf = "flex-start";
+      card.appendChild(action);
+
+      cardsWrap.appendChild(card);
+      cards.set(spec.key, { root: card, button: action, effectEl: effect, progressEl: progress, spec, maxed: false });
+    });
+
+    root.appendChild(panel);
+    hudRoot.appendChild(root);
+
+    trainingMenuCache = { root, panel, cards, minigameWrap, closeBtn, state: null, config: null };
+    closeBtn.addEventListener("click", () => internalCloseTrainingMenu(true));
+    renderTrainingPlaceholder();
+    return trainingMenuCache;
+  }
+
+  function renderTrainingPlaceholder() {
+    if (!trainingMenuCache?.minigameWrap) return;
+    const wrap = trainingMenuCache.minigameWrap;
+    wrap.innerHTML = "";
+    const msg = document.createElement("p");
+    msg.textContent = "Select a drill to practice your Nen control.";
+    msg.style.margin = "0";
+    msg.style.opacity = "0.78";
+    wrap.appendChild(msg);
+  }
+
+  function renderTrainingCards(progress = {}, caps = {}, limits = {}) {
+    if (!trainingMenuCache?.cards) return;
+    trainingMenuCache.cards.forEach((card, key) => {
+      const spec = card.spec;
+      const rank = Number(progress[key]) || 0;
+      const limit = Number(limits[key]) || 0;
+      card.progressEl.textContent = `Rank ${rank}/${limit}`;
+      card.effectEl.textContent = spec.effect ? spec.effect(caps) : "";
+      const maxed = limit > 0 && rank >= limit;
+      card.maxed = maxed;
+      card.root.classList.toggle("maxed", maxed);
+      const active = trainingGameState?.key === key;
+      card.root.classList.toggle("active", !!active);
+      card.button.disabled = maxed || (!!trainingGameState && !active);
+      card.button.textContent = maxed ? "Mastered" : (active ? "Training..." : "Train");
+    });
+  }
+
+  function stopTrainingMinigame() {
+    if (trainingGameState?.cleanup) {
+      try {
+        trainingGameState.cleanup();
+      } catch (err) {
+        console.warn("[HUD] Training cleanup failed", err);
+      }
+    }
+    trainingGameState = null;
+    if (trainingMenuCache?.cards) {
+      trainingMenuCache.cards.forEach(card => {
+        card.root.classList.remove("active");
+        card.button.disabled = card.maxed;
+      });
+    }
+    renderTrainingPlaceholder();
+  }
+
+  function startTrainingMinigame(spec, state) {
+    const cache = trainingMenuCache || ensureTrainingMenu();
+    if (!cache) return;
+    stopTrainingMinigame();
+    const card = cache.cards.get(spec.key);
+    if (card) {
+      card.button.disabled = true;
+      card.root.classList.add("active");
+    }
+    const wrap = cache.minigameWrap;
+    wrap.innerHTML = "";
+
+    const title = document.createElement("h3");
+    title.textContent = spec.title;
+    title.style.margin = "0";
+    wrap.appendChild(title);
+
+    const instructions = document.createElement("p");
+    instructions.textContent = spec.description;
+    instructions.style.margin = "0";
+    instructions.style.opacity = "0.82";
+    instructions.style.fontSize = "0.85rem";
+    wrap.appendChild(instructions);
+
+    const board = document.createElement("div");
+    board.style.display = "flex";
+    board.style.flexDirection = "column";
+    board.style.gap = "0.75rem";
+    wrap.appendChild(board);
+
+    const feedback = document.createElement("div");
+    feedback.style.fontSize = "0.8rem";
+    feedback.style.minHeight = "1.2rem";
+    feedback.style.opacity = "0.85";
+    wrap.appendChild(feedback);
+
+    const controls = document.createElement("div");
+    controls.style.display = "flex";
+    controls.style.gap = "0.5rem";
+    wrap.appendChild(controls);
+
+    const level = Number(state.progress?.[spec.key]) || 0;
+
+    const handleResult = (payload = {}) => {
+      const success = !!payload.success;
+      const message = payload.message || (success ? "Training complete." : "Focus lost — try again.");
+      feedback.textContent = message;
+      if (success) {
+        const update = cache.config?.onComplete?.(spec.key);
+        if (update?.progress) state.progress = { ...state.progress, ...update.progress };
+        if (update?.caps) state.caps = { ...state.caps, ...update.caps };
+        renderTrainingCards(state.progress, state.caps, state.limits);
+      } else {
+        renderTrainingCards(state.progress, state.caps, state.limits);
+      }
+
+      controls.innerHTML = "";
+      if (!success || !(cache.cards.get(spec.key)?.maxed)) {
+        const retry = document.createElement("button");
+        retry.type = "button";
+        retry.className = "secondary";
+        retry.textContent = success ? "Run again" : "Try again";
+        retry.onclick = () => startTrainingMinigame(spec, state);
+        controls.appendChild(retry);
+      }
+      const back = document.createElement("button");
+      back.type = "button";
+      back.className = "secondary";
+      back.textContent = "Back";
+      back.onclick = () => stopTrainingMinigame();
+      controls.appendChild(back);
+
+      if (card) {
+        card.button.disabled = card.maxed;
+        card.root.classList.remove("active");
+      }
+      trainingGameState = null;
+    };
+
+    const cleanup = spec.run(board, { level, onResult: handleResult });
+    trainingGameState = {
+      key: spec.key,
+      cleanup: () => {
+        if (typeof cleanup === "function") {
+          try {
+            cleanup();
+          } catch (err) {
+            console.warn("[HUD] Training runner cleanup failed", err);
+          }
+        }
+        if (card) {
+          card.button.disabled = card.maxed;
+          card.root.classList.remove("active");
+        }
+        renderTrainingPlaceholder();
+      }
+    };
+  }
+
+  function internalCloseTrainingMenu(notify = false) {
+    if (!trainingMenuCache?.root) return;
+    stopTrainingMinigame();
+    const { root } = trainingMenuCache;
+    root.style.opacity = "0";
+    root.style.pointerEvents = "none";
+    setTimeout(() => {
+      if (trainingMenuCache?.root === root) {
+        root.style.display = "none";
+      }
+    }, 180);
+    if (notify && typeof trainingMenuCache.config?.onClose === "function") {
+      try {
+        trainingMenuCache.config.onClose();
+      } catch (err) {
+        console.warn("[HUD] Training onClose failed", err);
+      }
+    }
+    trainingMenuCache.config = null;
+    trainingMenuCache.state = null;
+    const btn = resolveTrainingButton();
+    if (btn) {
+      btn.classList.remove("active");
+      btn.setAttribute("aria-pressed", "false");
+      if (btn.dataset.bgBase) btn.style.background = btn.dataset.bgBase;
+      if (btn.dataset.borderBase) btn.style.border = btn.dataset.borderBase;
+    }
+  }
+
+  function openTrainingMenu(config = {}) {
+    const cache = ensureTrainingMenu();
+    if (!cache) return () => {};
+    cache.config = {
+      onClose: typeof config.onClose === "function" ? config.onClose : null,
+      onComplete: typeof config.onComplete === "function" ? config.onComplete : null
+    };
+    cache.state = {
+      progress: { ...(config.progress || {}) },
+      caps: { ...(config.caps || {}) },
+      limits: { ...(config.limits || {}) }
+    };
+    renderTrainingCards(cache.state.progress, cache.state.caps, cache.state.limits);
+    renderTrainingPlaceholder();
+    cache.cards.forEach(({ button, spec }) => {
+      button.onclick = () => startTrainingMinigame(spec, cache.state);
+    });
+    cache.root.style.display = "flex";
+    cache.root.style.pointerEvents = "auto";
+    requestAnimationFrame(() => {
+      cache.root.style.opacity = "1";
+    });
+    const btn = resolveTrainingButton();
+    if (btn) {
+      btn.classList.add("active");
+      btn.setAttribute("aria-pressed", "true");
+      if (btn.dataset.bgActive) btn.style.background = btn.dataset.bgActive;
+      if (btn.dataset.borderActive) btn.style.border = btn.dataset.borderActive;
+    }
+    return () => internalCloseTrainingMenu(false);
+  }
+
+  function closeTrainingMenu() {
+    internalCloseTrainingMenu(false);
+  }
+
+  function bindTrainingButton(handler) {
+    const btn = resolveTrainingButton();
+    if (!btn) return () => {};
+    const listener = (event) => {
+      handler?.(event);
+    };
+    btn.addEventListener("click", listener);
+    return () => btn.removeEventListener("click", listener);
+  }
+
+  function runRenHoldMinigame(board, { level = 0, onResult } = {}) {
+    board.innerHTML = "";
+    board.style.display = "flex";
+    board.style.flexDirection = "column";
+    board.style.gap = "0.75rem";
+
+    const gauge = document.createElement("div");
+    gauge.style.position = "relative";
+    gauge.style.width = "100%";
+    gauge.style.height = "20px";
+    gauge.style.borderRadius = "10px";
+    gauge.style.background = "rgba(255,255,255,0.12)";
+    gauge.style.overflow = "hidden";
+
+    const fill = document.createElement("div");
+    fill.style.position = "absolute";
+    fill.style.left = "0";
+    fill.style.top = "0";
+    fill.style.bottom = "0";
+    fill.style.width = "0%";
+    fill.style.background = "linear-gradient(90deg, rgba(94,178,255,0.7), rgba(120,220,255,0.95))";
+    gauge.appendChild(fill);
+
+    const target = document.createElement("div");
+    target.style.position = "absolute";
+    target.style.top = "0";
+    target.style.bottom = "0";
+    target.style.background = "rgba(90, 210, 255, 0.35)";
+    target.style.border = "1px solid rgba(120,220,255,0.8)";
+    gauge.appendChild(target);
+
+    const targetWidth = Math.max(0.14 - level * 0.015, 0.06);
+    const targetStart = Math.random() * (0.75 - targetWidth) + 0.15;
+    target.style.left = `${targetStart * 100}%`;
+    target.style.width = `${targetWidth * 100}%`;
+
+    board.appendChild(gauge);
+
+    const prompt = document.createElement("div");
+    prompt.textContent = "Hold, then release inside the highlighted band.";
+    prompt.style.fontSize = "0.82rem";
+    prompt.style.opacity = "0.82";
+    board.appendChild(prompt);
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "primary";
+    button.textContent = "Channel Aura";
+    button.style.alignSelf = "flex-start";
+    board.appendChild(button);
+
+    let raf = null;
+    let active = false;
+    let progress = 0;
+    let lastTs = 0;
+
+    const cancelLoop = () => {
+      if (raf) cancelAnimationFrame(raf);
+      raf = null;
+    };
+
+    const finish = (success, message) => {
+      cancelLoop();
+      active = false;
+      onResult?.({ success, message });
+    };
+
+    const loop = (ts) => {
+      if (!active) return;
+      if (!lastTs) lastTs = ts;
+      const dt = (ts - lastTs) / 1000;
+      lastTs = ts;
+      const rate = 0.55 + level * 0.09;
+      progress += dt * rate;
+      if (progress >= 1) {
+        fill.style.width = "100%";
+        finish(false, "The surge overruns your control.");
+        return;
+      }
+      fill.style.width = `${Math.max(0, Math.min(progress, 1)) * 100}%`;
+      raf = requestAnimationFrame(loop);
+    };
+
+    const startHold = (event) => {
+      event.preventDefault();
+      if (active) return;
+      progress = 0;
+      lastTs = 0;
+      fill.style.width = "0%";
+      active = true;
+      cancelLoop();
+      raf = requestAnimationFrame(loop);
+    };
+
+    const releaseHold = (event) => {
+      event?.preventDefault?.();
+      if (!active) return;
+      cancelLoop();
+      active = false;
+      fill.style.width = `${Math.max(0, Math.min(progress, 1)) * 100}%`;
+      const success = progress >= targetStart && progress <= targetStart + targetWidth;
+      const message = success ? "Ren stamina reinforced." : "Timing slips — the flow scatters.";
+      finish(success, message);
+    };
+
+    button.addEventListener("mousedown", startHold);
+    button.addEventListener("touchstart", startHold, { passive: false });
+    window.addEventListener("mouseup", releaseHold);
+    window.addEventListener("touchend", releaseHold);
+    window.addEventListener("touchcancel", releaseHold);
+
+    return () => {
+      cancelLoop();
+      button.removeEventListener("mousedown", startHold);
+      button.removeEventListener("touchstart", startHold);
+      window.removeEventListener("mouseup", releaseHold);
+      window.removeEventListener("touchend", releaseHold);
+      window.removeEventListener("touchcancel", releaseHold);
+    };
+  }
+
+  function runGyoNumbersMinigame(board, { level = 0, onResult } = {}) {
+    board.innerHTML = "";
+    board.style.display = "flex";
+    board.style.flexDirection = "column";
+    board.style.gap = "0.6rem";
+
+    const header = document.createElement("div");
+    header.style.display = "flex";
+    header.style.alignItems = "center";
+    header.style.justifyContent = "space-between";
+    header.style.fontSize = "0.82rem";
+    const prompt = document.createElement("span");
+    prompt.textContent = "Tap numbers in ascending order.";
+    prompt.style.opacity = "0.82";
+    const timerEl = document.createElement("strong");
+    timerEl.textContent = "Timer 0.0s";
+    header.appendChild(prompt);
+    header.appendChild(timerEl);
+    board.appendChild(header);
+
+    const grid = document.createElement("div");
+    grid.style.display = "grid";
+    grid.style.gridTemplateColumns = "repeat(auto-fit, minmax(48px, 1fr))";
+    grid.style.gap = "0.35rem";
+    board.appendChild(grid);
+
+    const count = Math.max(5, 5 + level);
+    const timerLimit = Math.max(6, 16 - level * 1.2);
+    let remaining = timerLimit;
+    timerEl.textContent = `Timer ${remaining.toFixed(1)}s`;
+
+    const numbers = Array.from({ length: count }, (_, i) => i + 1);
+    shuffleArray(numbers);
+
+    let expected = 1;
+    let finished = false;
+
+    const buttonHandlers = [];
+    numbers.forEach(num => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = String(num);
+      btn.style.padding = "0.45rem";
+      btn.style.borderRadius = "8px";
+      btn.style.border = "1px solid rgba(120, 180, 255, 0.35)";
+      btn.style.background = "rgba(18, 30, 48, 0.92)";
+      btn.style.color = "#f2f8ff";
+      btn.style.fontWeight = "600";
+      const handler = () => {
+        if (finished) return;
+        if (num === expected) {
+          expected += 1;
+          btn.disabled = true;
+          btn.style.background = "rgba(80, 200, 255, 0.35)";
+          if (expected > count) {
+            finish(true, "You track every aura flicker.");
+          }
+        } else {
+          finish(false, "Sequence lost — reset your focus.");
+        }
+      };
+      btn.addEventListener("click", handler);
+      buttonHandlers.push({ btn, handler });
+      grid.appendChild(btn);
+    });
+
+    const finish = (success, message) => {
+      if (finished) return;
+      finished = true;
+      clearInterval(timer);
+      buttonHandlers.forEach(({ btn }) => { btn.disabled = true; });
+      onResult?.({ success, message });
+    };
+
+    const timer = setInterval(() => {
+      remaining = Math.max(0, remaining - 0.1);
+      timerEl.textContent = `Timer ${remaining.toFixed(1)}s`;
+      if (remaining <= 0) {
+        finish(false, "The pattern fades before you." );
+      }
+    }, 100);
+
+    return () => {
+      clearInterval(timer);
+      buttonHandlers.forEach(({ btn, handler }) => btn.removeEventListener("click", handler));
+    };
+  }
+
+  function runRyuDrillMinigame(board, { level = 0, onResult } = {}) {
+    board.innerHTML = "";
+    board.style.display = "flex";
+    board.style.flexDirection = "column";
+    board.style.gap = "0.75rem";
+
+    const tolerance = Math.max(2, 6 - level);
+    const timeLimit = Math.max(12, 36 - level * 3);
+
+    const header = document.createElement("div");
+    header.style.display = "flex";
+    header.style.justifyContent = "space-between";
+    header.style.alignItems = "center";
+    const note = document.createElement("span");
+    note.style.fontSize = "0.82rem";
+    note.style.opacity = "0.82";
+    note.textContent = `Match the target within ±${tolerance}%`;
+    const timerEl = document.createElement("strong");
+    timerEl.textContent = `${timeLimit.toFixed(1)}s`;
+    header.appendChild(note);
+    header.appendChild(timerEl);
+    board.appendChild(header);
+
+    const groups = [
+      { key: "Head", label: "Head" },
+      { key: "Torso", label: "Torso" },
+      { key: "Arms", label: "Arms" },
+      { key: "Legs", label: "Legs" }
+    ];
+    const raw = groups.map(() => Math.random() + 0.4);
+    const sum = raw.reduce((acc, val) => acc + val, 0);
+    const target = raw.map(val => Math.round((val / sum) * 100));
+    const diff = 100 - target.reduce((acc, val) => acc + val, 0);
+    target[target.length - 1] += diff;
+
+    const targetList = document.createElement("div");
+    targetList.style.display = "flex";
+    targetList.style.flexWrap = "wrap";
+    targetList.style.gap = "0.5rem 1rem";
+    targetList.style.fontSize = "0.82rem";
+    groups.forEach((group, i) => {
+      const span = document.createElement("span");
+      span.textContent = `${group.label}: ${target[i]}%`;
+      targetList.appendChild(span);
+    });
+    board.appendChild(targetList);
+
+    const sliders = document.createElement("div");
+    sliders.style.display = "flex";
+    sliders.style.flexDirection = "column";
+    sliders.style.gap = "0.55rem";
+    board.appendChild(sliders);
+
+    const current = {};
+    const sliderEntries = [];
+    groups.forEach(group => {
+      const row = document.createElement("div");
+      row.style.display = "flex";
+      row.style.flexDirection = "column";
+      row.style.gap = "0.25rem";
+      const label = document.createElement("div");
+      label.textContent = `${group.label}: 25%`;
+      label.style.fontSize = "0.8rem";
+      const input = document.createElement("input");
+      input.type = "range";
+      input.min = "0";
+      input.max = "70";
+      input.step = "1";
+      input.value = "25";
+      input.style.width = "100%";
+      row.appendChild(label);
+      row.appendChild(input);
+      sliders.appendChild(row);
+      current[group.key] = 25;
+      const handler = () => {
+        const val = Number(input.value) || 0;
+        current[group.key] = val;
+        label.textContent = `${group.label}: ${val}%`;
+        sumLabel.textContent = `Total: ${total()}%`;
+      };
+      input.addEventListener("input", handler);
+      sliderEntries.push({ input, handler, group });
+    });
+
+    const sumLabel = document.createElement("div");
+    sumLabel.style.fontSize = "0.8rem";
+    sumLabel.style.opacity = "0.82";
+    const total = () => Object.values(current).reduce((acc, val) => acc + Number(val || 0), 0);
+    sumLabel.textContent = `Total: ${total()}%`;
+    board.appendChild(sumLabel);
+
+    const submit = document.createElement("button");
+    submit.type = "button";
+    submit.className = "primary";
+    submit.textContent = "Stabilize";
+    submit.style.alignSelf = "flex-start";
+    board.appendChild(submit);
+
+    let finished = false;
+    let countdown = null;
+    const finish = (success, message) => {
+      if (finished) return;
+      finished = true;
+      if (countdown) clearInterval(countdown);
+      onResult?.({ success, message });
+    };
+
+    submit.onclick = () => {
+      if (finished) return;
+      const totalVal = total();
+      const sumOkay = Math.abs(totalVal - 100) <= tolerance;
+      const allGood = groups.every((group, idx) => Math.abs(current[group.key] - target[idx]) <= tolerance);
+      if (sumOkay && allGood) {
+        finish(true, "Ryu redistribution locks into place.");
+      } else {
+        finish(false, "Flow slips — adjust and try again.");
+      }
+    };
+
+    let remaining = timeLimit;
+    timerEl.textContent = `${remaining.toFixed(1)}s`;
+    countdown = setInterval(() => {
+      remaining = Math.max(0, remaining - 0.1);
+      timerEl.textContent = `${remaining.toFixed(1)}s`;
+      if (remaining <= 0) {
+        finish(false, "You hesitate and lose the tempo.");
+      }
+    }, 100);
+
+    return () => {
+      if (countdown) clearInterval(countdown);
+      sliderEntries.forEach(({ input, handler }) => input.removeEventListener("input", handler));
+    };
+  }
+
+  function runShuRockMinigame(board, { level = 0, onResult } = {}) {
+    board.innerHTML = "";
+    board.style.display = "flex";
+    board.style.flexDirection = "column";
+    board.style.gap = "0.7rem";
+
+    const hpMax = Math.round(80 + level * 25);
+    let hp = hpMax;
+    const timeLimit = Math.max(10, 18 - level * 0.6);
+
+    const gauge = document.createElement("div");
+    gauge.style.position = "relative";
+    gauge.style.width = "100%";
+    gauge.style.height = "18px";
+    gauge.style.borderRadius = "9px";
+    gauge.style.background = "rgba(255,255,255,0.12)";
+    const fill = document.createElement("div");
+    fill.style.position = "absolute";
+    fill.style.left = "0";
+    fill.style.top = "0";
+    fill.style.bottom = "0";
+    fill.style.width = "100%";
+    fill.style.background = "linear-gradient(90deg, rgba(110,255,182,0.9), rgba(70,200,255,0.9))";
+    gauge.appendChild(fill);
+    board.appendChild(gauge);
+
+    const status = document.createElement("div");
+    status.style.fontSize = "0.82rem";
+    status.style.opacity = "0.82";
+    status.textContent = `Stone integrity: ${hpMax}`;
+    board.appendChild(status);
+
+    const timerEl = document.createElement("strong");
+    timerEl.textContent = `${timeLimit.toFixed(1)}s`;
+    board.appendChild(timerEl);
+
+    const strike = document.createElement("button");
+    strike.type = "button";
+    strike.className = "primary";
+    strike.textContent = "Strike";
+    strike.style.alignSelf = "flex-start";
+    board.appendChild(strike);
+
+    let finished = false;
+    let combo = 0;
+    let lastStrike = 0;
+
+    const finish = (success, message) => {
+      if (finished) return;
+      finished = true;
+      clearInterval(timer);
+      strike.disabled = true;
+      onResult?.({ success, message });
+    };
+
+    strike.onclick = () => {
+      if (finished) return;
+      const now = typeof performance === "object" && typeof performance.now === "function" ? performance.now() : Date.now();
+      if (now - lastStrike < 350) {
+        combo += 1;
+      } else {
+        combo = 0;
+      }
+      lastStrike = now;
+      const base = 6 + level * 2.2;
+      const dmg = base + Math.random() * (8 + combo * 1.6);
+      hp = Math.max(0, hp - Math.round(dmg));
+      const ratio = hp / hpMax;
+      fill.style.width = `${Math.max(0, ratio) * 100}%`;
+      status.textContent = hp > 0
+        ? `Stone integrity: ${hp}  (combo ${combo + 1}x)`
+        : "Stone shattered!";
+      if (hp <= 0) {
+        finish(true, "Shu channels cleanly through the stone.");
+      }
+    };
+
+    let remaining = timeLimit;
+    timerEl.textContent = `${remaining.toFixed(1)}s`;
+    const timer = setInterval(() => {
+      remaining = Math.max(0, remaining - 0.1);
+      timerEl.textContent = `${remaining.toFixed(1)}s`;
+      if (remaining <= 0) {
+        finish(false, "The stone settles — efficiency wasted.");
+      }
+    }, 100);
+
+    return () => {
+      clearInterval(timer);
+      strike.onclick = null;
+    };
+  }
+
   const HUD = {
     update: (...a)=>H.updateHUD?.(...a),
     updateCooldowns: (...a)=>H.updateCooldownUI?.(...a),
@@ -969,7 +1830,10 @@
     bindHotbar,
     flashHotbarBreak: flashHotbar,
     openVowMenu,
-    closeVowMenu
+    closeVowMenu,
+    openTrainingMenu,
+    closeTrainingMenu,
+    bindTrainingButton
   };
   window.HUD = HUD;
   if (typeof H.subscribeAura === "function") {
