@@ -19,6 +19,17 @@
   let statusTrayCache = null;
   let grudgeWidgetCache = null;
   let grudgeStyleInjected = false;
+  let controlDockCache = null;
+  let helpOverlayCache = null;
+  let logOverlayCache = null;
+  let devPanelCache = null;
+  let devPanelVisible = false;
+  let devPanelHandlers = {
+    toggleAura: () => {},
+    setEnRadius: () => {},
+    spawnDummy: () => {},
+    refill: () => {}
+  };
 
   const TRAINING_SPECS = [
     {
@@ -497,6 +508,477 @@
     setTimeout(() => {
       slot.root.style.boxShadow = "";
     }, 220);
+  }
+
+  function ensureControlDock() {
+    const bottom = document.getElementById("hud-bottom");
+    if (!bottom) return null;
+    if (controlDockCache?.root?.isConnected && bottom.contains(controlDockCache.root)) {
+      return controlDockCache;
+    }
+    let dock = bottom.querySelector?.("#hud-control-dock") || null;
+    if (!dock) {
+      dock = document.createElement("div");
+      dock.id = "hud-control-dock";
+      bottom.appendChild(dock);
+    } else {
+      dock.innerHTML = "";
+    }
+    dock.style.display = "flex";
+    dock.style.gap = "0.4rem";
+    dock.style.flexWrap = "wrap";
+    dock.style.marginTop = "0.45rem";
+    dock.style.pointerEvents = "auto";
+    dock.style.alignItems = "center";
+
+    const makeButton = (label) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = label;
+      btn.style.padding = "0.35rem 0.75rem";
+      btn.style.borderRadius = "999px";
+      btn.style.border = "1px solid rgba(120, 200, 255, 0.35)";
+      btn.style.background = "rgba(16, 26, 40, 0.85)";
+      btn.style.color = "#e9f6ff";
+      btn.style.fontSize = "0.72rem";
+      btn.style.letterSpacing = "0.04em";
+      btn.style.cursor = "pointer";
+      btn.style.transition = "background-color 0.18s ease, border-color 0.18s ease";
+      btn.addEventListener("mouseenter", () => {
+        btn.style.background = "rgba(26, 46, 70, 0.9)";
+        btn.style.borderColor = "rgba(160, 220, 255, 0.55)";
+      });
+      btn.addEventListener("mouseleave", () => {
+        btn.style.background = "rgba(16, 26, 40, 0.85)";
+        btn.style.borderColor = "rgba(120, 200, 255, 0.35)";
+      });
+      return btn;
+    };
+
+    const btnHelp = makeButton("Help");
+    btnHelp.title = "Open the hunter field manual.";
+    btnHelp.addEventListener("click", () => openHelpOverlay());
+    dock.appendChild(btnHelp);
+
+    const btnLog = makeButton("Log");
+    btnLog.title = "View the latest feature log and mechanics summary.";
+    btnLog.addEventListener("click", () => openLogOverlay());
+    dock.appendChild(btnLog);
+
+    controlDockCache = { root: dock, btnHelp, btnLog };
+    return controlDockCache;
+  }
+
+  function createOverlayModal(id, titleText) {
+    const root = ensureHudRoot();
+    if (!root) return null;
+    const overlay = document.createElement("div");
+    overlay.id = id;
+    overlay.style.position = "absolute";
+    overlay.style.inset = "0";
+    overlay.style.display = "flex";
+    overlay.style.alignItems = "center";
+    overlay.style.justifyContent = "center";
+    overlay.style.background = "rgba(6, 10, 18, 0.78)";
+    overlay.style.backdropFilter = "blur(8px)";
+    overlay.style.zIndex = "18";
+    overlay.style.pointerEvents = "auto";
+
+    const panel = document.createElement("div");
+    panel.style.background = "rgba(12, 20, 32, 0.96)";
+    panel.style.border = "1px solid rgba(90, 150, 220, 0.32)";
+    panel.style.borderRadius = "16px";
+    panel.style.padding = "1.4rem";
+    panel.style.width = "min(720px, 92vw)";
+    panel.style.maxHeight = "82vh";
+    panel.style.display = "flex";
+    panel.style.flexDirection = "column";
+    panel.style.gap = "0.8rem";
+    panel.style.boxShadow = "0 18px 38px rgba(0,0,0,0.45)";
+
+    const header = document.createElement("div");
+    header.style.display = "flex";
+    header.style.justifyContent = "space-between";
+    header.style.alignItems = "center";
+    const title = document.createElement("h2");
+    title.textContent = titleText;
+    title.style.margin = "0";
+    title.style.fontSize = "1.4rem";
+    const btnClose = document.createElement("button");
+    btnClose.type = "button";
+    btnClose.textContent = "Close";
+    btnClose.style.padding = "0.35rem 0.8rem";
+    btnClose.style.border = "1px solid rgba(120, 200, 255, 0.35)";
+    btnClose.style.borderRadius = "8px";
+    btnClose.style.background = "rgba(24, 38, 58, 0.9)";
+    btnClose.style.color = "#e8f6ff";
+    btnClose.style.cursor = "pointer";
+    header.appendChild(title);
+    header.appendChild(btnClose);
+
+    const body = document.createElement("div");
+    body.style.flex = "1";
+    body.style.overflowY = "auto";
+    body.style.paddingRight = "0.4rem";
+    body.style.display = "flex";
+    body.style.flexDirection = "column";
+    body.style.gap = "0.8rem";
+
+    panel.appendChild(header);
+    panel.appendChild(body);
+    overlay.appendChild(panel);
+    root.appendChild(overlay);
+
+    const modal = { root: overlay, panel, body, close: () => overlay.remove() };
+
+    btnClose.addEventListener("click", () => modal.close());
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) modal.close();
+    });
+
+    return modal;
+  }
+
+  function appendSection(container, titleText, description, bullets = []) {
+    const section = document.createElement("section");
+    section.style.display = "flex";
+    section.style.flexDirection = "column";
+    section.style.gap = "0.45rem";
+
+    if (titleText) {
+      const title = document.createElement("h3");
+      title.textContent = titleText;
+      title.style.margin = "0";
+      title.style.fontSize = "1rem";
+      title.style.color = "#d5ebff";
+      section.appendChild(title);
+    }
+
+    if (description) {
+      const desc = document.createElement("p");
+      desc.style.margin = "0";
+      desc.style.opacity = "0.82";
+      desc.style.fontSize = "0.85rem";
+      if (Array.isArray(description)) {
+        desc.innerHTML = description.join(" ");
+      } else {
+        desc.innerHTML = description;
+      }
+      section.appendChild(desc);
+    }
+
+    if (Array.isArray(bullets) && bullets.length) {
+      const list = document.createElement("ul");
+      list.style.margin = "0";
+      list.style.paddingLeft = "1.1rem";
+      list.style.display = "flex";
+      list.style.flexDirection = "column";
+      list.style.gap = "0.35rem";
+      list.style.fontSize = "0.85rem";
+      bullets.forEach(entry => {
+        const item = document.createElement("li");
+        item.innerHTML = entry;
+        list.appendChild(item);
+      });
+      section.appendChild(list);
+    }
+
+    container.appendChild(section);
+  }
+
+  function buildHelpContent(container) {
+    appendSection(container, "Movement & Combat", "Core navigation and strikes:", [
+      "<b>WASD</b> to move. Tap <b>Space</b> to jump, hold Space to charge a high leap.",
+      "<b>Left Mouse</b> swings your weapon. <b>Q</b> fires a Nen blast, <b>E</b> uses your Nen ability, and <b>Shift</b> dashes.",
+      "Hold <b>C</b> while channeling Ren to attempt a Ko strike — huge damage but Nen intensive."
+    ]);
+
+    appendSection(container, "Nen Disciplines", "Toggle Nen techniques to match the fight:", [
+      "<b>T – Ten</b>: Maintains your aura guard. Leave it on to prevent chip damage and ready other styles.",
+      "<b>Z – Zetsu</b>: Suppresses all other disciplines for stealth and Nen recovery.",
+      "<b>Hold R – Ren</b>: Flood your aura for raw power. Pair with <b>C</b> to line up Ko finishers.",
+      "<b>K – Ken</b>: Condense Ren for burst defense. Some vows may block it; check the vow menu if it won’t toggle.",
+      "<b>G – Gyo</b>: Highlight weak points and hidden traps. <b>B – Shu</b> reinforces equipment for piercing hits.",
+      "<b>V – En</b>: Expand to scout, collapse to conserve Nen. Use the QA slider to preview different radii."
+    ]);
+
+    appendSection(container, "Menus & Progression", "Keep long-term growth straight:", [
+      "Press <b>L</b> to open the level allocation board and raise stats.",
+      "Press <b>O</b> to bind or adjust vows. The Training button on the HUD launches skill drills to raise caps.",
+      "Use the Help and Log buttons under the HUD feed for quick refreshers on controls and mechanics.",
+      "Game state — inventory, vows, Nen pools, and region progress — auto-saves after major events. Resume picks up exactly where you left off."
+    ]);
+
+    appendSection(container, "QA & Dev Shortcuts", "Tools for rapid testing:", [
+      "Press <b>Ctrl + Shift + D</b> to open the QA panel. Flip individual Nen modes, refill resources, or spawn target dummies for damage checks.",
+      "Dummy spawns stay passive and ignore aggro — great for verifying hit reactions.",
+      "Need a clean field? Use the refill buttons to top off HP or Nen instantly, or drag the En slider to stress-test vision ranges."
+    ]);
+  }
+
+  function buildLogContent(container) {
+    appendSection(container, "Core Loop", null, [
+      "Clear waves, then touch the glowing exit cube to advance.",
+      "Region cadence, wave counters, and active portals resume from the exact beat you saved on."
+    ]);
+
+    appendSection(container, "Nen Systems", null, [
+      "All disciplines (Ten, Zetsu, Ren, Ken, Gyo, Shu, En) drain, recover, and show feedback on the HUD.",
+      "Nen pools persist between sessions — leave mid-wave and resume with identical aura states.",
+      "Ko strikes scale with vows and Focus; vulnerability timers carry across saves."
+    ]);
+
+    appendSection(container, "Vows & Training", null, [
+      "Bind lethal or restrictive vows with <b>O</b>. Violations and elite rotations resume correctly after reload.",
+      "Training drills (Ren hold, Gyo numbers, Ryu drill, Shu rock test) raise permanent Nen ceilings, all serialized with your profile."
+    ]);
+
+    appendSection(container, "Regions & Spawns", null, [
+      "Active region, cadence rolls, and vow wave counters are saved so biome difficulty never desyncs.",
+      "QA dummy spawns respect the current arena and stay put for combat comparisons."
+    ]);
+
+    appendSection(container, "Inventory & Equipment", null, [
+      "Hotbar layout, durability, and active weapons persist exactly, preventing duplication or loss.",
+      "Nen ammunition, consumable stacks, and durability damage are captured in the runtime snapshot."
+    ]);
+
+    appendSection(container, "QA Toolkit", null, [
+      "Ctrl+Shift+D opens the dev panel: instant aura toggles, En radius tuning, resource refills, and dummy spawning.",
+      "Panel visibility, toggle states, and hotkey bindings restore on load so QA setups stick between sessions."
+    ]);
+
+    appendSection(container, "Autosave", null, [
+      "Progress, vows, Nen state, region data, and inventory snapshots auto-save after key actions.",
+      "Leaving or refreshing the page reloads exactly into the same combat state when you return via Resume."
+    ]);
+  }
+
+
+  function openHelpOverlay() {
+    if (helpOverlayCache?.close) {
+      helpOverlayCache.close();
+    }
+    const modal = createOverlayModal("hud-help-overlay", "Hunter Field Manual");
+    if (!modal) return null;
+    buildHelpContent(modal.body);
+    const dispose = modal.close;
+    const close = () => {
+      dispose();
+      helpOverlayCache = null;
+    };
+    modal.close = close;
+    helpOverlayCache = modal;
+    return close;
+  }
+
+  function closeHelpOverlay() {
+    if (helpOverlayCache?.close) helpOverlayCache.close();
+    helpOverlayCache = null;
+  }
+
+  function openLogOverlay() {
+    if (logOverlayCache?.close) {
+      logOverlayCache.close();
+    }
+    const modal = createOverlayModal("hud-log-overlay", "Update Log & Mechanics");
+    if (!modal) return null;
+    buildLogContent(modal.body);
+    const dispose = modal.close;
+    const close = () => {
+      dispose();
+      logOverlayCache = null;
+    };
+    modal.close = close;
+    logOverlayCache = modal;
+    return close;
+  }
+
+  function closeLogOverlay() {
+    if (logOverlayCache?.close) logOverlayCache.close();
+    logOverlayCache = null;
+  }
+
+  const DEV_TOGGLES = [
+    { key: "ten", label: "Ten" },
+    { key: "zetsu", label: "Zetsu" },
+    { key: "ren", label: "Ren" },
+    { key: "ken", label: "Ken" },
+    { key: "gyo", label: "Gyo" },
+    { key: "shu", label: "Shu" },
+    { key: "en", label: "En" }
+  ];
+
+  function ensureDevPanel() {
+    const root = ensureHudRoot();
+    if (!root) return null;
+    if (devPanelCache?.root?.isConnected && root.contains(devPanelCache.root)) {
+      return devPanelCache;
+    }
+    const panel = document.createElement("div");
+    panel.id = "hud-dev-panel";
+    panel.style.position = "absolute";
+    panel.style.top = "1.2rem";
+    panel.style.right = "1.2rem";
+    panel.style.width = "240px";
+    panel.style.display = "none";
+    panel.style.flexDirection = "column";
+    panel.style.gap = "0.6rem";
+    panel.style.padding = "0.9rem";
+    panel.style.background = "rgba(12, 22, 36, 0.94)";
+    panel.style.border = "1px solid rgba(120, 200, 255, 0.28)";
+    panel.style.borderRadius = "12px";
+    panel.style.boxShadow = "0 14px 28px rgba(0,0,0,0.38)";
+    panel.style.pointerEvents = "auto";
+
+    const header = document.createElement("div");
+    header.style.display = "flex";
+    header.style.justifyContent = "space-between";
+    header.style.alignItems = "center";
+    const title = document.createElement("strong");
+    title.textContent = "QA Tools";
+    title.style.letterSpacing = "0.06em";
+    title.style.fontSize = "0.85rem";
+    const btnHide = document.createElement("button");
+    btnHide.type = "button";
+    btnHide.textContent = "×";
+    btnHide.style.background = "transparent";
+    btnHide.style.border = "none";
+    btnHide.style.color = "#e8f6ff";
+    btnHide.style.fontSize = "1.1rem";
+    btnHide.style.cursor = "pointer";
+    btnHide.title = "Hide panel (Ctrl+Shift+D toggles)";
+    btnHide.addEventListener("click", () => setDevPanelVisible(false));
+    header.appendChild(title);
+    header.appendChild(btnHide);
+    panel.appendChild(header);
+
+    const toggleList = document.createElement("div");
+    toggleList.style.display = "flex";
+    toggleList.style.flexDirection = "column";
+    toggleList.style.gap = "0.35rem";
+
+    const toggleInputs = new Map();
+    DEV_TOGGLES.forEach(spec => {
+      const row = document.createElement("label");
+      row.style.display = "flex";
+      row.style.alignItems = "center";
+      row.style.justifyContent = "space-between";
+      row.style.fontSize = "0.82rem";
+      row.style.gap = "0.4rem";
+      const span = document.createElement("span");
+      span.textContent = spec.label;
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.addEventListener("change", () => devPanelHandlers.toggleAura?.(spec.key, input.checked));
+      row.appendChild(span);
+      row.appendChild(input);
+      toggleList.appendChild(row);
+      toggleInputs.set(spec.key, input);
+    });
+
+    panel.appendChild(toggleList);
+
+    const enControl = document.createElement("div");
+    enControl.style.display = "flex";
+    enControl.style.flexDirection = "column";
+    enControl.style.gap = "0.3rem";
+    enControl.style.marginTop = "0.2rem";
+    const enLabel = document.createElement("span");
+    enLabel.textContent = "En Radius";
+    enLabel.style.fontSize = "0.78rem";
+    enLabel.style.opacity = "0.8";
+    const enSliderWrap = document.createElement("div");
+    enSliderWrap.style.display = "flex";
+    enSliderWrap.style.alignItems = "center";
+    enSliderWrap.style.gap = "0.4rem";
+    const enSlider = document.createElement("input");
+    enSlider.type = "range";
+    enSlider.min = "6";
+    enSlider.max = "18";
+    enSlider.step = "0.5";
+    enSlider.value = "6";
+    enSlider.style.flex = "1";
+    const enValue = document.createElement("span");
+    enValue.style.minWidth = "3ch";
+    enValue.style.fontSize = "0.78rem";
+    enValue.style.textAlign = "right";
+    enSlider.addEventListener("input", () => {
+      enValue.textContent = `${Number.parseFloat(enSlider.value).toFixed(1)}m`;
+      devPanelHandlers.setEnRadius?.(Number.parseFloat(enSlider.value));
+    });
+    enSliderWrap.appendChild(enSlider);
+    enSliderWrap.appendChild(enValue);
+    enControl.appendChild(enLabel);
+    enControl.appendChild(enSliderWrap);
+    panel.appendChild(enControl);
+
+    const actions = document.createElement("div");
+    actions.style.display = "grid";
+    actions.style.gridTemplateColumns = "repeat(2, minmax(0, 1fr))";
+    actions.style.gap = "0.35rem";
+
+    const makeActionButton = (label, handler) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = label;
+      btn.style.padding = "0.35rem 0.4rem";
+      btn.style.fontSize = "0.72rem";
+      btn.style.borderRadius = "8px";
+      btn.style.border = "1px solid rgba(120, 200, 255, 0.28)";
+      btn.style.background = "rgba(20, 34, 50, 0.86)";
+      btn.style.color = "#e4f4ff";
+      btn.style.cursor = "pointer";
+      btn.addEventListener("click", handler);
+      return btn;
+    };
+
+    actions.appendChild(makeActionButton("Refill HP+Nen", () => devPanelHandlers.refill?.("both")));
+    actions.appendChild(makeActionButton("Refill Nen", () => devPanelHandlers.refill?.("nen")));
+    actions.appendChild(makeActionButton("Spawn Dummy", () => devPanelHandlers.spawnDummy?.(1)));
+    actions.appendChild(makeActionButton("Spawn Trio", () => devPanelHandlers.spawnDummy?.(3)));
+    panel.appendChild(actions);
+
+    root.appendChild(panel);
+    devPanelCache = { root: panel, toggles: toggleInputs, enSlider, enValue, btnHide };
+    return devPanelCache;
+  }
+
+  function setDevPanelVisible(visible) {
+    const cache = ensureDevPanel();
+    if (!cache) return false;
+    devPanelVisible = !!visible;
+    cache.root.style.display = devPanelVisible ? "flex" : "none";
+    return devPanelVisible;
+  }
+
+  function toggleDevPanel() {
+    setDevPanelVisible(!devPanelVisible);
+    return devPanelVisible;
+  }
+
+  function configureDevPanel(handlers = {}) {
+    devPanelHandlers = { ...devPanelHandlers, ...handlers };
+    ensureDevPanel();
+  }
+
+  function updateDevPanelState(aura = {}) {
+    const cache = devPanelCache || ensureDevPanel();
+    if (!cache) return;
+    DEV_TOGGLES.forEach(spec => {
+      const input = cache.toggles.get(spec.key);
+      if (!input) return;
+      if (spec.key === "en") {
+        input.checked = !!aura?.en?.on;
+      } else {
+        input.checked = !!aura?.[spec.key];
+      }
+    });
+    if (cache.enSlider) {
+      const radius = Number.isFinite(aura?.en?.r) ? aura.en.r : 6;
+      cache.enSlider.value = radius;
+      if (cache.enValue) cache.enValue.textContent = `${radius.toFixed(1)}m`;
+    }
   }
 
   function ensureNenRadial() {
@@ -2094,14 +2576,28 @@
     closeVowMenu,
     openTrainingMenu,
     closeTrainingMenu,
-    bindTrainingButton
+    bindTrainingButton,
+    ensureControlDock,
+    openHelp: openHelpOverlay,
+    closeHelp: closeHelpOverlay,
+    openLog: openLogOverlay,
+    closeLog: closeLogOverlay,
+    configureDevPanel,
+    updateDevPanelState,
+    toggleDevPanel,
+    setDevPanelVisible
   };
   window.HUD = HUD;
+  ensureControlDock();
   if (typeof H.subscribeAura === "function") {
     try {
       H.subscribeAura(handleGyoState);
+      H.subscribeAura(updateDevPanelState);
       const initialAura = H.getAuraState?.();
-      if (initialAura) handleGyoState(initialAura);
+      if (initialAura) {
+        handleGyoState(initialAura);
+        updateDevPanelState(initialAura);
+      }
     } catch (err) {
       console.warn("[HUD] Failed to subscribe to aura state", err);
     }
