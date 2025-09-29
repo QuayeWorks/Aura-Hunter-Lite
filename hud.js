@@ -8,6 +8,11 @@
   let hotbarCache = null;
   let nenRadialCache = null;
   let vowMenuCache = null;
+  let gyoIntelCache = null;
+  let gyoIntelLoop = null;
+  let gyoIntelLoopType = null;
+  let gyoIntelKey = "";
+  let gyoIntelActive = false;
 
   function formatItemLabel(item) {
     if (!item) return "";
@@ -525,6 +530,216 @@
     return vowMenuCache;
   }
 
+  function ensureGyoIntelStyles() {
+    if (document.getElementById("hud-gyo-intel-style")) return;
+    const head = ensureHead();
+    if (!head) return;
+    const style = document.createElement("style");
+    style.id = "hud-gyo-intel-style";
+    style.textContent = `
+      #hud-gyo-intel {
+        position: absolute;
+        right: 1.2rem;
+        top: 7.5rem;
+        background: rgba(20,32,48,0.35);
+        border: 1px solid rgba(120,200,255,0.25);
+        border-radius: 8px;
+        padding: 0.45rem 0.55rem;
+        max-width: 220px;
+        pointer-events: none;
+        color: #d9ecff;
+        font-size: 0.68rem;
+        letter-spacing: 0.018em;
+        display: none;
+        flex-direction: column;
+        gap: 0.3rem;
+        box-shadow: 0 8px 22px rgba(10,20,34,0.35);
+        backdrop-filter: blur(2px);
+        opacity: 0;
+        transition: opacity 0.2s ease;
+        z-index: 8;
+      }
+      #hud-gyo-intel.active {
+        display: flex;
+        opacity: 1;
+      }
+      #hud-gyo-intel .hud-gyo-header {
+        text-transform: uppercase;
+        font-weight: 600;
+        font-size: 0.64rem;
+        opacity: 0.78;
+      }
+      #hud-gyo-intel ul {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 0.25rem;
+      }
+      #hud-gyo-intel li {
+        display: flex;
+        justify-content: space-between;
+        gap: 0.45rem;
+        background: rgba(28,46,72,0.5);
+        border-radius: 5px;
+        padding: 0.25rem 0.4rem;
+        font-size: 0.66rem;
+      }
+      #hud-gyo-intel li span[data-role="tag"] {
+        font-weight: 600;
+        text-transform: uppercase;
+        color: #74d4ff;
+      }
+      #hud-gyo-intel li span[data-role="detail"] {
+        opacity: 0.8;
+      }
+    `;
+    head.appendChild(style);
+  }
+
+  function ensureGyoIntel() {
+    if (gyoIntelCache?.wrap?.isConnected) return gyoIntelCache;
+    const root = ensureHudRoot();
+    if (!root) return null;
+    ensureGyoIntelStyles();
+    let wrap = document.getElementById("hud-gyo-intel");
+    if (!wrap) {
+      wrap = document.createElement("div");
+      wrap.id = "hud-gyo-intel";
+      const header = document.createElement("div");
+      header.className = "hud-gyo-header";
+      header.textContent = "Gyo read";
+      wrap.appendChild(header);
+      const list = document.createElement("ul");
+      wrap.appendChild(list);
+      root.appendChild(wrap);
+      gyoIntelCache = { wrap, list, header };
+    } else {
+      let list = wrap.querySelector("ul");
+      if (!list) {
+        list = document.createElement("ul");
+        wrap.appendChild(list);
+      }
+      const header = wrap.querySelector(".hud-gyo-header") || (() => {
+        const h = document.createElement("div");
+        h.className = "hud-gyo-header";
+        h.textContent = "Gyo read";
+        wrap.insertBefore(h, wrap.firstChild);
+        return h;
+      })();
+      gyoIntelCache = { wrap, list, header };
+    }
+    return gyoIntelCache;
+  }
+
+  function describeIntel(entry) {
+    if (!entry) return { tag: "", detail: "" };
+    const archetype = entry.archetype || "";
+    const type = entry.type || "";
+    if (type === "telegraph") {
+      const limb = (entry.limb || "torso").toUpperCase();
+      return { tag: "Bruiser", detail: `Ko → ${limb}` };
+    }
+    if (type === "zetsu") {
+      const state = entry.urgency && entry.urgency > 0.5 ? "Hidden" : "Revealed";
+      return { tag: "Assassin", detail: state };
+    }
+    if (type === "orb") {
+      const status = entry.urgency > 0.6 ? "Orbs primed" : "Orbs muted";
+      return { tag: archetype === "caster" ? "Emitter" : "Caster", detail: status };
+    }
+    return { tag: archetype || "Aura", detail: "Flow shift" };
+  }
+
+  function renderGyoIntel() {
+    if (!gyoIntelActive) {
+      gyoIntelLoop = null;
+      return;
+    }
+    const cache = ensureGyoIntel();
+    if (!cache) {
+      gyoIntelLoop = null;
+      return;
+    }
+    const intel = window.Enemies?.getAuraIntel?.() || [];
+    const limited = intel.slice(0, 3).map(entry => ({
+      archetype: entry.archetype || "",
+      type: entry.type || "",
+      limb: entry.limb || "",
+      urgency: Number(entry.urgency) || 0
+    }));
+    const fingerprint = JSON.stringify(limited.map(e => `${e.archetype}:${e.type}:${e.limb}:${Math.round(e.urgency * 100)}`));
+    if (fingerprint !== gyoIntelKey) {
+      gyoIntelKey = fingerprint;
+      cache.list.innerHTML = "";
+      if (!limited.length) {
+        const li = document.createElement("li");
+        li.textContent = "Aura steady.";
+        cache.list.appendChild(li);
+      } else {
+        for (const entry of limited) {
+          const li = document.createElement("li");
+          const tag = document.createElement("span");
+          tag.dataset.role = "tag";
+          const detail = document.createElement("span");
+          detail.dataset.role = "detail";
+          const desc = describeIntel(entry);
+          tag.textContent = desc.tag;
+          detail.textContent = desc.detail;
+          li.appendChild(tag);
+          li.appendChild(detail);
+          cache.list.appendChild(li);
+        }
+      }
+    }
+    if (typeof requestAnimationFrame === "function") {
+      gyoIntelLoopType = "raf";
+      gyoIntelLoop = requestAnimationFrame(renderGyoIntel);
+    } else {
+      gyoIntelLoopType = "timeout";
+      gyoIntelLoop = setTimeout(renderGyoIntel, 160);
+    }
+  }
+
+  function stopGyoIntelLoop() {
+    gyoIntelActive = false;
+    if (gyoIntelLoop) {
+      if (gyoIntelLoopType === "raf" && typeof cancelAnimationFrame === "function") {
+        cancelAnimationFrame(gyoIntelLoop);
+      } else if (gyoIntelLoopType === "timeout") {
+        clearTimeout(gyoIntelLoop);
+      }
+    }
+    gyoIntelLoop = null;
+    gyoIntelLoopType = null;
+    gyoIntelKey = "";
+    if (gyoIntelCache?.wrap) {
+      gyoIntelCache.wrap.classList.remove("active");
+      gyoIntelCache.wrap.style.display = "none";
+    }
+  }
+
+  function startGyoIntelLoop() {
+    const cache = ensureGyoIntel();
+    if (!cache) return;
+    gyoIntelActive = true;
+    cache.wrap.style.display = "flex";
+    cache.wrap.classList.add("active");
+    gyoIntelKey = "";
+    if (!gyoIntelLoop) {
+      renderGyoIntel();
+    }
+  }
+
+  function handleGyoState(aura = {}) {
+    if (aura.gyo) {
+      startGyoIntelLoop();
+    } else {
+      stopGyoIntelLoop();
+    }
+  }
+
   function renderVowTotals(summaryList, totals, entries) {
     if (!summaryList) return;
     summaryList.innerHTML = "";
@@ -757,4 +972,13 @@
     closeVowMenu
   };
   window.HUD = HUD;
+  if (typeof H.subscribeAura === "function") {
+    try {
+      H.subscribeAura(handleGyoState);
+      const initialAura = H.getAuraState?.();
+      if (initialAura) handleGyoState(initialAura);
+    } catch (err) {
+      console.warn("[HUD] Failed to subscribe to aura state", err);
+    }
+  }
 })();

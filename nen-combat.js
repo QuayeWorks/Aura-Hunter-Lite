@@ -14,6 +14,133 @@ function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 
+function softClamp01(value) {
+  if (!Number.isFinite(value)) return 0;
+  if (value < 0) return 0;
+  if (value > 1) return 1;
+  return value;
+}
+
+function getFlowShare(state, limb) {
+  if (!state || typeof state.flow !== "object") return 0;
+  const flow = state.flow;
+  switch (limb) {
+    case "arms":
+      return softClamp01((Number(flow.rArm) || 0) + (Number(flow.lArm) || 0)) * 0.5;
+    case "legs":
+      return softClamp01((Number(flow.rLeg) || 0) + (Number(flow.lLeg) || 0)) * 0.5;
+    default:
+      return softClamp01(Number(flow[limb]) || 0);
+  }
+}
+
+function tryGameMessage(text, cooldown = 1200) {
+  if (!text) return;
+  const H = getHXH();
+  const state = H.state || {};
+  const now = nowMs();
+  const bucket = state.__nenMsgBucket || (state.__nenMsgBucket = {});
+  if (bucket[text] && now - bucket[text] < cooldown) return;
+  bucket[text] = now;
+  if (typeof H.msg === "function") {
+    try { H.msg(text); } catch (err) { console.warn("[HXH] msg failed", err); }
+  }
+}
+
+function applyBruiserStrike(enemy, damage, playerState) {
+  const tele = enemy?.__nenTelegraph;
+  if (!tele) return damage;
+  const now = nowMs();
+  let next = damage;
+  if (tele.active) {
+    const limb = tele.limb || "torso";
+    const share = getFlowShare(playerState, limb);
+    const aura = playerState?.aura || {};
+    const gyoBonus = aura.gyo ? 0.9 : 1;
+    let guardMul = 1.0;
+    if (share >= 0.23) {
+      guardMul = 0.55 * gyoBonus;
+      tryGameMessage(`Ryu guard catches the Bruiser's Ko toward your ${limb.toLowerCase()}.`, 2200);
+    } else if (share >= 0.17) {
+      guardMul = 0.74 * gyoBonus;
+    } else if (share >= 0.12) {
+      guardMul = 0.9 * gyoBonus;
+    } else {
+      guardMul = 1.35;
+      if (!aura.gyo) {
+        tryGameMessage("Bruiser slams a Ko into your weak point — rebalance your Ryu!", 2600);
+      }
+    }
+    if (aura.ken) {
+      guardMul *= 0.82;
+    }
+    const strikeMul = 1.6;
+    next = damage * strikeMul * guardMul;
+    tele.active = false;
+    tele.lastStrikeAt = now;
+    tele.nextAt = now + (tele.cooldown || 2600);
+    tele.lastLimb = limb;
+    if (enemy.__nenMarkers) {
+      const marker = enemy.__nenMarkers.get?.(limb);
+      if (marker?.mesh) marker.mesh.isVisible = false;
+    }
+  } else {
+    next = damage * 1.15;
+  }
+  return next;
+}
+
+function applyAssassinStrike(enemy, damage, playerState) {
+  const cloak = enemy?.__nenZetsu;
+  if (!cloak) {
+    const aura = playerState?.aura || {};
+    return aura.gyo ? damage * 0.92 : damage;
+  }
+  const aura = playerState?.aura || {};
+  const now = nowMs();
+  let next = damage;
+  if (cloak.active) {
+    if (aura.gyo) {
+      next *= 0.58;
+      cloak.countered = true;
+      tryGameMessage("Gyo exposes the assassin before the strike lands!", 2400);
+    } else {
+      next *= 1.85;
+      tryGameMessage("Backstab! Activate Gyo to read hidden aura.", 2600);
+    }
+    cloak.active = false;
+    cloak.spotted = aura.gyo;
+    cloak.nextAt = now + 2400;
+    cloak.breakAt = now + 1200;
+  } else if (aura.en?.on) {
+    next *= 0.9;
+  } else if (!aura.gyo) {
+    next *= 1.05;
+  }
+  return next;
+}
+
+function applyCasterStrike(enemy, damage, playerState) {
+  const store = enemy?.__nenOrbs;
+  if (!store) return damage * 1.05;
+  const aura = playerState?.aura || {};
+  let multiplier = 1.25;
+  if (aura.in && aura.en?.on) {
+    multiplier = 0.58;
+    if (Array.isArray(store.orbs)) {
+      for (const orb of store.orbs) {
+        if (orb) orb.dormant = true;
+      }
+    }
+    tryGameMessage("In + En disturb the emitter's orbs — they sputter out.", 2800);
+  } else if (aura.en?.on) {
+    multiplier = 0.78;
+  } else if (aura.in) {
+    multiplier = 0.7;
+  }
+  return damage * multiplier;
+}
+
 function nowMs() {
   if (typeof performance === "object" && typeof performance.now === "function") {
     return performance.now();
@@ -150,6 +277,26 @@ export function applyOutgoingDamage(src, limb, baseDamage) {
       if (vowMeta) vowMeta.wasKo = vowMeta.wasKo ?? isKoStrike;
       wasKoFlag = isKoStrike;
     }
+  } else if (src && src !== playerState) {
+    const archetype = src.nenArchetype || (typeof window.Enemies?.getArchetype === "function" ? window.Enemies.getArchetype(src) : null);
+    switch (archetype) {
+      case "bruiser":
+        working = applyBruiserStrike(src, working, playerState);
+        break;
+      case "assassin":
+        working = applyAssassinStrike(src, working, playerState);
+        break;
+      case "caster":
+        working = applyCasterStrike(src, working, playerState);
+        break;
+      default: {
+        const aura = playerState?.aura || {};
+        if (aura.gyo && src?.__nenZetsu?.active) {
+          working *= 0.94;
+        }
+      }
+    }
+    result = working;
   }
   try {
     const mergedWasKo = vowMeta?.wasKo ?? wasKoFlag;
@@ -180,6 +327,26 @@ export function applyIncomingDamage(dst, limb, baseDamage) {
     if (vulnerabilityT > 0) {
       const vulnMult = Number.isFinite(dst.koVulnerabilityMultiplier) ? dst.koVulnerabilityMultiplier : 1.5;
       result *= vulnMult;
+    }
+  }
+  if (dst && dst !== playerState) {
+    const archetype = dst.nenArchetype || (typeof window.Enemies?.getArchetype === "function" ? window.Enemies.getArchetype(dst) : null);
+    const aura = playerState?.aura || {};
+    if (archetype === "assassin" && aura.gyo && dst.__nenZetsu?.active) {
+      result *= 1.25;
+      dst.__nenZetsu.active = false;
+      dst.__nenZetsu.countered = true;
+    }
+    if (archetype === "caster") {
+      if (aura.in) result *= 1.15;
+      if (aura.en?.on) result *= 1.08;
+    }
+    if (archetype === "bruiser" && dst.__nenTelegraph?.active) {
+      const limbKey = dst.__nenTelegraph.limb || "torso";
+      const share = getFlowShare(playerState, limbKey);
+      if (share >= 0.2) {
+        result *= 1.12;
+      }
     }
   }
   const context = H.__lastOutgoingContext;
