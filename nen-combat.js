@@ -109,12 +109,25 @@ export function applyOutgoingDamage(src, limb, baseDamage) {
   const H = getHXH();
   let working = baseDamage;
   let result = working;
+  let vowMeta = null;
   const playerState = H.state;
   if (src && playerState && src === playerState) {
     working = applyShuDamage(playerState, limb, working);
     working = applyBoundSigilBuff(playerState, working);
+    if (typeof H.applyVowToOutgoing === "function") {
+      try {
+        const meta = H.applyVowToOutgoing({ limb, baseDamage, damage: working, strike: playerState.koStrike });
+        if (meta && Number.isFinite(meta.damage)) {
+          working = meta.damage;
+        }
+        vowMeta = meta || null;
+      } catch (err) {
+        console.warn("[HXH] Vow outgoing hook failed", err);
+      }
+    }
     result = working;
     const strike = playerState.koStrike;
+    let wasKoFlag = false;
     if (strike) {
       const advanced = typeof window !== "undefined" ? window.NenAdvanced : null;
       if (advanced && typeof advanced.onKoStrike === "function") {
@@ -125,7 +138,8 @@ export function applyOutgoingDamage(src, limb, baseDamage) {
         }
       }
       playerState.koStrike = null;
-      if (!strike.limb || strike.limb === limb) {
+      const isKoStrike = !strike.limb || strike.limb === limb;
+      if (isKoStrike) {
         const mult = Number.isFinite(strike.multiplier) ? strike.multiplier : 1;
         let final = working * mult;
         if (playerState.aura && playerState.aura.gyo) {
@@ -133,10 +147,14 @@ export function applyOutgoingDamage(src, limb, baseDamage) {
         }
         result = final;
       }
+      if (vowMeta) vowMeta.wasKo = vowMeta.wasKo ?? isKoStrike;
+      wasKoFlag = isKoStrike;
     }
   }
   try {
-    H.__lastOutgoingContext = { src, limb, base: baseDamage, final: result };
+    const mergedWasKo = vowMeta?.wasKo ?? wasKoFlag;
+    const isNen = vowMeta?.isNen ?? (typeof limb === "string" && limb.toLowerCase().includes("nen"));
+    H.__lastOutgoingContext = { src, limb, base: baseDamage, final: result, wasKo: mergedWasKo, isNen };
   } catch (err) {
     console.warn("[HXH] Failed to store outgoing context", err);
   }
@@ -166,6 +184,16 @@ export function applyIncomingDamage(dst, limb, baseDamage) {
   }
   const context = H.__lastOutgoingContext;
   if (context && context.src === playerState && dst && dst !== playerState) {
+    if (typeof H.applyVowToIncoming === "function") {
+      try {
+        const vowRes = H.applyVowToIncoming({ target: dst, damage: result, context });
+        if (vowRes && Number.isFinite(vowRes.damage)) {
+          result = vowRes.damage;
+        }
+      } catch (err) {
+        console.warn("[HXH] Vow incoming hook failed", err);
+      }
+    }
     if (getNenType(playerState) === "Manipulator") {
       try {
         trackManipulatorTag(dst, context);
