@@ -1484,14 +1484,18 @@
    }
 
    function wipeSave() {
-   try {
-      localStorage.removeItem(SAVE_KEYS.progress);
-      localStorage.removeItem(SAVE_KEYS.character);
-      localStorage.removeItem(SAVE_KEYS.runtime);
-      localStorage.removeItem(VOW_STORAGE_KEY);
-      lastRuntimeSnapshot = null;
-   } catch {}
-}
+      try {
+         localStorage.removeItem(SAVE_KEYS.progress);
+         localStorage.removeItem(SAVE_KEYS.character);
+         localStorage.removeItem(SAVE_KEYS.runtime);
+         localStorage.removeItem(VOW_STORAGE_KEY);
+         lastRuntimeSnapshot = null;
+      } catch {}
+      if (runtimeSaveTimer) {
+         clearTimeout(runtimeSaveTimer);
+         runtimeSaveTimer = null;
+      }
+   }
 
    function loadRuntimeState() {
       try {
