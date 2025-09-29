@@ -439,6 +439,8 @@
       trainingButtonUnsub = null;
    let lastTime = 0,
       paused = false;
+   let getRuntimeState = () => null;
+   let pendingInventorySnapshot = null;
    let startPos = new BABYLON.Vector3(0, 3, 0);
    const world = {
       size: 100,
@@ -1442,8 +1444,15 @@
    // ===== Save helpers =====
    const SAVE_KEYS = {
       progress: "hxh.progress",
-      character: "hxh.character"
+      character: "hxh.character",
+      runtime: "hxh.runtime"
    };
+
+   const RUNTIME_SAVE_DEBOUNCE = 1200;
+   let runtimeSaveTimer = null;
+   let lastRuntimeSnapshot = null;
+   let devHotkeyHandler = null;
+   let regionChangeUnsub = null;
 
    function hasSave() {
       try {
@@ -1452,10 +1461,13 @@
          return false;
       }
    }
-   	  window.hasSave = hasSave;
-	  window.loadCharacter = loadCharacter;
-	  window.saveCharacter = saveCharacter;
-	  window.wipeSave = wipeSave;
+          window.hasSave = hasSave;
+          window.loadCharacter = loadCharacter;
+          window.saveCharacter = saveCharacter;
+          window.wipeSave = wipeSave;
+          window.loadRuntimeState = loadRuntimeState;
+          window.saveRuntimeState = saveRuntimeState;
+          window.scheduleRuntimeSave = scheduleRuntimeSave;
 
    function loadCharacter() {
       try {
@@ -1475,9 +1487,59 @@
    try {
       localStorage.removeItem(SAVE_KEYS.progress);
       localStorage.removeItem(SAVE_KEYS.character);
+      localStorage.removeItem(SAVE_KEYS.runtime);
       localStorage.removeItem(VOW_STORAGE_KEY);
+      lastRuntimeSnapshot = null;
    } catch {}
 }
+
+   function loadRuntimeState() {
+      try {
+         const raw = localStorage.getItem(SAVE_KEYS.runtime);
+         if (!raw) {
+            lastRuntimeSnapshot = null;
+            return null;
+         }
+         lastRuntimeSnapshot = raw;
+         const parsed = JSON.parse(raw);
+         return parsed && typeof parsed === "object" ? parsed : null;
+      } catch (err) {
+         console.warn("[HXH] Failed to load runtime state", err);
+         lastRuntimeSnapshot = null;
+         return null;
+      }
+   }
+
+   function saveRuntimeState(snapshot = null) {
+      try {
+         const data = snapshot || buildRuntimeSnapshot();
+         if (!data) return null;
+         const serialized = JSON.stringify(data);
+         if (lastRuntimeSnapshot === serialized) return data;
+         localStorage.setItem(SAVE_KEYS.runtime, serialized);
+         lastRuntimeSnapshot = serialized;
+         return data;
+      } catch (err) {
+         console.warn("[HXH] Failed to store runtime state", err);
+         return null;
+      }
+   }
+
+   function scheduleRuntimeSave({ immediate = false } = {}) {
+      if (immediate) {
+         if (runtimeSaveTimer) {
+            clearTimeout(runtimeSaveTimer);
+            runtimeSaveTimer = null;
+         }
+         return saveRuntimeState();
+      }
+      if (runtimeSaveTimer) return runtimeSaveTimer;
+      runtimeSaveTimer = setTimeout(() => {
+         runtimeSaveTimer = null;
+         saveRuntimeState();
+      }, RUNTIME_SAVE_DEBOUNCE);
+      return runtimeSaveTimer;
+   }
 
    // ------- Save / progress (with migration from old 5-stat allocs) -------
    let progress = null;
@@ -1523,6 +1585,7 @@
 
    function saveProgress() {
       localStorage.setItem("hxh.progress", JSON.stringify(progress));
+      scheduleRuntimeSave();
    }
 
    function xpToNext(level) {
@@ -1610,6 +1673,7 @@
       } else {
          notifyAuraChange();
       }
+      scheduleRuntimeSave();
    }
 
    function upgradeTraining(key, { silent = false } = {}) {
@@ -1647,21 +1711,25 @@
    }
 
    function setHudBarWidth(el, pct, key) {
-      if (!el) return;
+      if (!el) return false;
       const clamped = clamp(Number.isFinite(pct) ? pct : 0, 0, 1);
       const last = hudState.bars[key];
       if (last < 0 || Math.abs(last - clamped) > HUD_BAR_EPS) {
          el.style.width = `${clamped * 100}%`;
          hudState.bars[key] = clamped;
+         return true;
       }
+      return false;
    }
 
    function updateHealthHud() {
-      setHudBarWidth(hud.health, state.hp / state.maxHP, "health");
+      if (setHudBarWidth(hud.health, state.hp / state.maxHP, "health")) {
+         scheduleRuntimeSave();
+      }
    }
 
    function updateNenHud() {
-      setHudBarWidth(hud.nenbar, state.nen.cur / state.nen.max, "nen");
+      const changed = setHudBarWidth(hud.nenbar, state.nen.cur / state.nen.max, "nen");
       if (hud.nenbarWrap) {
          const summary = state.nenDrainSummary || "None";
          if (typeof hud.nenbarWrap.attr === "function") {
@@ -1672,6 +1740,7 @@
             hud.nenbarWrap[0].setAttribute("title", `Nen drains: ${summary}`);
          }
       }
+      if (changed) scheduleRuntimeSave();
    }
 
    function updateXpHud(pct) {
@@ -1914,6 +1983,7 @@
             console.error("Aura listener error", err);
          }
       }
+      scheduleRuntimeSave();
    }
 
    function subscribeAura(listener) {
@@ -2477,6 +2547,8 @@
       ultMaxDur: 8,
    };
 
+   getRuntimeState = () => state;
+
    recomputeTrainingEffects({ silent: true });
 
    function teardownInventorySystem() {
@@ -2534,6 +2606,7 @@
             hudApi.flashHotbarBreak(index);
          }
       }
+      scheduleRuntimeSave();
    }
 
    function setupInventorySystem() {
@@ -2569,6 +2642,14 @@
             inventory.equip(index);
          });
       }
+      if (pendingInventorySnapshot) {
+         try {
+            restoreInventoryFromSnapshot(pendingInventorySnapshot);
+         } catch (err) {
+            console.warn("[HXH] Failed to restore inventory snapshot", err);
+         }
+         pendingInventorySnapshot = null;
+      }
       if (!inventory.slots.some(entry => entry)) {
          inventory.add({
             id: "rusty-blade",
@@ -2580,6 +2661,424 @@
             stack: { count: 1, max: 1 }
          }, { hotbarIndex: 0, autoEquip: true });
       }
+   }
+
+   function sanitizeInventorySnapshot(raw) {
+      if (!raw || typeof raw !== "object") return null;
+      const slots = Array.isArray(raw.slots)
+         ? raw.slots.map(item => {
+            if (!item || typeof item !== "object") return null;
+            return {
+               id: item.id,
+               slot: item.slot,
+               type: item.type,
+               dmg: Number.isFinite(item.dmg) ? item.dmg : 0,
+               dur: {
+                  current: Number.isFinite(item?.dur?.current) ? item.dur.current : 0,
+                  max: Number.isFinite(item?.dur?.max) ? item.dur.max : 0
+               },
+               tags: Array.isArray(item.tags) ? item.tags.filter(tag => typeof tag === "string") : [],
+               stack: {
+                  count: Number.isFinite(item?.stack?.count) ? item.stack.count : 0,
+                  max: Number.isFinite(item?.stack?.max) ? item.stack.max : 1
+               },
+               broken: !!item.broken
+            };
+         })
+         : [];
+      return {
+         slots,
+         hotbar: Array.isArray(raw.hotbar) ? raw.hotbar.map(entry => Number.isInteger(entry) ? entry : null) : [],
+         activeHotbar: Number.isInteger(raw.activeHotbar) ? raw.activeHotbar : null
+      };
+   }
+
+   function restoreInventoryFromSnapshot(snapshot) {
+      const Items = getItemsModule();
+      const inventory = Items?.inventory;
+      const data = sanitizeInventorySnapshot(snapshot);
+      if (!Items || !inventory || !data) return false;
+
+      const slots = inventory.slots;
+      for (let i = 0; i < slots.length; i += 1) {
+         slots[i] = null;
+      }
+      const hotbar = inventory.hotbar;
+      for (let i = 0; i < hotbar.length; i += 1) {
+         hotbar[i] = null;
+      }
+      inventory.activeHotbar = null;
+      inventory.activeItem = null;
+
+      const hotbarAssignments = new Map();
+      data.hotbar.forEach((slotIndex, hotbarIndex) => {
+         if (Number.isInteger(slotIndex)) {
+            hotbarAssignments.set(slotIndex, hotbarIndex);
+         }
+      });
+
+      let restored = 0;
+      data.slots.forEach((item, slotIndex) => {
+         if (!item || typeof item !== "object" || !item.id) return;
+         const payload = { ...item, dur: { ...item.dur }, stack: { ...item.stack } };
+         const preferredHotbar = hotbarAssignments.has(slotIndex) ? hotbarAssignments.get(slotIndex) : null;
+         inventory.add(payload, {
+            slotIndex,
+            hotbarIndex: preferredHotbar,
+            autoEquip: false
+         });
+         restored += 1;
+      });
+
+      if (Number.isInteger(data.activeHotbar)) {
+         inventory.equip(data.activeHotbar, { silent: true });
+      } else {
+         inventory.equip(null, { silent: true });
+      }
+
+      handleInventoryEvent({ type: "sync" }, inventory);
+      return restored > 0;
+   }
+
+   function buildRuntimeSnapshot() {
+      const state = getRuntimeState();
+      if (!state) return null;
+      const Items = getItemsModule();
+      const rawInventory = Items?.inventory?.toJSON?.() || null;
+      const inventory = rawInventory ? sanitizeInventorySnapshot(rawInventory) : null;
+      const vows = Array.isArray(state.vows)
+         ? state.vows.map(entry => ({
+            ruleId: entry?.ruleId || null,
+            strength: Number.isFinite(entry?.strength) ? entry.strength : 1,
+            lethal: !!entry?.lethal
+         })).filter(entry => !!entry.ruleId)
+         : [];
+      const nenType = typeof state.nenType === "string" && state.nenType
+         ? state.nenType
+         : (window.NenAdvanced?.getNenType?.(state) || null);
+      const flowValues = state.flow
+         ? FLOW_LIMB_KEYS.reduce((acc, key) => {
+            acc[key] = Number.isFinite(state.flow[key]) ? state.flow[key] : 0;
+            return acc;
+         }, {})
+         : null;
+      const aura = getAuraSnapshot();
+      const activeRegion = window.RegionManager?.getActiveRegion?.() || null;
+      const nextCadence = window.Spawns?.getNextCadence?.();
+      const vowRuntime = state.vowRuntime || null;
+
+      return {
+         version: 2,
+         timestamp: Date.now(),
+         inventory,
+         vows,
+         nenType,
+         statCaps: state.trainingCaps ? { ...state.trainingCaps } : null,
+         training: { progress: getTrainingProgressSnapshot() },
+         aura,
+         flow: flowValues ? {
+            values: flowValues,
+            presetKey: state.flowPresetKey ?? null,
+            presetIndex: Number.isFinite(state.flowPresetIndex) ? state.flowPresetIndex : 0
+         } : null,
+         pools: {
+            hp: { cur: Number.isFinite(state.hp) ? state.hp : 0, max: Number.isFinite(state.maxHP) ? state.maxHP : 0 },
+            nen: {
+               cur: Number.isFinite(state.nen?.cur) ? state.nen.cur : 0,
+               max: Number.isFinite(state.nen?.max) ? state.nen.max : 0,
+               regen: Number.isFinite(state.nen?.regen) ? state.nen.regen : 0
+            },
+            ren: {
+               stamina: Number.isFinite(state.aura?.renStamina) ? state.aura.renStamina : 0,
+               max: Number.isFinite(state.aura?.renStaminaMax) ? state.aura.renStaminaMax : 0
+            }
+         },
+         region: {
+            activeId: activeRegion?.id ?? null,
+            vowWave: Number.isFinite(state.vowWave) ? state.vowWave : 0,
+            vowRuntimeWave: Number.isFinite(vowRuntime?.waveId) ? vowRuntime.waveId : 0,
+            nextCadence: Number.isFinite(nextCadence) ? nextCadence : null
+         },
+         vowRuntime: vowRuntime ? {
+            lethalActive: !!vowRuntime.lethalActive,
+            pendingElite: !!vowRuntime.pendingElite,
+            eliteName: vowRuntime.eliteName || ""
+         } : null,
+         nenDrainSummary: state.nenDrainSummary || null,
+         timeStop: { active: !!state.timeStop, ultT: Number.isFinite(state.ultT) ? state.ultT : 0 }
+      };
+   }
+
+   function applyRuntimeSnapshot(snapshot = null, opts = {}) {
+      const state = getRuntimeState();
+      if (!state || !snapshot || typeof snapshot !== "object") return false;
+      let applied = false;
+
+      if (snapshot.nenType && typeof snapshot.nenType === "string") {
+         state.nenType = snapshot.nenType;
+         applied = true;
+      }
+
+      if (snapshot.statCaps && typeof snapshot.statCaps === "object") {
+         state.trainingCaps = { ...state.trainingCaps, ...snapshot.statCaps };
+         applied = true;
+      }
+
+      if (snapshot.inventory && !opts.skipInventory) {
+         restoreInventoryFromSnapshot(snapshot.inventory);
+         applied = true;
+      }
+
+      if (Array.isArray(snapshot.vows) && snapshot.vows.length) {
+         setActiveVows(snapshot.vows.map(entry => ({
+            ruleId: entry.ruleId,
+            strength: entry.strength,
+            lethal: !!entry.lethal
+         })), { silent: true });
+         applied = true;
+      }
+
+      if (snapshot.aura && typeof snapshot.aura === "object") {
+         const aura = state.aura;
+         Object.assign(aura, snapshot.aura);
+         if (snapshot.aura.en && typeof snapshot.aura.en === "object") {
+            aura.en = { ...aura.en, ...snapshot.aura.en };
+         }
+         applied = true;
+      }
+
+      if (snapshot.pools && typeof snapshot.pools === "object") {
+         if (snapshot.pools.hp) {
+            if (Number.isFinite(snapshot.pools.hp.max)) state.maxHP = snapshot.pools.hp.max;
+            if (Number.isFinite(snapshot.pools.hp.cur)) state.hp = clamp(snapshot.pools.hp.cur, 0, state.maxHP);
+         }
+         if (snapshot.pools.nen) {
+            if (Number.isFinite(snapshot.pools.nen.max)) state.nen.max = snapshot.pools.nen.max;
+            if (Number.isFinite(snapshot.pools.nen.cur)) state.nen.cur = clamp(snapshot.pools.nen.cur, 0, state.nen.max);
+            if (Number.isFinite(snapshot.pools.nen.regen)) state.nen.regen = snapshot.pools.nen.regen;
+         }
+         if (snapshot.pools.ren) {
+            if (Number.isFinite(snapshot.pools.ren.max)) state.aura.renStaminaMax = snapshot.pools.ren.max;
+            if (Number.isFinite(snapshot.pools.ren.stamina)) state.aura.renStamina = clamp(snapshot.pools.ren.stamina, 0, state.aura.renStaminaMax ?? snapshot.pools.ren.max ?? 0);
+         }
+         applied = true;
+      }
+
+      if (snapshot.flow && typeof snapshot.flow === "object" && snapshot.flow.values) {
+         Object.assign(state.flow, snapshot.flow.values);
+         if (snapshot.flow.presetKey) state.flowPresetKey = snapshot.flow.presetKey;
+         if (Number.isFinite(snapshot.flow.presetIndex)) state.flowPresetIndex = snapshot.flow.presetIndex;
+         applied = true;
+      }
+
+      if (snapshot.region && typeof snapshot.region === "object") {
+         if (Number.isFinite(snapshot.region.vowWave)) state.vowWave = snapshot.region.vowWave;
+         if (Number.isFinite(snapshot.region.vowRuntimeWave) && state.vowRuntime) {
+            state.vowRuntime.waveId = snapshot.region.vowRuntimeWave;
+         }
+         const targetRegion = snapshot.region.activeId;
+         if (targetRegion && window.RegionManager?.setRegion) {
+            try {
+               window.RegionManager.setRegion(targetRegion, { silent: true, force: true });
+            } catch (err) {
+               console.warn("[HXH] Failed to restore region", err);
+            }
+         }
+         applied = true;
+      }
+
+      if (snapshot.timeStop && typeof snapshot.timeStop === "object") {
+         state.timeStop = !!snapshot.timeStop.active;
+         if (Number.isFinite(snapshot.timeStop.ultT)) state.ultT = snapshot.timeStop.ultT;
+      }
+
+      updateHUD();
+      notifyAuraChange();
+      notifyFlowChange({ silent: true });
+      updateNenHud();
+      updateHealthHud();
+      scheduleRuntimeSave();
+      return applied;
+   }
+
+   function setAuraState(key, value) {
+      const state = getRuntimeState();
+      if (!state || !state.aura) return getAuraSnapshot();
+      const aura = state.aura;
+      const bool = !!value;
+      let changed = false;
+      switch (key) {
+         case "ten":
+            if (aura.ten !== bool) {
+               aura.ten = bool;
+               changed = true;
+            }
+            if (bool) {
+               aura.zetsu = false;
+            }
+            break;
+         case "zetsu":
+            if (aura.zetsu !== bool) {
+               aura.zetsu = bool;
+               changed = true;
+            }
+            if (bool) {
+               aura.ten = false;
+               aura.ren = false;
+               aura.renActive = false;
+               aura.renCharge = 0;
+               aura.ken = false;
+               aura.gyo = false;
+               aura.shu = false;
+               aura.en.on = false;
+               aura.en.r = 0;
+            }
+            break;
+         case "ren":
+            if (aura.ren !== bool || aura.renActive !== bool) {
+               aura.ren = bool;
+               aura.renActive = bool;
+               aura.renCharge = bool ? 1 : 0;
+               changed = true;
+            }
+            if (bool) {
+               aura.zetsu = false;
+               const max = Number.isFinite(aura.renStaminaMax) ? aura.renStaminaMax : 6;
+               aura.renStamina = max;
+               const bonus = state.trainingCaps?.renBonusMul ?? 0;
+               aura.renMul = 1.3 + 0.9 * aura.renCharge + bonus;
+            } else {
+               aura.renMul = 1.0;
+               const max = Number.isFinite(aura.renStaminaMax) ? aura.renStaminaMax : 6;
+               aura.renStamina = Math.min(max, aura.renStamina ?? max);
+            }
+            break;
+         case "ken":
+            if (bool && state.vowRuntime?.totals?.disableKen) {
+               msg("Ken is sealed by your vow.");
+               break;
+            }
+            if (aura.ken !== bool) {
+               aura.ken = bool;
+               changed = true;
+            }
+            if (bool) aura.zetsu = false;
+            break;
+         case "gyo":
+            if (aura.gyo !== bool) {
+               aura.gyo = bool;
+               changed = true;
+            }
+            if (bool) aura.zetsu = false;
+            break;
+         case "shu":
+            if (aura.shu !== bool) {
+               aura.shu = bool;
+               changed = true;
+            }
+            if (bool) aura.zetsu = false;
+            break;
+         case "en":
+            if (aura.en.on !== bool) {
+               aura.en.on = bool;
+               changed = true;
+            }
+            if (!bool) {
+               aura.en.r = 0;
+            } else {
+               aura.zetsu = false;
+               if (!Number.isFinite(aura.en.r) || aura.en.r <= 0) {
+                  aura.en.r = 12;
+               }
+            }
+            break;
+         default:
+            break;
+      }
+      if (changed) {
+         notifyAuraChange();
+         scheduleRuntimeSave();
+      }
+      return getAuraSnapshot();
+   }
+
+   function setEnRadius(radius) {
+      const state = getRuntimeState();
+      if (!state || !state.aura) return getAuraSnapshot();
+      const aura = state.aura;
+      const clamped = clamp(Number(radius) || 0, 0, 24);
+      let changed = false;
+      if (clamped <= 0) {
+         if (aura.en.on || aura.en.r !== 0) {
+            aura.en.on = false;
+            aura.en.r = 0;
+            changed = true;
+         }
+      } else {
+         if (!aura.en.on || Math.abs(aura.en.r - clamped) > 0.01) {
+            aura.en.on = true;
+            aura.en.r = clamped;
+            aura.zetsu = false;
+            changed = true;
+         }
+      }
+      if (changed) {
+         notifyAuraChange();
+         scheduleRuntimeSave();
+      }
+      return getAuraSnapshot();
+   }
+
+   function refillResources({ hp = true, nen = true } = {}) {
+      let changed = false;
+      if (hp && Number.isFinite(state.maxHP) && state.hp < state.maxHP) {
+         state.hp = state.maxHP;
+         updateHealthHud();
+         changed = true;
+      }
+      if (nen && Number.isFinite(state.nen?.max) && state.nen.cur < state.nen.max) {
+         state.nen.cur = state.nen.max;
+         updateNenHud();
+         changed = true;
+      }
+      if (changed) scheduleRuntimeSave();
+      return { hp: state.hp, nen: state.nen.cur };
+   }
+
+   function spawnTargetDummy(options = {}) {
+      const count = Number.isInteger(options.count) ? Math.max(1, options.count) : 1;
+      const spacing = Number.isFinite(options.spacing) ? Math.max(2, options.spacing) : 4;
+      if (!scene || !playerRoot) return 0;
+      const base = playerRoot.position.clone();
+      const region = window.RegionManager?.getActiveRegion?.() || null;
+      let spawned = 0;
+      for (let i = 0; i < count; i += 1) {
+         const angle = (Math.PI * 2 * i) / count;
+         const dx = Math.cos(angle);
+         const dz = Math.sin(angle);
+         const distance = spacing + i * 0.6;
+         const targetX = base.x + dx * distance;
+         const targetZ = base.z + dz * distance;
+         let targetY = getTerrainHeight(targetX, targetZ);
+         if (targetY === null) targetY = base.y;
+         const spawnPos = new BABYLON.Vector3(targetX, targetY + 1.4, targetZ);
+         const enemy = createEnemy(spawnPos);
+         enemy.qaDummy = true;
+         enemy.speed = 0;
+         enemy.attackCd = Infinity;
+         enemy.dormant = true;
+         enemy.regionId = region?.id ?? null;
+         enemy.root.position.copyFrom(spawnPos);
+         enemy.root.computeWorldMatrix(true);
+         enemy.prevPos.copyFrom(spawnPos);
+         enemies.push(enemy);
+         spawned += 1;
+      }
+      if (spawned > 0) {
+         scheduleRuntimeSave();
+         msg(`${spawned} dummy${spawned > 1 ? " targets" : " target"} spawned for testing.`);
+      }
+      return spawned;
    }
 
  function defaultVowTotals() {
@@ -2689,14 +3188,15 @@
           lethal: !!entry.lethal
        })));
     }
-    if (!silent) {
-       const names = entries.length
-          ? entries.map(entry => `${entry.label || entry.ruleId}${entry.lethal ? " (lethal)" : ""}`).join(", ")
-          : "none";
-       msg(`[Vows] Bound: ${names}.`);
-    }
-    return entries;
- }
+   if (!silent) {
+      const names = entries.length
+         ? entries.map(entry => `${entry.label || entry.ruleId}${entry.lethal ? " (lethal)" : ""}`).join(", ")
+         : "none";
+      msg(`[Vows] Bound: ${names}.`);
+   }
+    scheduleRuntimeSave();
+   return entries;
+}
 
  function assignEliteTarget(candidates = enemies) {
     const runtime = state.vowRuntime;
@@ -2726,11 +3226,12 @@
        entry.broken = false;
        entry.brokenReason = null;
     });
-    runtime.eliteTargetId = null;
-    runtime.eliteName = "";
-    recalcVowAggregates();
-    runtime.pendingElite = !!runtime.sources?.restrictTarget;
- }
+   runtime.eliteTargetId = null;
+   runtime.eliteName = "";
+   recalcVowAggregates();
+   runtime.pendingElite = !!runtime.sources?.restrictTarget;
+   scheduleRuntimeSave();
+}
 
  function updateVowRuntimeFrame(dt) {
     const runtime = state.vowRuntime;
@@ -3181,8 +3682,14 @@
       hud.pauseOverlay.classList.toggle("visible", paused);
    }
 
-   async function startGame(ch) {
+   async function startGame(ch, options = {}) {
       await rigReady;
+
+      const runtimeSnapshot = options && Object.prototype.hasOwnProperty.call(options, "runtime")
+         ? options.runtime
+         : loadRuntimeState();
+      const runtimeHasInventory = !!(runtimeSnapshot && runtimeSnapshot.inventory);
+      pendingInventorySnapshot = runtimeHasInventory ? runtimeSnapshot.inventory : null;
 
       state.ch = ch;
       saveCharacter(ch);
@@ -3213,8 +3720,48 @@
 
       setupInventorySystem();
 
-      updateHUD();
-      msg("Defeat enemies to trigger the exit portal! Press L to open the Level menu.");
+      const hudApi = window.HUD;
+      hudApi?.ensureControlDock?.();
+      if (hudApi?.configureDevPanel) {
+         hudApi.configureDevPanel({
+            toggleAura: (key, value) => setAuraState(key, value),
+            setEnRadius: radius => setEnRadius(radius),
+            spawnDummy: count => spawnTargetDummy({ count }),
+            refill: (target) => {
+               if (target === "hp") return refillResources({ hp: true, nen: false });
+               if (target === "nen") return refillResources({ hp: false, nen: true });
+               return refillResources({ hp: true, nen: true });
+            }
+         });
+         hudApi.updateDevPanelState?.(getAuraSnapshot());
+      }
+
+      if (typeof regionChangeUnsub === "function") {
+         try { regionChangeUnsub(); } catch {}
+      }
+      regionChangeUnsub = window.RegionManager?.onRegionChange?.(() => scheduleRuntimeSave()) || null;
+
+      if (devHotkeyHandler) {
+         window.removeEventListener("keydown", devHotkeyHandler);
+      }
+      devHotkeyHandler = (event) => {
+         if (event.code === "KeyD" && event.ctrlKey && event.shiftKey) {
+            event.preventDefault();
+            hudApi?.toggleDevPanel?.();
+         }
+      };
+      window.addEventListener("keydown", devHotkeyHandler);
+
+      if (runtimeSnapshot) {
+         applyRuntimeSnapshot(runtimeSnapshot, { skipInventory: runtimeHasInventory });
+         msg("Save restored. Press Ctrl+Shift+D for QA tools.");
+      } else {
+         updateHUD();
+         msg("Defeat enemies to trigger the exit portal! Press L to open the Level menu.");
+      }
+
+      scheduleRuntimeSave({ immediate: true });
+
       const canvas = $("#game-canvas");
       await setupBabylon(canvas);
       setTimeout(() => {
@@ -4336,6 +4883,23 @@
       const renFearStrength = renThreatActive ? state.aura.renCharge : 0;
       for (const e of enemies) {
          if (!e.alive) continue;
+         if (e.qaDummy) {
+            if (!e.root.isEnabled()) e.root.setEnabled(true);
+            e.vel.x = 0;
+            e.vel.y = 0;
+            e.vel.z = 0;
+            const groundDummy = resolveGrounding(e.root, 0);
+            e.grounded = groundDummy.grounded;
+            if (groundDummy.correction) {
+               e.root.position.y += groundDummy.correction;
+               e.root.computeWorldMatrix(true);
+            }
+            e.prevPos.copyFrom(e.root.position);
+            if (e.attackAnimT > 0) e.attackAnimT = Math.max(0, e.attackAnimT - dt);
+            updateIdleAnim(e.root, dt, e.attackAnimT);
+            applyFootIK(e.root, e.grounded);
+            continue;
+         }
          TMP_ENEMY_TO_PLAYER.copyFrom(playerPos);
          TMP_ENEMY_TO_PLAYER.subtractInPlace(e.root.position);
          const distSq = TMP_ENEMY_TO_PLAYER.lengthSquared();
@@ -4611,6 +5175,17 @@
       document.getElementById("screen--menu").classList.add("visible");
    });
 
+   if (typeof window !== "undefined") {
+      window.addEventListener("beforeunload", () => {
+         try { scheduleRuntimeSave({ immediate: true }); } catch {}
+      });
+      document.addEventListener("visibilitychange", () => {
+         if (document.visibilityState === "hidden") {
+            try { scheduleRuntimeSave({ immediate: true }); } catch {}
+         }
+      });
+   }
+
    // Public API
    window.GameSettings = GameSettings;
    const previousHXH = typeof window.HXH === "object" && window.HXH ? window.HXH : {};
@@ -4653,6 +5228,7 @@ try {
 
     // saves & progress
     saveProgress, gainXP, xpToNext,
+    saveRuntimeState, loadRuntimeState, scheduleRuntimeSave,
 
     // aura state accessors
     state,
@@ -4665,6 +5241,11 @@ try {
     getVowRuntime: () => state.vowRuntime,
     openVowMenu,
     setActiveVows,
+    setAuraState,
+    setEnRadius,
+    refillResources,
+    spawnTargetDummy,
+    applyRuntimeSnapshot,
   });
   // share rig definitions for the editor if available
   window.RigDefinitions = {
@@ -4800,12 +5381,13 @@ try {
          alert("No save found.");
          return;
       }
+      const runtime = window.loadRuntimeState?.() || null;
       window.MenuBG && window.MenuBG.stop();
       document.getElementById("screen--menu").classList.remove("visible");
-	  document.getElementById("screen--game").classList.add("visible");
-	  // Make sure Babylon samples a real size once the screen is visible
+          document.getElementById("screen--game").classList.add("visible");
+          // Make sure Babylon samples a real size once the screen is visible
       setTimeout(() => { try { engine && engine.resize(); } catch {} }, 0);
-      window.HXH.startGame(ch);
+      window.HXH.startGame(ch, { runtime });
    });
 
 	btnNew?.addEventListener("click", () => {
