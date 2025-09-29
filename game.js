@@ -335,6 +335,11 @@
       dash: 2.6
    };
    const ANIM_SPEED = 1.5;
+   const VOW_STORAGE_KEY = "hxh.vows";
+
+   let enemySeq = 1;
+   let vowInitialized = false;
+   let vowInitAttempts = 0;
 
    let engine, scene, camera;
    let player, playerRoot, input = {},
@@ -1379,11 +1384,12 @@
    }
 
    function wipeSave() {
-      try {
-         localStorage.removeItem(SAVE_KEYS.progress);
-         localStorage.removeItem(SAVE_KEYS.character);
-      } catch {}
-   }
+   try {
+      localStorage.removeItem(SAVE_KEYS.progress);
+      localStorage.removeItem(SAVE_KEYS.character);
+      localStorage.removeItem(VOW_STORAGE_KEY);
+   } catch {}
+}
 
    // ------- Save / progress (with migration from old 5-stat allocs) -------
    let progress = null;
@@ -2176,6 +2182,8 @@
       lastKoWarning: 0,
 
       vows: [],
+      vowRuntime: null,
+      vowWave: 0,
 
       buffs: {},
       cooldowns: {},
@@ -2277,18 +2285,320 @@
             inventory.equip(index);
          });
       }
-      if (!inventory.slots.some(entry => entry)) {
-         inventory.add({
-            id: "rusty-blade",
-            slot: "weapon",
-            type: "melee",
-            dmg: 6,
-            dur: { current: 24, max: 24 },
-            tags: ["starter", "sword"],
-            stack: { count: 1, max: 1 }
-         }, { hotbarIndex: 0, autoEquip: true });
-      }
+   if (!inventory.slots.some(entry => entry)) {
+      inventory.add({
+         id: "rusty-blade",
+         slot: "weapon",
+         type: "melee",
+         dmg: 6,
+         dur: { current: 24, max: 24 },
+         tags: ["starter", "sword"],
+         stack: { count: 1, max: 1 }
+      }, { hotbarIndex: 0, autoEquip: true });
    }
+}
+
+ function defaultVowTotals() {
+    return {
+       koMultiplier: 1,
+       nenMultiplier: 1,
+       eliteTargetMultiplier: 1,
+       eliteOthersMultiplier: 1,
+       disableKen: false,
+       restrictions: { requireKo: null, forbidDash: null, restrictTarget: null },
+       lethalCount: 0
+    };
+ }
+
+ function loadStoredVows() {
+    try {
+       const raw = localStorage.getItem(VOW_STORAGE_KEY);
+       if (!raw) return [];
+       const parsed = JSON.parse(raw);
+       if (!Array.isArray(parsed)) return [];
+       return parsed
+          .map(entry => ({
+             ruleId: typeof entry?.ruleId === "string" ? entry.ruleId : null,
+             strength: Number(entry?.strength) || 1,
+             lethal: !!entry?.lethal
+          }))
+          .filter(entry => !!entry.ruleId);
+    } catch (err) {
+       console.warn("[HXH] Failed to load vows", err);
+       return [];
+    }
+ }
+
+ function saveVowsToStorage(vows) {
+    try {
+       localStorage.setItem(VOW_STORAGE_KEY, JSON.stringify(vows));
+    } catch (err) {
+       console.warn("[HXH] Failed to store vows", err);
+    }
+ }
+
+ function rebuildVowRuntime({ keepWave = false } = {}) {
+    const entries = Array.isArray(state.vows)
+       ? state.vows.map(entry => Object.assign({}, entry, { broken: false, brokenReason: null }))
+       : [];
+    state.vowRuntime = {
+       entries,
+       totals: defaultVowTotals(),
+       sources: { requireKo: null, forbidDash: null, restrictTarget: null },
+       waveId: keepWave ? (state.vowRuntime?.waveId || 0) : 0,
+       eliteTargetId: null,
+       eliteName: "",
+       pendingElite: false,
+       lethalActive: entries.some(entry => entry.lethal)
+    };
+    recalcVowAggregates();
+ }
+
+ function recalcVowAggregates() {
+    const runtime = state.vowRuntime;
+    if (!runtime) return;
+    const adv = window.NenAdvanced;
+    const activeConfigs = runtime.entries
+       .filter(entry => !entry.broken)
+       .map(entry => ({ ruleId: entry.ruleId, strength: entry.strength, lethal: entry.lethal }));
+    const combined = adv?.combineVows?.(activeConfigs) || null;
+    runtime.totals = combined?.totals
+       ? Object.assign(defaultVowTotals(), combined.totals)
+       : defaultVowTotals();
+    runtime.sources = { requireKo: null, forbidDash: null, restrictTarget: null };
+    if (combined?.totals?.restrictions) {
+       const restricts = combined.totals.restrictions;
+       if (restricts.requireKo) {
+          runtime.sources.requireKo = runtime.entries.find(entry => !entry.broken && entry.ruleId === restricts.requireKo) || null;
+       }
+       if (restricts.forbidDash) {
+          runtime.sources.forbidDash = runtime.entries.find(entry => !entry.broken && entry.ruleId === restricts.forbidDash) || null;
+       }
+       if (restricts.restrictTarget) {
+          runtime.sources.restrictTarget = runtime.entries.find(entry => !entry.broken && entry.ruleId === restricts.restrictTarget) || null;
+       }
+    }
+    runtime.lethalActive = runtime.entries.some(entry => !entry.broken && entry.lethal);
+    runtime.pendingElite = !!runtime.sources.restrictTarget && !runtime.eliteTargetId;
+    if (runtime.totals.disableKen && state.aura?.ken) {
+       state.aura.ken = false;
+       notifyAuraChange();
+       msg("Ken sealed by your vow.");
+    }
+ }
+
+ function setActiveVows(selection, opts = {}) {
+    const { silent = false, skipSave = false } = opts;
+    const adv = window.NenAdvanced;
+    const configs = Array.isArray(selection) ? selection.filter(Boolean).slice(0, 3) : [];
+    const combined = adv?.combineVows?.(configs) || { entries: [], totals: defaultVowTotals() };
+    const entries = combined.entries.map((entry, index) => Object.assign({}, entry, {
+       key: entry.key || `${entry.ruleId}-${index}`,
+       id: entry.id || `${entry.ruleId}-${index}`
+    }));
+    state.vows = entries;
+    rebuildVowRuntime({ keepWave: false });
+    if (!skipSave) {
+       saveVowsToStorage(entries.map(entry => ({
+          ruleId: entry.ruleId,
+          strength: entry.strength,
+          lethal: !!entry.lethal
+       })));
+    }
+    if (!silent) {
+       const names = entries.length
+          ? entries.map(entry => `${entry.label || entry.ruleId}${entry.lethal ? " (lethal)" : ""}`).join(", ")
+          : "none";
+       msg(`[Vows] Bound: ${names}.`);
+    }
+    return entries;
+ }
+
+ function assignEliteTarget(candidates = enemies) {
+    const runtime = state.vowRuntime;
+    if (!runtime || !runtime.sources?.restrictTarget) return;
+    const pool = Array.isArray(candidates) && candidates.length ? candidates : enemies;
+    let chosen = null;
+    for (const enemy of pool) {
+       if (!enemy || !enemy.alive) continue;
+       if (!chosen || (enemy.hp || 0) > (chosen.hp || 0)) {
+          chosen = enemy;
+       }
+    }
+    if (chosen) {
+       runtime.eliteTargetId = chosen.__enemyId || null;
+       runtime.eliteName = `Enemy ${chosen.__enemyId ?? "?"}`;
+       runtime.pendingElite = false;
+       msg(`Elite vow target marked: focus ${runtime.eliteName}.`);
+    }
+ }
+
+ function onWaveStart() {
+    state.vowWave = (state.vowWave || 0) + 1;
+    const runtime = state.vowRuntime;
+    if (!runtime) return;
+    runtime.waveId = (runtime.waveId || 0) + 1;
+    runtime.entries.forEach(entry => {
+       entry.broken = false;
+       entry.brokenReason = null;
+    });
+    runtime.eliteTargetId = null;
+    runtime.eliteName = "";
+    recalcVowAggregates();
+    runtime.pendingElite = !!runtime.sources?.restrictTarget;
+ }
+
+ function updateVowRuntimeFrame(dt) {
+    const runtime = state.vowRuntime;
+    if (!runtime) return;
+    if (runtime.sources?.restrictTarget) {
+       const eliteId = runtime.eliteTargetId;
+       if (eliteId) {
+          const alive = enemies.find(enemy => enemy && enemy.__enemyId === eliteId && enemy.alive);
+          if (!alive) {
+             runtime.eliteTargetId = null;
+             runtime.eliteName = "";
+             runtime.pendingElite = true;
+          }
+       }
+       if (runtime.pendingElite) assignEliteTarget();
+    }
+ }
+
+ function limbIsNen(limb) {
+    if (typeof limb !== "string") return false;
+    const key = limb.toLowerCase();
+    return key.includes("nen");
+ }
+
+ function applyVowToOutgoing(payload = {}) {
+    const runtime = state.vowRuntime;
+    const strike = payload.strike || null;
+    const limb = payload.limb;
+    const baseDamage = Number(payload.damage) || 0;
+    const baseNen = limbIsNen(limb);
+    const wasKo = !!(strike && (!strike.limb || strike.limb === limb));
+    const countsAsNen = baseNen || wasKo;
+    if (!runtime) {
+       return { damage: baseDamage, wasKo, isNen: countsAsNen };
+    }
+    const totals = runtime.totals || defaultVowTotals();
+    let result = baseDamage;
+    if (countsAsNen && totals.nenMultiplier && totals.nenMultiplier !== 1) {
+       result *= totals.nenMultiplier;
+    }
+    return { damage: result, wasKo, isNen: countsAsNen };
+ }
+
+ function applyVowToIncoming(payload = {}) {
+    const runtime = state.vowRuntime;
+    if (!runtime) return { damage: Number(payload.damage) || 0 };
+    const target = payload.target || null;
+    const context = payload.context || {};
+    const totals = runtime.totals || defaultVowTotals();
+    const targetId = target && typeof target.__enemyId === "number" ? target.__enemyId : null;
+    let next = Number(payload.damage) || 0;
+    const isEnemyTarget = !!targetId;
+    if (!isEnemyTarget) {
+       return { damage: next };
+    }
+    if (runtime.sources?.requireKo && !context.wasKo && next > 0) {
+       handleVowViolation(runtime.sources.requireKo, "Attack was not a Ko strike.");
+    }
+    if (runtime.sources?.restrictTarget && runtime.eliteTargetId) {
+       if (targetId === runtime.eliteTargetId) {
+          next *= totals.eliteTargetMultiplier || 1;
+       } else {
+          next *= totals.eliteOthersMultiplier || 1;
+          if (next > 0) {
+             handleVowViolation(runtime.sources.restrictTarget, "Struck a non-elite target.");
+          }
+       }
+    } else {
+       if (targetId === runtime.eliteTargetId) {
+          next *= totals.eliteTargetMultiplier || 1;
+       } else if (totals.eliteOthersMultiplier && totals.eliteOthersMultiplier !== 1) {
+          next *= totals.eliteOthersMultiplier;
+       }
+    }
+    return { damage: next };
+ }
+
+ function handleVowViolation(entry, reason) {
+    if (!entry || entry.broken) return;
+    entry.broken = true;
+    entry.brokenReason = reason || "";
+    const label = entry.label || entry.ruleId || "Vow";
+    const detail = reason ? `${label}: ${reason}` : label;
+    msg(`Vow broken: ${detail}`);
+    recalcVowAggregates();
+    if (entry.lethal) {
+       downPlayer("Lethal vow backlash! You collapse.");
+    }
+ }
+
+ function downPlayer(reason) {
+    if (state.hp <= 0) {
+       if (reason) msg(reason);
+       return;
+    }
+    state.hp = 0;
+    updateHealthHud();
+    if (reason) {
+       msg(reason);
+    } else {
+       msg("You collapse!");
+    }
+ }
+
+ function openVowMenu() {
+    const hudApi = window.HUD;
+    if (!hudApi?.openVowMenu) {
+       msg("Vow crafting interface unavailable.");
+       return;
+    }
+    const adv = window.NenAdvanced;
+    const catalog = adv?.getVowRules?.() || [];
+    const selection = Array.isArray(state.vows)
+       ? state.vows.map(v => ({ ruleId: v.ruleId, strength: v.strength, lethal: v.lethal }))
+       : [];
+    hudApi.openVowMenu({
+       catalog,
+       selection,
+       onConfirm: (vows) => {
+          setActiveVows(vows || []);
+          hudApi.closeVowMenu?.();
+          paused = false;
+       },
+       onCancel: () => {
+          hudApi.closeVowMenu?.();
+          paused = false;
+       }
+    });
+    paused = true;
+ }
+
+ function initVowSystem(force = false) {
+    if (vowInitialized && !force) return;
+    const adv = window.NenAdvanced;
+    if (!adv || typeof adv.combineVows !== "function") {
+       if (vowInitAttempts < 50) {
+          vowInitAttempts += 1;
+          setTimeout(() => initVowSystem(force), 120);
+       }
+       return;
+    }
+    vowInitialized = true;
+    const stored = loadStoredVows();
+    if (stored.length) {
+       setActiveVows(stored, { silent: true, skipSave: true });
+    } else {
+       state.vows = [];
+       rebuildVowRuntime({ keepWave: false });
+    }
+ }
+
+ initVowSystem();
 
    updateAuraHud();
    updateFlowHud();
@@ -2854,6 +3164,7 @@
          dormant: false,
          fearT: 0
       };
+      e.__enemyId = enemySeq++;
       const meta = h.root.metadata || {};
       meta.parts = h.parts;
       meta.animPhase = 0;
@@ -2864,6 +3175,7 @@
   function spawnWave(n) {
       const spawnApi = window.Spawns;
       const region = window.RegionManager?.getActiveRegion?.() || null;
+      onWaveStart();
       let plan = null;
       let count = n;
       if (spawnApi?.planWave) {
@@ -2885,6 +3197,7 @@
             count = n;
          }
       }
+      const waveEnemies = [];
       for (let i = 0; i < count; i++) {
          let spawn = null;
          for (let attempts = 0; attempts < 12 && !spawn; attempts++) {
@@ -2904,6 +3217,7 @@
             spawn = new BABYLON.Vector3(x, 3 + rand(0, 4), z);
          }
          const enemy = createEnemy(spawn);
+         waveEnemies.push(enemy);
          const entry = plan?.entries?.[i] ?? null;
          if (entry && spawnApi?.applyEnemyProfile) {
             try {
@@ -2924,6 +3238,7 @@
          }
          enemies.push(enemy);
       }
+      if (waveEnemies.length) assignEliteTarget(waveEnemies);
    }
 
    // ------------ Combat / Abilities ------------
@@ -2994,9 +3309,14 @@
       }
 
       if (inputOnce["KeyK"]) {
-         aura.ken = !aura.ken;
-         changed = true;
-         msg(aura.ken ? "Ken raised." : "Ken released.");
+         const kenSealed = state.vowRuntime?.totals?.disableKen;
+         if (kenSealed && !aura.ken) {
+            msg("Ken is sealed by your vow.");
+         } else {
+            aura.ken = !aura.ken;
+            changed = true;
+            msg(aura.ken ? "Ken raised." : "Ken released.");
+         }
       }
 
       if (inputOnce["KeyG"]) {
@@ -3076,9 +3396,10 @@
          return false;
       }
       const focus = getDominantFlowZone();
+      const vowKoMul = state.vowRuntime?.totals?.koMultiplier ?? 1;
       state.koStrike = {
          limb: limbKey,
-         multiplier: KO_MULTIPLIER,
+         multiplier: KO_MULTIPLIER * vowKoMul,
          focus: focus?.key ?? null
       };
       state.koVulnerabilityT = KO_VULN_DURATION;
@@ -3233,6 +3554,11 @@
 
    function dash() {
       if (cdActive("dash")) return;
+      const restriction = state.vowRuntime?.sources?.forbidDash || null;
+      if (restriction) {
+         handleVowViolation(restriction, "You dashed.");
+         if (restriction.lethal) return;
+      }
       setCooldown("dash", COOLDOWNS.dash);
       const dir = playerMoveDir().normalize();
       if (dir.length() < 0.1) return;
@@ -3533,6 +3859,7 @@
       }
 
       advanceEnvironment(dt);
+      updateVowRuntimeFrame(dt);
 
       // inputs / abilities
       if (inputOnce["Space"]) startJumpCharge();
@@ -3541,6 +3868,7 @@
       if (input["KeyQ"]) blast();
       if (input["ShiftLeft"] || input["ShiftRight"]) dash();
       if (input["KeyE"]) special();
+      if (inputOnce["KeyO"]) openVowMenu();
 
       updateAura(dt);
 
@@ -3952,6 +4280,8 @@ try {
 
     // combat
     blast, dash, special, nearestEnemy,
+    applyVowToOutgoing,
+    applyVowToIncoming,
 
     // saves & progress
     saveProgress, gainXP, xpToNext,
@@ -3964,6 +4294,9 @@ try {
     subscribeFlow,
     applyFlowPreset,
     rotateFlowPreset,
+    getVowRuntime: () => state.vowRuntime,
+    openVowMenu,
+    setActiveVows,
   });
   // share rig definitions for the editor if available
   window.RigDefinitions = {

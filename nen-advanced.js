@@ -85,6 +85,184 @@
   const getItems = () => (typeof globalObj.Items === "object" && globalObj.Items ? globalObj.Items : null);
 
   const DEFAULT_SHU_MODIFIERS = { damageMul: 1.3, durabilityScalar: 0.65, pierceCount: 1 };
+  const clampNumber = (value, min, max) => Math.min(max, Math.max(min, value));
+
+  const VOW_RULES = [
+    {
+      id: "ko-only-wave",
+      label: "Only Ko strikes this wave",
+      description: "Channel everything into Ko strikes — any other attack breaks the vow.",
+      defaultStrength: 1,
+      maxStrength: 3,
+      build(strength = 1, lethal = false) {
+        const lvl = clampNumber(Math.round(Number(strength) || 1), 1, this.maxStrength || 3);
+        const lethalActive = !!lethal;
+        const base = 0.35 + 0.15 * (lvl - 1);
+        const bonus = base * (lethalActive ? 2 : 1);
+        const summaryParts = [`Ko strikes deal +${Math.round(bonus * 100)}% damage.`];
+        summaryParts.push("Ken sealed.");
+        if (lethalActive) summaryParts.push("Lethal vow.");
+        return {
+          ruleId: this.id,
+          label: this.label,
+          description: this.description,
+          summary: summaryParts.join(" "),
+          strength: lvl,
+          lethal: lethalActive,
+          severity: Math.round(4 + lvl * 2 + (lethalActive ? 4 : 0)),
+          effects: {
+            koMultiplier: 1 + bonus,
+            disableKen: true,
+            restrictions: { requireKo: true }
+          },
+          preview: {
+            koMultiplier: 1 + bonus,
+            disableKen: true,
+            lethal: lethalActive
+          }
+        };
+      }
+    },
+    {
+      id: "no-dash-wave",
+      label: "No dash this wave",
+      description: "Stand your ground — dashing breaks the vow, but Nen techniques hit harder.",
+      defaultStrength: 1,
+      maxStrength: 3,
+      build(strength = 1, lethal = false) {
+        const lvl = clampNumber(Math.round(Number(strength) || 1), 1, this.maxStrength || 3);
+        const lethalActive = !!lethal;
+        const base = 0.2 + 0.1 * (lvl - 1);
+        const bonus = base * (lethalActive ? 2 : 1);
+        const summaryParts = [`Nen abilities deal +${Math.round(bonus * 100)}% damage.`];
+        summaryParts.push("Dashing forbidden.");
+        if (lethalActive) summaryParts.push("Lethal vow.");
+        return {
+          ruleId: this.id,
+          label: this.label,
+          description: this.description,
+          summary: summaryParts.join(" "),
+          strength: lvl,
+          lethal: lethalActive,
+          severity: Math.round(3 + lvl * 2 + (lethalActive ? 3 : 0)),
+          effects: {
+            nenMultiplier: 1 + bonus,
+            restrictions: { forbidDash: true }
+          },
+          preview: {
+            nenMultiplier: 1 + bonus,
+            lethal: lethalActive
+          }
+        };
+      }
+    },
+    {
+      id: "only-elite",
+      label: "Only attack marked elite",
+      description: "Focus on the marked elite — harming others weakens you and breaks the vow.",
+      defaultStrength: 1,
+      maxStrength: 3,
+      build(strength = 1, lethal = false) {
+        const lvl = clampNumber(Math.round(Number(strength) || 1), 1, this.maxStrength || 3);
+        const lethalActive = !!lethal;
+        const baseBonus = 0.6 + 0.2 * (lvl - 1);
+        const basePenalty = 0.3 + 0.1 * (lvl - 1);
+        const bonus = baseBonus * (lethalActive ? 2 : 1);
+        const penalty = basePenalty * (lethalActive ? 2 : 1);
+        const eliteMultiplier = 1 + bonus;
+        const otherMultiplier = Math.max(0.1, 1 - penalty);
+        const summaryParts = [
+          `+${Math.round(bonus * 100)}% vs the marked elite, -${Math.round(penalty * 100)}% vs others.`
+        ];
+        if (lethalActive) summaryParts.push("Lethal vow.");
+        return {
+          ruleId: this.id,
+          label: this.label,
+          description: this.description,
+          summary: summaryParts.join(" "),
+          strength: lvl,
+          lethal: lethalActive,
+          severity: Math.round(5 + lvl * 3 + (lethalActive ? 4 : 0)),
+          effects: {
+            eliteTargetMultiplier: eliteMultiplier,
+            eliteOthersMultiplier: otherMultiplier,
+            restrictions: { restrictTarget: true }
+          },
+          preview: {
+            eliteTargetMultiplier: eliteMultiplier,
+            eliteOthersMultiplier: otherMultiplier,
+            lethal: lethalActive
+          }
+        };
+      }
+    }
+  ];
+
+  const VOW_RULE_LOOKUP = new Map(VOW_RULES.map(rule => [rule.id, rule]));
+
+  function resolveVowRule(ruleId, strength = 1, lethal = false) {
+    const rule = VOW_RULE_LOOKUP.get(ruleId);
+    if (!rule || typeof rule.build !== "function") return null;
+    const built = rule.build(strength, lethal);
+    if (!built) return null;
+    return Object.assign({ key: rule.id, id: rule.id }, built);
+  }
+
+  function combineVows(configs = []) {
+    const entries = [];
+    const totals = {
+      koMultiplier: 1,
+      nenMultiplier: 1,
+      eliteTargetMultiplier: 1,
+      eliteOthersMultiplier: 1,
+      disableKen: false,
+      restrictions: { requireKo: null, forbidDash: null, restrictTarget: null },
+      lethalCount: 0
+    };
+    configs.forEach((cfg, index) => {
+      if (!cfg || !cfg.ruleId) return;
+      const entry = resolveVowRule(cfg.ruleId, cfg.strength, cfg.lethal);
+      if (!entry) return;
+      if (!entry.key) entry.key = `${entry.ruleId}-${index}`;
+      if (!entry.id) entry.id = entry.key;
+      entries.push(entry);
+      const fx = entry.effects || {};
+      if (typeof fx.koMultiplier === "number" && Number.isFinite(fx.koMultiplier) && fx.koMultiplier > 0) {
+        totals.koMultiplier *= fx.koMultiplier;
+      }
+      if (typeof fx.nenMultiplier === "number" && Number.isFinite(fx.nenMultiplier) && fx.nenMultiplier > 0) {
+        totals.nenMultiplier *= fx.nenMultiplier;
+      }
+      if (typeof fx.eliteTargetMultiplier === "number" && Number.isFinite(fx.eliteTargetMultiplier) && fx.eliteTargetMultiplier > 0) {
+        totals.eliteTargetMultiplier *= fx.eliteTargetMultiplier;
+      }
+      if (typeof fx.eliteOthersMultiplier === "number" && Number.isFinite(fx.eliteOthersMultiplier) && fx.eliteOthersMultiplier >= 0) {
+        totals.eliteOthersMultiplier *= fx.eliteOthersMultiplier;
+      }
+      if (fx.disableKen) totals.disableKen = true;
+      if (fx.restrictions && typeof fx.restrictions === "object") {
+        if (fx.restrictions.requireKo) totals.restrictions.requireKo = entry.ruleId;
+        if (fx.restrictions.forbidDash) totals.restrictions.forbidDash = entry.ruleId;
+        if (fx.restrictions.restrictTarget) totals.restrictions.restrictTarget = entry.ruleId;
+      }
+      if (entry.lethal) totals.lethalCount += 1;
+    });
+    totals.koMultiplier = Math.max(0.1, totals.koMultiplier);
+    totals.nenMultiplier = Math.max(0.1, totals.nenMultiplier);
+    totals.eliteTargetMultiplier = Math.max(0.1, totals.eliteTargetMultiplier);
+    totals.eliteOthersMultiplier = Math.max(0, totals.eliteOthersMultiplier);
+    return { entries, totals };
+  }
+
+  function listVowRules() {
+    return VOW_RULES.map(rule => ({
+      id: rule.id,
+      label: rule.label,
+      description: rule.description,
+      defaultStrength: rule.defaultStrength || 1,
+      maxStrength: rule.maxStrength || 3
+    }));
+  }
 
   function createColor(hex, fallback = [1, 1, 1]) {
     const BABYLON = globalObj.BABYLON;
@@ -173,8 +351,8 @@
       ];
     }
     return vows.map((vow, index) => ({
-      key: vow.key || vow.id || `vow-${index}`,
-      label: vow.label || vow.name || formatTitleCase(vow.key || `Vow ${index + 1}`),
+      key: vow.key || vow.id || `${vow.ruleId || "vow"}-${index}`,
+      label: vow.label || vow.name || formatTitleCase(vow.ruleId || vow.key || `Vow ${index + 1}`),
       hint: vow.summary || `Severity ${vow.severity ?? vow.rank ?? 1}`
     }));
   }
@@ -2011,6 +2189,12 @@
   if (!existing.currentSpec) existing.currentSpec = function(){ return null; };
 
   const api = Object.assign({}, existing, {
+    getVowRules: listVowRules,
+    resolveVow(ruleId, strength = 1, lethal = false) {
+      const combo = combineVows([{ ruleId, strength, lethal }]);
+      return combo.entries[0] || null;
+    },
+    combineVows,
     applyVow: existing.applyVow,
     currentSpec: existing.currentSpec,
     toggleIn,

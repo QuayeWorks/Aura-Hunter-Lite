@@ -7,6 +7,7 @@
   const HOTBAR_SIZE = 9;
   let hotbarCache = null;
   let nenRadialCache = null;
+  let vowMenuCache = null;
 
   function formatItemLabel(item) {
     if (!item) return "";
@@ -337,6 +338,373 @@
     return () => cache.root.removeEventListener("click", listener);
   }
 
+  function ensureVowMenu() {
+    if (vowMenuCache?.root?.isConnected) return vowMenuCache;
+    const hudRoot = ensureHudRoot();
+    if (!hudRoot) return null;
+    const root = document.createElement("div");
+    root.id = "hud-vow-overlay";
+    root.style.position = "absolute";
+    root.style.left = "0";
+    root.style.top = "0";
+    root.style.width = "100%";
+    root.style.height = "100%";
+    root.style.display = "none";
+    root.style.alignItems = "center";
+    root.style.justifyContent = "center";
+    root.style.background = "rgba(6, 12, 20, 0.78)";
+    root.style.backdropFilter = "blur(5px)";
+    root.style.zIndex = "14";
+    root.style.pointerEvents = "none";
+
+    const panel = document.createElement("div");
+    panel.className = "hud-vow-panel";
+    panel.style.background = "rgba(16, 24, 36, 0.96)";
+    panel.style.border = "1px solid rgba(120, 180, 255, 0.28)";
+    panel.style.borderRadius = "14px";
+    panel.style.padding = "1.5rem";
+    panel.style.width = "min(720px, 94vw)";
+    panel.style.maxHeight = "82vh";
+    panel.style.display = "flex";
+    panel.style.flexDirection = "column";
+    panel.style.gap = "1.1rem";
+    panel.style.boxShadow = "0 18px 40px rgba(0, 0, 0, 0.45)";
+    panel.style.pointerEvents = "auto";
+
+    const title = document.createElement("h2");
+    title.textContent = "Craft Vows";
+    title.style.margin = "0";
+    title.style.fontSize = "1.45rem";
+    panel.appendChild(title);
+
+    const subtitle = document.createElement("p");
+    subtitle.textContent = "Bind up to three active vows. Increase strength for bigger multipliers.";
+    subtitle.style.margin = "0";
+    subtitle.style.opacity = "0.75";
+    subtitle.style.fontSize = "0.9rem";
+    panel.appendChild(subtitle);
+
+    const slotsWrap = document.createElement("div");
+    slotsWrap.style.display = "grid";
+    slotsWrap.style.gridTemplateColumns = "repeat(auto-fit, minmax(220px, 1fr))";
+    slotsWrap.style.gap = "0.9rem";
+    panel.appendChild(slotsWrap);
+
+    const summaryBox = document.createElement("div");
+    summaryBox.style.background = "rgba(12, 20, 32, 0.92)";
+    summaryBox.style.border = "1px solid rgba(90, 150, 220, 0.32)";
+    summaryBox.style.borderRadius = "12px";
+    summaryBox.style.padding = "0.85rem 1rem";
+    summaryBox.style.display = "flex";
+    summaryBox.style.flexDirection = "column";
+    summaryBox.style.gap = "0.5rem";
+    const summaryTitle = document.createElement("div");
+    summaryTitle.textContent = "Current multipliers";
+    summaryTitle.style.fontWeight = "600";
+    summaryTitle.style.letterSpacing = "0.02em";
+    summaryBox.appendChild(summaryTitle);
+    const summaryList = document.createElement("ul");
+    summaryList.style.listStyle = "none";
+    summaryList.style.margin = "0";
+    summaryList.style.padding = "0";
+    summaryList.style.display = "grid";
+    summaryList.style.gridTemplateColumns = "repeat(auto-fit, minmax(160px, 1fr))";
+    summaryList.style.gap = "0.45rem";
+    summaryBox.appendChild(summaryList);
+    panel.appendChild(summaryBox);
+
+    const footer = document.createElement("div");
+    footer.style.display = "flex";
+    footer.style.justifyContent = "flex-end";
+    footer.style.gap = "0.6rem";
+    const btnCancel = document.createElement("button");
+    btnCancel.type = "button";
+    btnCancel.textContent = "Cancel";
+    btnCancel.className = "secondary";
+    btnCancel.style.minWidth = "96px";
+    const btnConfirm = document.createElement("button");
+    btnConfirm.type = "button";
+    btnConfirm.textContent = "Bind Vows";
+    btnConfirm.className = "primary";
+    btnConfirm.style.minWidth = "120px";
+    footer.appendChild(btnCancel);
+    footer.appendChild(btnConfirm);
+    panel.appendChild(footer);
+
+    const slots = [];
+    for (let i = 0; i < 3; i += 1) {
+      const slot = document.createElement("div");
+      slot.style.background = "rgba(10, 18, 30, 0.9)";
+      slot.style.border = "1px solid rgba(80, 130, 190, 0.28)";
+      slot.style.borderRadius = "10px";
+      slot.style.padding = "0.85rem";
+      slot.style.display = "flex";
+      slot.style.flexDirection = "column";
+      slot.style.gap = "0.55rem";
+
+      const header = document.createElement("div");
+      header.style.display = "flex";
+      header.style.flexDirection = "column";
+      header.style.gap = "0.4rem";
+      const label = document.createElement("label");
+      label.textContent = `Slot ${i + 1}`;
+      label.style.display = "flex";
+      label.style.flexDirection = "column";
+      label.style.gap = "0.35rem";
+      const select = document.createElement("select");
+      select.dataset.role = "rule";
+      select.style.padding = "0.45rem";
+      select.style.borderRadius = "8px";
+      select.style.border = "1px solid rgba(120, 180, 255, 0.25)";
+      select.style.background = "rgba(14, 22, 36, 0.96)";
+      select.style.color = "#f2f8ff";
+      select.style.fontSize = "0.85rem";
+      label.appendChild(select);
+      header.appendChild(label);
+      slot.appendChild(header);
+
+      const controls = document.createElement("div");
+      controls.style.display = "flex";
+      controls.style.flexDirection = "column";
+      controls.style.gap = "0.4rem";
+
+      const strengthRow = document.createElement("div");
+      strengthRow.style.display = "flex";
+      strengthRow.style.alignItems = "center";
+      strengthRow.style.gap = "0.5rem";
+      const strengthLabel = document.createElement("label");
+      strengthLabel.textContent = "Strength";
+      strengthLabel.style.fontSize = "0.8rem";
+      const strengthValue = document.createElement("span");
+      strengthValue.textContent = "1";
+      strengthValue.style.fontSize = "0.85rem";
+      strengthValue.style.fontWeight = "600";
+      const slider = document.createElement("input");
+      slider.type = "range";
+      slider.min = "1";
+      slider.max = "3";
+      slider.step = "1";
+      slider.value = "1";
+      slider.style.flex = "1";
+      slider.style.appearance = "none";
+      slider.style.height = "4px";
+      slider.style.borderRadius = "4px";
+      slider.style.background = "linear-gradient(90deg, rgba(94, 178, 255, 0.65), rgba(120, 220, 255, 0.85))";
+      strengthRow.appendChild(strengthLabel);
+      strengthRow.appendChild(slider);
+      strengthRow.appendChild(strengthValue);
+      controls.appendChild(strengthRow);
+
+      const lethalLabel = document.createElement("label");
+      lethalLabel.style.display = "flex";
+      lethalLabel.style.alignItems = "center";
+      lethalLabel.style.gap = "0.45rem";
+      lethalLabel.style.fontSize = "0.78rem";
+      const lethalInput = document.createElement("input");
+      lethalInput.type = "checkbox";
+      lethalLabel.appendChild(lethalInput);
+      lethalLabel.appendChild(document.createTextNode("I'll die if I break it"));
+      controls.appendChild(lethalLabel);
+      slot.appendChild(controls);
+
+      const preview = document.createElement("div");
+      preview.dataset.role = "preview";
+      preview.style.fontSize = "0.78rem";
+      preview.style.lineHeight = "1.35";
+      preview.style.opacity = "0.8";
+      preview.textContent = "Empty slot.";
+      slot.appendChild(preview);
+
+      slotsWrap.appendChild(slot);
+      slots[i] = { root: slot, select, slider, strengthValue, lethal: lethalInput, preview };
+    }
+
+    root.appendChild(panel);
+    hudRoot.appendChild(root);
+    vowMenuCache = { root, panel, slots, summaryList, btnCancel, btnConfirm };
+    return vowMenuCache;
+  }
+
+  function renderVowTotals(summaryList, totals, entries) {
+    if (!summaryList) return;
+    summaryList.innerHTML = "";
+    const makeItem = (label, value) => {
+      const li = document.createElement("li");
+      li.textContent = `${label}: ${value}`;
+      li.style.fontSize = "0.82rem";
+      li.style.opacity = "0.85";
+      summaryList.appendChild(li);
+    };
+    const formatMul = (mul) => mul.toFixed(2);
+    makeItem("Ko", `×${formatMul(totals.koMultiplier ?? 1)}`);
+    makeItem("Nen", `×${formatMul(totals.nenMultiplier ?? 1)}`);
+    makeItem("Elite target", `×${formatMul(totals.eliteTargetMultiplier ?? 1)}`);
+    makeItem("Others", `×${formatMul(totals.eliteOthersMultiplier ?? 1)}`);
+    const flags = [];
+    if (totals.disableKen) flags.push("Ken sealed");
+    if (totals.restrictions?.requireKo) flags.push("Ko only");
+    if (totals.restrictions?.forbidDash) flags.push("No dash");
+    if (totals.restrictions?.restrictTarget) flags.push("Elite focus");
+    if (flags.length) makeItem("Restrictions", flags.join(", "));
+    if (Array.isArray(entries) && entries.some(entry => entry?.lethal)) {
+      makeItem("Lethal vows", String(entries.filter(entry => entry?.lethal).length));
+    }
+  }
+
+  function describeEntry(entry) {
+    if (!entry) return "Empty slot.";
+    const parts = [];
+    if (entry.summary) parts.push(entry.summary);
+    const fx = entry.effects || {};
+    const details = [];
+    if (typeof fx.koMultiplier === "number" && fx.koMultiplier !== 1) {
+      details.push(`Ko ×${fx.koMultiplier.toFixed(2)}`);
+    }
+    if (typeof fx.nenMultiplier === "number" && fx.nenMultiplier !== 1) {
+      details.push(`Nen ×${fx.nenMultiplier.toFixed(2)}`);
+    }
+    if (typeof fx.eliteTargetMultiplier === "number" && fx.eliteTargetMultiplier !== 1) {
+      details.push(`Elite ×${fx.eliteTargetMultiplier.toFixed(2)}`);
+    }
+    if (typeof fx.eliteOthersMultiplier === "number" && fx.eliteOthersMultiplier !== 1) {
+      details.push(`Others ×${fx.eliteOthersMultiplier.toFixed(2)}`);
+    }
+    if (fx.disableKen) details.push("Ken sealed");
+    if (fx.restrictions?.requireKo) details.push("Ko only");
+    if (fx.restrictions?.forbidDash) details.push("No dash");
+    if (fx.restrictions?.restrictTarget) details.push("Elite focus");
+    if (entry.lethal) details.push("Lethal vow");
+    if (details.length) parts.push(details.join(" • "));
+    return parts.join(" ").trim();
+  }
+
+  function openVowMenu(config = {}) {
+    const cache = ensureVowMenu();
+    if (!cache) return null;
+    const { root, slots, summaryList, btnCancel, btnConfirm } = cache;
+    const adv = window.NenAdvanced;
+    const catalog = Array.isArray(config.catalog) && config.catalog.length
+      ? config.catalog
+      : (adv?.getVowRules?.() || []);
+    const catalogMap = new Map(catalog.map(rule => [rule.id, rule]));
+    const selection = Array.isArray(config.selection) ? config.selection.slice(0, 3) : [];
+
+    slots.forEach((slot, index) => {
+      slot.select.innerHTML = "";
+      const optNone = document.createElement("option");
+      optNone.value = "";
+      optNone.textContent = "Empty";
+      slot.select.appendChild(optNone);
+      catalog.forEach(rule => {
+        const opt = document.createElement("option");
+        opt.value = rule.id;
+        opt.textContent = rule.label;
+        opt.title = rule.description || "";
+        slot.select.appendChild(opt);
+      });
+      const current = selection[index] || null;
+      const ruleId = current?.ruleId || "";
+      slot.select.value = ruleId;
+      const ruleMeta = catalogMap.get(ruleId) || null;
+      slot.slider.max = String(ruleMeta?.maxStrength || 3);
+      const strengthValue = Math.min(Number(slot.slider.max) || 3, Math.max(1, current?.strength || ruleMeta?.defaultStrength || 1));
+      slot.slider.value = String(strengthValue);
+      slot.strengthValue.textContent = slot.slider.value;
+      slot.lethal.checked = !!current?.lethal;
+      if (!ruleId) {
+        slot.slider.disabled = true;
+        slot.lethal.disabled = true;
+        slot.strengthValue.textContent = "—";
+        slot.preview.textContent = "Empty slot.";
+      } else {
+        slot.slider.disabled = false;
+        slot.lethal.disabled = false;
+        const entry = adv?.resolveVow?.(ruleId, slot.slider.value, slot.lethal.checked) || null;
+        slot.preview.textContent = describeEntry(entry);
+      }
+    });
+
+    const readSelection = () => slots.map(slot => {
+      const ruleId = slot.select.value;
+      if (!ruleId) return null;
+      return {
+        ruleId,
+        strength: Number(slot.slider.value) || 1,
+        lethal: !!slot.lethal.checked
+      };
+    }).filter(Boolean);
+
+    const updatePreview = () => {
+      const currentSelection = readSelection();
+      slots.forEach((slot) => {
+        if (!slot.select.value) {
+          slot.slider.disabled = true;
+          slot.lethal.disabled = true;
+          slot.strengthValue.textContent = "—";
+          slot.preview.textContent = "Empty slot.";
+          return;
+        }
+        slot.slider.disabled = false;
+        slot.lethal.disabled = false;
+        slot.strengthValue.textContent = slot.slider.value;
+        const entry = adv?.resolveVow?.(slot.select.value, slot.slider.value, slot.lethal.checked) || null;
+        slot.preview.textContent = describeEntry(entry);
+      });
+      const bundle = adv?.combineVows?.(currentSelection) || { entries: [], totals: { koMultiplier: 1, nenMultiplier: 1, eliteTargetMultiplier: 1, eliteOthersMultiplier: 1, disableKen: false, restrictions: {} } };
+      renderVowTotals(summaryList, bundle.totals || {}, bundle.entries || []);
+      if (typeof config.onPreview === "function") {
+        config.onPreview(currentSelection, bundle);
+      }
+    };
+
+    slots.forEach(slot => {
+      slot.select.onchange = () => {
+        const ruleMeta = catalogMap.get(slot.select.value) || null;
+        slot.slider.max = String(ruleMeta?.maxStrength || 3);
+        if (!slot.select.value) {
+          slot.slider.value = "1";
+          slot.lethal.checked = false;
+        } else {
+          const preferred = ruleMeta?.defaultStrength || 1;
+          slot.slider.value = String(preferred);
+          slot.lethal.checked = false;
+        }
+        updatePreview();
+      };
+      slot.slider.oninput = () => {
+        slot.strengthValue.textContent = slot.slider.value;
+        updatePreview();
+      };
+      slot.lethal.onchange = () => {
+        updatePreview();
+      };
+    });
+
+    btnCancel.onclick = () => {
+      if (typeof config.onCancel === "function") config.onCancel();
+    };
+    btnConfirm.onclick = () => {
+      const chosen = readSelection();
+      const bundle = adv?.combineVows?.(chosen) || null;
+      if (typeof config.onConfirm === "function") config.onConfirm(chosen, bundle);
+    };
+
+    root.style.display = "flex";
+    root.style.pointerEvents = "auto";
+    requestAnimationFrame(() => {
+      root.style.opacity = "1";
+    });
+    updatePreview();
+    return () => closeVowMenu();
+  }
+
+  function closeVowMenu() {
+    if (!vowMenuCache?.root) return;
+    const { root } = vowMenuCache;
+    root.style.display = "none";
+    root.style.pointerEvents = "none";
+  }
+
   const HUD = {
     update: (...a)=>H.updateHUD?.(...a),
     updateCooldowns: (...a)=>H.updateCooldownUI?.(...a),
@@ -384,7 +752,9 @@
     ensureHotbar,
     renderHotbar,
     bindHotbar,
-    flashHotbarBreak: flashHotbar
+    flashHotbarBreak: flashHotbar,
+    openVowMenu,
+    closeVowMenu
   };
   window.HUD = HUD;
 })();
