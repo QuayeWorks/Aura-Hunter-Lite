@@ -1196,8 +1196,11 @@
 
          for (const char of source) {
             if (escapeNext) {
-               regex += "\\\\";
-               regex += specials.test(char) ? `\\${char}` : char;
+               if (char === "\\") {
+                  regex += "\\\\";
+               } else {
+                  regex += specials.test(char) ? `\\${char}` : char;
+               }
                escapeNext = false;
                continue;
             }
