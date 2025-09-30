@@ -840,8 +840,42 @@
       };
 
       const wildcardToRegExp = (pattern) => {
-         const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&");
-         return new RegExp(`^${escaped.replace(/\\\*/g, ".*").replace(/\\\?/g, ".")}$`, "i");
+         const source = typeof pattern === "string" ? pattern : String(pattern ?? "");
+         const specials = /[.*+?^${}()|[\]\\]/;
+         let regex = "^";
+         let escapeNext = false;
+
+         for (const char of source) {
+            if (escapeNext) {
+               regex += specials.test(char) ? `\\${char}` : char;
+               escapeNext = false;
+               continue;
+            }
+
+            if (char === "\\") {
+               escapeNext = true;
+               continue;
+            }
+
+            if (char === "*") {
+               regex += ".*";
+               continue;
+            }
+
+            if (char === "?") {
+               regex += ".";
+               continue;
+            }
+
+            regex += specials.test(char) ? `\\${char}` : char;
+         }
+
+         if (escapeNext) {
+            regex += "\\\\";
+         }
+
+         regex += "$";
+         return new RegExp(regex, "i");
       };
 
       const applyNodeState = (node, enabled) => {
