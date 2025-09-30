@@ -37,6 +37,27 @@
     refill: () => {}
   };
 
+  const DEV_BUILD = (() => {
+    if (typeof window === "undefined") return false;
+    if (typeof window.__HXH_DEV__ === "boolean") return window.__HXH_DEV__;
+    if (typeof window.DEV_MODE === "boolean") return window.DEV_MODE;
+    const host = window.location?.hostname || "";
+    if (!host) return false;
+    if (host === "localhost" || host === "127.0.0.1" || host === "0.0.0.0") return true;
+    return host.endsWith(".local");
+  })();
+
+  let profilerOverlayCache = null;
+  let profilerOverlayVisible = false;
+  let profilerOverlayHandlers = {
+    onToggleLod: () => {},
+    onInstanceModeChange: () => {},
+    onGreedyChange: () => {},
+    onDynamicResolutionChange: () => {},
+    onChunkRadiusChange: () => {},
+    onChunkRadiusReset: () => {}
+  };
+
   const TRAINING_SPECS = [
     {
       key: "renHold",
@@ -1247,6 +1268,302 @@
       const radius = Number.isFinite(aura?.en?.r) ? aura.en.r : 6;
       cache.enSlider.value = radius;
       if (cache.enValue) cache.enValue.textContent = `${radius.toFixed(1)}m`;
+    }
+  }
+
+  function ensureProfilerOverlay() {
+    if (!DEV_BUILD) return null;
+    if (profilerOverlayCache?.root?.isConnected) return profilerOverlayCache;
+    const root = ensureHudRoot();
+    if (!root) return null;
+
+    let container = document.getElementById("hud-profiler-overlay");
+    if (container && container.parentElement !== root) {
+      container.remove();
+      container = null;
+    }
+    if (container) container.innerHTML = "";
+    if (!container) {
+      container = document.createElement("div");
+      container.id = "hud-profiler-overlay";
+      root.appendChild(container);
+    }
+
+    container.style.position = "absolute";
+    container.style.top = "1rem";
+    container.style.right = "1rem";
+    container.style.display = profilerOverlayVisible ? "flex" : "none";
+    container.style.flexDirection = "column";
+    container.style.gap = "0.75rem";
+    container.style.minWidth = "260px";
+    container.style.maxWidth = "320px";
+    container.style.padding = "0.75rem";
+    container.style.borderRadius = "12px";
+    container.style.background = "rgba(8, 16, 28, 0.92)";
+    container.style.border = "1px solid rgba(120, 200, 255, 0.28)";
+    container.style.boxShadow = "0 14px 32px rgba(6, 14, 26, 0.55)";
+    container.style.color = "#e6f4ff";
+    container.style.fontSize = "0.78rem";
+    container.style.pointerEvents = "auto";
+    container.style.zIndex = "20";
+
+    const header = document.createElement("div");
+    header.style.display = "flex";
+    header.style.alignItems = "center";
+    header.style.justifyContent = "space-between";
+
+    const title = document.createElement("span");
+    title.textContent = "Profiler";
+    title.style.textTransform = "uppercase";
+    title.style.letterSpacing = "0.12em";
+    title.style.fontSize = "0.72rem";
+    title.style.fontWeight = "600";
+    title.style.opacity = "0.85";
+    header.appendChild(title);
+
+    const close = document.createElement("button");
+    close.type = "button";
+    close.textContent = "✕";
+    close.title = "Hide profiler overlay";
+    close.setAttribute("aria-label", "Hide profiler overlay");
+    close.style.border = "none";
+    close.style.background = "transparent";
+    close.style.color = "#9abfe6";
+    close.style.fontSize = "0.82rem";
+    close.style.cursor = "pointer";
+    close.style.padding = "0";
+    close.style.lineHeight = "1";
+    close.addEventListener("click", () => setProfilerOverlayVisible(false));
+    header.appendChild(close);
+    container.appendChild(header);
+
+    const metricsWrap = document.createElement("div");
+    metricsWrap.style.display = "flex";
+    metricsWrap.style.flexDirection = "column";
+    metricsWrap.style.gap = "0.25rem";
+    metricsWrap.style.padding = "0.4rem 0.2rem 0.2rem";
+    metricsWrap.style.background = "rgba(20, 34, 54, 0.55)";
+    metricsWrap.style.borderRadius = "8px";
+
+    const metrics = [
+      { key: "fps", label: "FPS" },
+      { key: "drawCalls", label: "Draw Calls" },
+      { key: "activeVertices", label: "Active Vertices" },
+      { key: "gpuFrame", label: "GPU Frame" },
+      { key: "chunksLoaded", label: "Chunks Loaded" },
+      { key: "chunksPending", label: "Chunks Pending" },
+      { key: "workerQueue", label: "Worker Queue" }
+    ];
+    const metricElements = new Map();
+    metrics.forEach(spec => {
+      const row = document.createElement("div");
+      row.style.display = "flex";
+      row.style.justifyContent = "space-between";
+      row.style.alignItems = "center";
+      const label = document.createElement("span");
+      label.textContent = spec.label;
+      label.style.opacity = "0.72";
+      const value = document.createElement("span");
+      value.dataset.metric = spec.key;
+      value.textContent = "--";
+      value.style.fontVariantNumeric = "tabular-nums";
+      value.style.marginLeft = "1rem";
+      row.appendChild(label);
+      row.appendChild(value);
+      metricsWrap.appendChild(row);
+      metricElements.set(spec.key, value);
+    });
+    container.appendChild(metricsWrap);
+
+    const controls = document.createElement("div");
+    controls.style.display = "flex";
+    controls.style.flexDirection = "column";
+    controls.style.gap = "0.45rem";
+
+    const toggleSpecs = [
+      { key: "lod", label: "Tree LOD" },
+      { key: "instances", label: "Use Clones" },
+      { key: "greedy", label: "Greedy Meshing" },
+      { key: "dynamic", label: "Dynamic Resolution" }
+    ];
+
+    const toggleInputs = new Map();
+    toggleSpecs.forEach(spec => {
+      const row = document.createElement("label");
+      row.style.display = "flex";
+      row.style.alignItems = "center";
+      row.style.justifyContent = "space-between";
+      row.style.gap = "0.8rem";
+      const text = document.createElement("span");
+      text.textContent = spec.label;
+      text.style.flex = "1";
+      text.style.opacity = "0.82";
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.style.width = "16px";
+      input.style.height = "16px";
+      input.style.cursor = "pointer";
+      if (spec.key === "lod") {
+        input.addEventListener("change", () => profilerOverlayHandlers.onToggleLod?.(!!input.checked));
+      } else if (spec.key === "instances") {
+        input.addEventListener("change", () => profilerOverlayHandlers.onInstanceModeChange?.(input.checked ? "cloned" : "instanced"));
+      } else if (spec.key === "greedy") {
+        input.addEventListener("change", () => profilerOverlayHandlers.onGreedyChange?.(!!input.checked));
+      } else if (spec.key === "dynamic") {
+        input.addEventListener("change", () => profilerOverlayHandlers.onDynamicResolutionChange?.(!!input.checked));
+      }
+      row.appendChild(text);
+      row.appendChild(input);
+      controls.appendChild(row);
+      toggleInputs.set(spec.key, input);
+    });
+
+    const radiusBlock = document.createElement("div");
+    radiusBlock.style.display = "flex";
+    radiusBlock.style.flexDirection = "column";
+    radiusBlock.style.gap = "0.4rem";
+
+    const radiusHeader = document.createElement("div");
+    radiusHeader.style.display = "flex";
+    radiusHeader.style.justifyContent = "space-between";
+    const radiusLabel = document.createElement("span");
+    radiusLabel.textContent = "Chunk Radius";
+    radiusLabel.style.opacity = "0.82";
+    const radiusValue = document.createElement("span");
+    radiusValue.textContent = "--";
+    radiusValue.style.fontVariantNumeric = "tabular-nums";
+    radiusHeader.appendChild(radiusLabel);
+    radiusHeader.appendChild(radiusValue);
+
+    const radiusControls = document.createElement("div");
+    radiusControls.style.display = "flex";
+    radiusControls.style.alignItems = "center";
+    radiusControls.style.gap = "0.5rem";
+
+    const slider = document.createElement("input");
+    slider.type = "range";
+    slider.min = "4";
+    slider.max = "200";
+    slider.step = "1";
+    slider.value = "64";
+    slider.style.flex = "1";
+    slider.style.cursor = "pointer";
+
+    const reset = document.createElement("button");
+    reset.type = "button";
+    reset.textContent = "Auto";
+    reset.style.padding = "0.25rem 0.55rem";
+    reset.style.fontSize = "0.68rem";
+    reset.style.borderRadius = "6px";
+    reset.style.border = "1px solid rgba(120, 200, 255, 0.32)";
+    reset.style.background = "rgba(16, 32, 52, 0.85)";
+    reset.style.color = "#d6ecff";
+    reset.style.cursor = "pointer";
+
+    const cache = {
+      root: container,
+      metrics: metricElements,
+      toggles: toggleInputs,
+      chunkSlider: slider,
+      chunkValue: radiusValue,
+      chunkReset: reset,
+      suppressChunkInput: false
+    };
+
+    slider.addEventListener("input", () => {
+      const raw = Number.parseFloat(slider.value);
+      if (Number.isFinite(raw)) {
+        cache.chunkValue.textContent = `${Math.round(raw)}m`;
+      }
+      if (!cache.suppressChunkInput) {
+        profilerOverlayHandlers.onChunkRadiusChange?.(Number.isFinite(raw) ? raw : null);
+      }
+    });
+
+    reset.addEventListener("click", () => profilerOverlayHandlers.onChunkRadiusReset?.());
+
+    radiusControls.appendChild(slider);
+    radiusControls.appendChild(reset);
+    radiusBlock.appendChild(radiusHeader);
+    radiusBlock.appendChild(radiusControls);
+    controls.appendChild(radiusBlock);
+    container.appendChild(controls);
+
+    profilerOverlayCache = cache;
+    return profilerOverlayCache;
+  }
+
+  function configureProfilerOverlay(handlers = {}) {
+    if (!DEV_BUILD) return false;
+    profilerOverlayHandlers = { ...profilerOverlayHandlers, ...handlers };
+    return !!ensureProfilerOverlay();
+  }
+
+  function setProfilerOverlayVisible(visible) {
+    if (!DEV_BUILD) return false;
+    const cache = ensureProfilerOverlay();
+    if (!cache) return false;
+    profilerOverlayVisible = !!visible;
+    cache.root.style.display = profilerOverlayVisible ? "flex" : "none";
+    return profilerOverlayVisible;
+  }
+
+  function toggleProfilerOverlay() {
+    return setProfilerOverlayVisible(!profilerOverlayVisible);
+  }
+
+  function formatProfilerNumber(value, { digits = 0, suffix = "", fallback = "--" } = {}) {
+    if (!Number.isFinite(value)) return fallback;
+    const rounded = digits > 0 ? value.toFixed(digits) : Math.round(value).toString();
+    return `${rounded}${suffix}`;
+  }
+
+  function updateProfilerOverlayMetrics(metrics = {}) {
+    if (!DEV_BUILD) return;
+    const cache = profilerOverlayCache || ensureProfilerOverlay();
+    if (!cache?.metrics) return;
+    const entries = cache.metrics;
+    const set = (key, value) => {
+      if (!entries.has(key)) return;
+      entries.get(key).textContent = value;
+    };
+    set("fps", formatProfilerNumber(metrics.fps, { digits: 1 }));
+    set("drawCalls", Number.isFinite(metrics.drawCalls) ? Math.round(metrics.drawCalls).toLocaleString("en-US") : "--");
+    set("activeVertices", Number.isFinite(metrics.activeVertices) ? Math.round(metrics.activeVertices).toLocaleString("en-US") : "--");
+    set("gpuFrame", formatProfilerNumber(metrics.gpuFrameTime, { digits: 2, suffix: "ms" }));
+    set("chunksLoaded", Number.isFinite(metrics.chunksLoaded) ? Math.round(metrics.chunksLoaded).toLocaleString("en-US") : "--");
+    set("chunksPending", Number.isFinite(metrics.chunksPending) ? Math.round(metrics.chunksPending).toLocaleString("en-US") : "--");
+    set("workerQueue", Number.isFinite(metrics.workerQueueDepth) ? Math.round(metrics.workerQueueDepth).toLocaleString("en-US") : "--");
+  }
+
+  function updateProfilerOverlayState(state = {}) {
+    if (!DEV_BUILD) return;
+    const cache = profilerOverlayCache || ensureProfilerOverlay();
+    if (!cache) return;
+    const { toggles } = cache;
+    if (toggles?.has("lod")) toggles.get("lod").checked = !!state.lodEnabled;
+    if (toggles?.has("instances")) toggles.get("instances").checked = state.instanceMode === "cloned";
+    if (toggles?.has("greedy")) toggles.get("greedy").checked = !!state.greedyEnabled;
+    if (toggles?.has("dynamic")) toggles.get("dynamic").checked = !!state.dynamicResolution;
+    const slider = cache.chunkSlider;
+    if (slider) {
+      const min = Number.isFinite(state.chunkMin) ? Math.round(state.chunkMin) : 4;
+      const max = Number.isFinite(state.chunkMax) ? Math.round(state.chunkMax) : Math.max(min + 2, 200);
+      const step = Number.isFinite(state.chunkStep) ? Math.max(1, Math.round(state.chunkStep)) : Math.max(1, Math.round((max - min) / 20));
+      cache.suppressChunkInput = true;
+      slider.min = `${min}`;
+      slider.max = `${max}`;
+      slider.step = `${step}`;
+      const manual = Number.isFinite(state.chunkOverride);
+      const sliderValue = manual ? state.chunkOverride : (Number.isFinite(state.chunkRadius) ? state.chunkRadius : min);
+      if (Number.isFinite(sliderValue)) slider.value = `${Math.round(sliderValue)}`;
+      slider.disabled = !Number.isFinite(state.chunkRadius);
+      if (cache.chunkReset) cache.chunkReset.disabled = slider.disabled;
+      const radiusDisplay = Number.isFinite(state.chunkRadius) ? Math.round(state.chunkRadius) : null;
+      cache.chunkValue.textContent = radiusDisplay != null
+        ? (manual ? `${radiusDisplay}m` : `Auto (${radiusDisplay}m)`)
+        : "--";
+      cache.suppressChunkInput = false;
     }
   }
 
@@ -2863,7 +3180,12 @@
     configureDevPanel,
     updateDevPanelState,
     toggleDevPanel,
-    setDevPanelVisible
+    setDevPanelVisible,
+    configureProfilerOverlay,
+    updateProfilerOverlayMetrics,
+    updateProfilerOverlayState,
+    toggleProfilerOverlay,
+    setProfilerOverlayVisible
   };
   window.HUD = HUD;
   ensureControlDock();

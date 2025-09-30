@@ -29,6 +29,16 @@
       }
    };
 
+   const DEV_BUILD = (() => {
+      if (typeof window === "undefined") return false;
+      if (typeof window.__HXH_DEV__ === "boolean") return window.__HXH_DEV__;
+      if (typeof window.DEV_MODE === "boolean") return window.DEV_MODE;
+      const host = window.location?.hostname || "";
+      if (!host) return false;
+      if (host === "localhost" || host === "127.0.0.1" || host === "0.0.0.0") return true;
+      return host.endsWith(".local");
+   })();
+
    const AURA_STATUS_KEYS = [
       { key: "ten", label: "Ten" },
       { key: "zetsu", label: "Zetsu" },
@@ -442,6 +452,16 @@
          cooldown: 0
       }
    };
+   const workerMetrics = { pending: 0 };
+   let engineInstrumentation = null;
+   let sceneInstrumentation = null;
+   const profilerState = {
+      enabled: DEV_BUILD,
+      lastMetricsUpdate: 0
+   };
+   let profilerHudConfigured = false;
+   let profilerHudSyncPending = false;
+   let profilerHotkeyHandler = null;
    let hudPerformanceUnsub = null;
    let hudDynamicUnsub = null;
    const COOLDOWNS = {
@@ -793,6 +813,7 @@
       terrainAtlas: terrainTextureState,
       terrainSettings: { ...savedTerrainSettings },
       lodProfile: JSON.parse(JSON.stringify(DEFAULT_ENVIRONMENT_LOD_PROFILE)),
+      lodEnabled: true,
       updateAccumulator: 0,
       updateInterval: 1 / 24
    };
@@ -859,6 +880,7 @@
          dynamicEnabled: adaptiveQuality.dynamic.enabled,
          minScale: adaptiveQuality.dynamic.minScale
       });
+      scheduleProfilerHudSync();
    }
 
    function setPerformanceTargetFps(value) {
@@ -902,6 +924,26 @@
       }
       dyn.cooldown = 0;
       applyDynamicResolutionState({ immediate: true });
+      scheduleProfilerHudSync();
+   }
+
+   function setDynamicResolutionEnabled(enabled) {
+      const dyn = adaptiveQuality.dynamic;
+      dyn.enabled = !!enabled;
+      if (!dyn.enabled) {
+         dyn.scale = 1;
+      }
+      dyn.cooldown = 0;
+      applyDynamicResolutionState({ immediate: true });
+      const hudApi = window.HUD;
+      hudApi?.updateDynamicResolutionState?.({
+         enabled: dyn.enabled,
+         minScale: dyn.minScale,
+         currentScale: dyn.scale
+      });
+      updateHudAdaptiveQuality();
+      scheduleProfilerHudSync();
+      return dyn.enabled;
    }
 
    function initializeAdaptiveQuality(sceneRef, engineRef, cameraRef) {
@@ -1088,6 +1130,140 @@
       }
    }
 
+   function ensureProfilerInstrumentation() {
+      if (!profilerState.enabled) return;
+      if (engine && !engineInstrumentation && typeof BABYLON?.EngineInstrumentation === "function") {
+         try {
+            engineInstrumentation = new BABYLON.EngineInstrumentation(engine);
+            engineInstrumentation.captureGPUFrameTime = true;
+         } catch (err) {
+            engineInstrumentation = null;
+            console.debug("[Profiler] EngineInstrumentation unavailable", err);
+         }
+      }
+      if (scene && !sceneInstrumentation && typeof BABYLON?.SceneInstrumentation === "function") {
+         try {
+            sceneInstrumentation = new BABYLON.SceneInstrumentation(scene);
+            sceneInstrumentation.captureFrameTime = true;
+            sceneInstrumentation.captureRenderTime = true;
+         } catch (err) {
+            sceneInstrumentation = null;
+            console.debug("[Profiler] SceneInstrumentation unavailable", err);
+         }
+      }
+   }
+
+   function scheduleProfilerHudSync() {
+      if (!profilerState.enabled || profilerHudSyncPending) return;
+      const hudApi = window.HUD;
+      if (!hudApi?.updateProfilerOverlayState) return;
+      profilerHudSyncPending = true;
+      const run = () => {
+         profilerHudSyncPending = false;
+         pushProfilerHudState();
+      };
+      if (typeof requestAnimationFrame === "function") {
+         requestAnimationFrame(run);
+      } else {
+         setTimeout(run, 0);
+      }
+   }
+
+   function pushProfilerHudState() {
+      if (!profilerState.enabled) return;
+      const hudApi = window.HUD;
+      if (!hudApi?.updateProfilerOverlayState) return;
+      const streaming = environment.terrain?.streaming;
+      let chunkRadius = null;
+      let chunkOverride = null;
+      let chunkMin = null;
+      let chunkMax = null;
+      let chunkStep = null;
+      if (streaming) {
+         chunkRadius = Number.isFinite(streaming.loadedRadius) ? streaming.loadedRadius : null;
+         chunkOverride = Number.isFinite(streaming.radiusOverride) ? streaming.radiusOverride : null;
+         chunkMin = Number.isFinite(streaming.minRadius) ? streaming.minRadius : null;
+         chunkMax = Number.isFinite(streaming.maxRadius) ? streaming.maxRadius : null;
+         const worldSize = Number.isFinite(streaming.chunkWorldSize) ? streaming.chunkWorldSize : 4;
+         chunkStep = Math.max(1, Math.round(worldSize * 0.25));
+      }
+      const instanceMode = getInstanceRenderingMode();
+      hudApi.updateProfilerOverlayState({
+         lodEnabled: environment.lodEnabled !== false,
+         instanceMode,
+         greedyEnabled: !!environment.terrainSettings?.greedyMeshing,
+         dynamicResolution: !!adaptiveQuality.dynamic.enabled,
+         chunkRadius,
+         chunkOverride,
+         chunkMin,
+         chunkMax,
+         chunkStep
+      });
+   }
+
+   function updateProfilerMetrics() {
+      if (!profilerState.enabled) return;
+      const hudApi = window.HUD;
+      if (!hudApi?.updateProfilerOverlayMetrics) return;
+      const now = typeof performance === "object" && typeof performance.now === "function" ? performance.now() : Date.now();
+      if (profilerState.lastMetricsUpdate && now - profilerState.lastMetricsUpdate < 200) return;
+      ensureProfilerInstrumentation();
+      let fps = typeof engine?.getFps === "function" ? engine.getFps() : 0;
+      if (!Number.isFinite(fps) || fps < 0) fps = 0;
+      const drawCalls = typeof engine?.drawCalls === "number"
+         ? engine.drawCalls
+         : sceneInstrumentation?.drawCallsCounter?.current ?? 0;
+      const activeVertices = typeof engine?.getActiveVertices === "function"
+         ? engine.getActiveVertices()
+         : sceneInstrumentation?.activeVerticesCounter?.current ?? 0;
+      let gpuFrameTime = null;
+      if (engineInstrumentation?.gpuFrameTimeCounter) {
+         const counter = engineInstrumentation.gpuFrameTimeCounter;
+         gpuFrameTime = Number.isFinite(counter.lastSecAverage) && counter.lastSecAverage > 0
+            ? counter.lastSecAverage
+            : counter.current;
+      }
+      const streaming = environment.terrain?.streaming;
+      let chunksLoaded = 0;
+      let chunksPending = 0;
+      if (streaming?.chunks) {
+         for (const chunk of streaming.chunks) {
+            if (!chunk) continue;
+            if (chunk.state === STREAMING_STATES.LOADED) chunksLoaded += 1;
+            else if (chunk.state === STREAMING_STATES.LOADING || chunk.state === STREAMING_STATES.UNLOADING) chunksPending += 1;
+         }
+      }
+      if (Array.isArray(streaming?.queue)) chunksPending += streaming.queue.length;
+      hudApi.updateProfilerOverlayMetrics({
+         fps,
+         drawCalls,
+         activeVertices,
+         gpuFrameTime,
+         chunksLoaded,
+         chunksPending,
+         workerQueueDepth: workerMetrics.pending
+      });
+      profilerState.lastMetricsUpdate = now;
+   }
+
+   function ensureProfilerHudConfigured(hudApi) {
+      if (!profilerState.enabled || profilerHudConfigured) return;
+      if (!hudApi?.configureProfilerOverlay) return;
+      hudApi.configureProfilerOverlay({
+         onToggleLod: (value) => setEnvironmentLodEnabled(value),
+         onInstanceModeChange: (mode) => setInstanceRenderingMode(mode),
+         onGreedyChange: (value) => setGreedyMeshingEnabled(value),
+         onDynamicResolutionChange: (value) => setDynamicResolutionEnabled(value),
+         onChunkRadiusChange: (value) => {
+            if (Number.isFinite(value)) setTerrainStreamingRadius(value, { mode: "manual" });
+         },
+         onChunkRadiusReset: () => setTerrainStreamingRadius(null, { mode: "manual" })
+      });
+      hudApi.setProfilerOverlayVisible?.(false);
+      profilerHudConfigured = true;
+      scheduleProfilerHudSync();
+   }
+
    let terrainRadiusControl = null;
    let terrainRadiusUiScheduled = false;
 
@@ -1096,6 +1272,7 @@
    const INSTANCE_POOL = (() => {
       const registry = new Map();
       let idCounter = 1;
+      let preferClones = false;
 
       const toVector3 = (value, fallback = new BABYLON.Vector3(0, 0, 0)) => {
          if (value instanceof BABYLON.Vector3) return value.clone();
@@ -1190,6 +1367,49 @@
          if (mesh.rotation) {
             mesh.rotation.set(0, 0, 0);
          }
+      };
+
+      const createMeshForEntry = (entry, transform, id, modeOverride) => {
+         const baseMesh = ensureBaseMesh(entry);
+         if (!baseMesh) return null;
+         const renderMode = modeOverride || (preferClones ? "cloned" : "instanced");
+         const name = `${entry.type}-${renderMode}-${id}`;
+         let mesh = null;
+         if (renderMode === "cloned") {
+            mesh = baseMesh.clone(name);
+            if (!mesh) return null;
+            if (!mesh.parent) mesh.parent = baseMesh.parent || null;
+         } else {
+            mesh = baseMesh.createInstance(name);
+         }
+         if (!mesh) return null;
+         applyTransformToMesh(mesh, transform);
+         mesh.isVisible = true;
+         mesh.isPickable = false;
+         mesh.checkCollisions = !!entry.options.withCollisions;
+         return mesh;
+      };
+
+      const rebuildEntryRenderMode = (entry) => {
+         if (!entry || entry.mode === "thin") return;
+         const records = Array.from(entry.instanceRecords.entries());
+         if (!records.length) {
+            entry.renderMode = preferClones ? "cloned" : "instanced";
+            return;
+         }
+         for (const [, record] of records) {
+            if (record?.mesh && typeof record.mesh.dispose === "function") {
+               try { record.mesh.dispose(); } catch (err) { /* ignore */ }
+            }
+         }
+         entry.instanceRecords.clear();
+         const renderMode = preferClones ? "cloned" : "instanced";
+         for (const [id, record] of records) {
+            const mesh = createMeshForEntry(entry, record.transform, id, renderMode);
+            if (!mesh) continue;
+            entry.instanceRecords.set(id, { mesh, transform: record.transform });
+         }
+         entry.renderMode = renderMode;
       };
 
       const rebuildThinBuffer = (entry) => {
@@ -1293,8 +1513,6 @@
       const spawnInstances = (type, transforms = [], options = {}) => {
          const entry = ensureEntry(type);
          if (!entry) return [];
-         const baseMesh = ensureBaseMesh(entry);
-         if (!baseMesh) return [];
          const list = Array.isArray(transforms) ? transforms : [transforms];
          if (!list.length) return [];
 
@@ -1324,15 +1542,14 @@
             return created;
          }
 
+         const explicitMode = requestMode === "cloned" ? "cloned" : requestMode === "instanced" ? "instanced" : null;
          for (const transformInput of list) {
             const transform = normalizeTransform(transformInput);
-            const mesh = baseMesh.createInstance(`${type}-inst-${idCounter}`);
-            applyTransformToMesh(mesh, transform);
-            mesh.isVisible = true;
-            mesh.isPickable = false;
-            mesh.checkCollisions = !!entry.options.withCollisions;
             const id = idCounter++;
+            const mesh = createMeshForEntry(entry, transform, id, explicitMode);
+            if (!mesh) continue;
             entry.instanceRecords.set(id, { mesh, transform });
+            entry.renderMode = (explicitMode || (preferClones ? "cloned" : "instanced"));
             created.push(id);
          }
          return created;
@@ -1373,6 +1590,19 @@
          return removed;
       };
 
+      const setPreferredMode = (mode) => {
+         const normalized = mode === "cloned" ? "cloned" : "instanced";
+         const next = normalized === "cloned";
+         if (preferClones === next) return normalized;
+         preferClones = next;
+         for (const entry of registry.values()) {
+            rebuildEntryRenderMode(entry);
+         }
+         return normalized;
+      };
+
+      const getPreferredMode = () => (preferClones ? "cloned" : "instanced");
+
       const reset = ({ disposeBase = false } = {}) => {
          for (const entry of registry.values()) {
             if (entry.mode === "thin") {
@@ -1396,6 +1626,7 @@
                try { entry.baseMesh.dispose(false, true); } catch (err) { /* ignore */ }
                entry.baseMesh = null;
             }
+            entry.renderMode = preferClones ? "cloned" : "instanced";
          }
       };
 
@@ -1404,6 +1635,8 @@
          spawnInstances,
          despawnInstances,
          reset,
+         setPreferredMode,
+         getPreferredMode,
          _registry: registry
       };
    })();
@@ -2250,10 +2483,34 @@
       UNLOADING: "unloading"
    };
 
+   function instrumentWorkerJobs(jobs) {
+      if (!jobs || typeof jobs !== "object") return jobs;
+      if (jobs.__hxInstrumented) return jobs;
+      const originalPostJob = typeof jobs.postJob === "function" ? jobs.postJob.bind(jobs) : null;
+      if (!originalPostJob) {
+         jobs.__hxInstrumented = true;
+         return jobs;
+      }
+      jobs.postJob = function instrumentedPostJob(...args) {
+         const result = originalPostJob(...args);
+         if (result && typeof result.then === "function") {
+            workerMetrics.pending = Math.max(0, workerMetrics.pending);
+            workerMetrics.pending += 1;
+            const finalize = () => {
+               workerMetrics.pending = Math.max(0, workerMetrics.pending - 1);
+            };
+            result.then(finalize, finalize);
+         }
+         return result;
+      };
+      jobs.__hxInstrumented = true;
+      return jobs;
+   }
+
    function getWorkerJobs() {
       const utils = window.WorldUtils;
       if (!utils || !utils.WorkerJobs) return null;
-      return utils.WorkerJobs;
+      return instrumentWorkerJobs(utils.WorkerJobs);
    }
 
    function toUint32Array(source) {
@@ -2355,6 +2612,7 @@
       streaming.loadedRadius = target;
       const unload = target + streaming.padding;
       streaming.unloadRadius = unload > target ? unload : target + (streaming.innerMargin || 1);
+      scheduleProfilerHudSync();
       return streaming.loadedRadius;
    }
 
@@ -2536,6 +2794,7 @@
       if (streaming.ready) {
          scheduleTerrainRadiusUiUpdate();
       }
+      scheduleProfilerHudSync();
       return streaming;
    }
 
@@ -2825,6 +3084,7 @@
       refreshChunkTargets(streaming, center, true);
       processStreamingQueue(streaming, opts.forceImmediate === true);
       scheduleTerrainRadiusUiUpdate();
+      scheduleProfilerHudSync();
       return streaming.loadedRadius;
    }
 
@@ -2839,6 +3099,21 @@
          min: streaming.minRadius,
          max: streaming.maxRadius
       };
+   }
+
+   function setGreedyMeshingEnabled(enabled) {
+      const value = !!enabled;
+      if (environment.terrainSettings) environment.terrainSettings.greedyMeshing = value;
+      if (environment.terrain) environment.terrain.greedyMeshing = value;
+      if (typeof window.GameSettings === "object" && window.GameSettings) {
+         window.GameSettings.greedyMeshing = value;
+      }
+      const utilsSettings = window.WorldUtils?.GameSettings;
+      if (typeof utilsSettings === "object" && utilsSettings) {
+         utilsSettings.greedyMeshing = value;
+      }
+      scheduleProfilerHudSync();
+      return value;
    }
 
    function setTerrainStreamingBudget(update = {}) {
@@ -3227,6 +3502,7 @@
 
    function applyTreeLodBindings(bindings) {
       if (!Array.isArray(bindings) || bindings.length === 0) return;
+      const lodEnabled = environment.lodEnabled !== false;
       const profile = resolveTreeLodProfile();
       let medium = sanitizeLodDistance(profile.mediumDistance, DEFAULT_ENVIRONMENT_LOD_PROFILE.tree.mediumDistance, 6);
       let far = sanitizeLodDistance(profile.farDistance, medium + 8, medium + 2);
@@ -3242,6 +3518,10 @@
             host.clearLODLevels();
          } else if (Array.isArray(host._LODLevels)) {
             host._LODLevels.length = 0;
+         }
+
+         if (!lodEnabled) {
+            continue;
          }
 
          const mediumMesh = binding.medium || null;
@@ -3311,6 +3591,30 @@
    }
 
    setEnvironmentLodProfile(environment.lodProfile);
+
+   function setEnvironmentLodEnabled(enabled) {
+      const value = enabled !== false;
+      if (environment.lodEnabled === value) return environment.lodEnabled;
+      environment.lodEnabled = value;
+      refreshAllTreeLods();
+      scheduleProfilerHudSync();
+      return environment.lodEnabled;
+   }
+
+   function setInstanceRenderingMode(mode) {
+      const normalized = mode === "cloned" ? "cloned" : "instanced";
+      if (typeof INSTANCE_POOL.setPreferredMode === "function") {
+         INSTANCE_POOL.setPreferredMode(normalized);
+      }
+      scheduleProfilerHudSync();
+      return normalized;
+   }
+
+   function getInstanceRenderingMode() {
+      return typeof INSTANCE_POOL.getPreferredMode === "function"
+         ? INSTANCE_POOL.getPreferredMode()
+         : "instanced";
+   }
 
    async function scatterVegetation(scene) {
       const terrain = environment.terrain;
@@ -5786,6 +6090,7 @@
          if (!paused) tick(dt);
          updateAdaptiveQuality(dt);
          scene.render();
+         updateProfilerMetrics();
          inputOnce = {};
          inputUp = {};
       });
@@ -5799,6 +6104,7 @@
 
    async function startGame(ch, options = {}) {
       await rigReady;
+      workerMetrics.pending = 0;
 
       const runtimeSnapshot = options && Object.prototype.hasOwnProperty.call(options, "runtime")
          ? options.runtime
@@ -5838,6 +6144,7 @@
       const hudApi = window.HUD;
       hudApi?.ensureControlDock?.();
       setupHudAdaptiveControls(hudApi);
+      ensureProfilerHudConfigured(hudApi);
       if (hudApi?.configureDevPanel) {
          hudApi.configureDevPanel({
             toggleAura: (key, value) => setAuraState(key, value),
@@ -5868,6 +6175,22 @@
          }
       };
       window.addEventListener("keydown", devHotkeyHandler);
+
+      if (profilerHotkeyHandler) {
+         window.removeEventListener("keydown", profilerHotkeyHandler);
+      }
+      if (profilerState.enabled) {
+         profilerHotkeyHandler = (event) => {
+            if (event.code === "KeyP" && event.ctrlKey && event.shiftKey) {
+               event.preventDefault();
+               hudApi?.toggleProfilerOverlay?.();
+            }
+         };
+         window.addEventListener("keydown", profilerHotkeyHandler);
+      } else {
+         profilerHotkeyHandler = null;
+         hudApi?.setProfilerOverlayVisible?.(false);
+      }
 
       if (runtimeSnapshot) {
          applyRuntimeSnapshot(runtimeSnapshot, { skipInventory: runtimeHasInventory });
@@ -7408,7 +7731,8 @@ try {
     getTerrainStreamingRadius, setTerrainStreamingRadius, setTerrainStreamingBudget, getTerrainStreamingStats,
     scatterVegetation, clearTrees, createCloudLayer, advanceEnvironment, updateEnvironment,
     getFallbackTreeMaterials, createFallbackTree,
-    applyTreeLOD, refreshAllTreeLods, setEnvironmentLodProfile,
+    applyTreeLOD, refreshAllTreeLods, setEnvironmentLodProfile, setEnvironmentLodEnabled,
+    setInstanceRenderingMode, getInstanceRenderingMode, setGreedyMeshingEnabled,
     registerInstanceType: INSTANCE_POOL.registerType,
     spawnInstances: (type, transforms, options) => INSTANCE_POOL.spawnInstances(type, transforms, options),
     despawnInstances: (type, ids) => INSTANCE_POOL.despawnInstances(type, ids),
@@ -7445,6 +7769,7 @@ try {
     getSimulationBubble,
     configureSimulationBubble,
     setSimulationBehaviorOverride,
+    setDynamicResolutionEnabled,
     refreshEnemySimulationAssignments,
     configureEnemyForSimulation,
     simulationBubble,
