@@ -21,6 +21,248 @@
   let grudgeStyleInjected = false;
   let controlDockCache = null;
   let performanceTargetValue = 60;
+  let cosmeticTesterCache = null;
+
+  function callHx(method, ...args) {
+    try {
+      const api = window.HXH;
+      if (!api || typeof api[method] !== "function") return null;
+      return api[method](...args);
+    } catch (err) {
+      console.warn("[HUD] HXH call failed", err);
+      return null;
+    }
+  }
+
+  function getCosmeticConfig() {
+    const cfg = window.RigDefinitions?.COSMETICS;
+    return cfg && typeof cfg === "object" ? cfg : null;
+  }
+
+  function cloneValue(value) {
+    if (!value) return value;
+    try {
+      return JSON.parse(JSON.stringify(value));
+    } catch (err) {
+      if (Array.isArray(value)) return value.slice();
+      if (typeof value === "object") return { ...value };
+      return value;
+    }
+  }
+
+  function getCosmeticSelectionSnapshot() {
+    const snapshot = callHx("getCosmeticSelection");
+    if (snapshot && typeof snapshot === "object") return cloneValue(snapshot);
+    const fallback = window.RigDefinitions?.DEFAULT_COSMETICS;
+    if (fallback && typeof fallback === "object") return cloneValue(fallback);
+    return { face: "", hair: "", outfit: { top: "", bottom: "", full: null }, shoes: "", accessories: [] };
+  }
+
+  function buildCosmeticTester({ dock, cardStyle, makeButton }) {
+    const config = getCosmeticConfig();
+    if (!dock || !config) return null;
+
+    if (cosmeticTesterCache?.root?.isConnected && dock.contains(cosmeticTesterCache.root)) {
+      cosmeticTesterCache.update();
+      return cosmeticTesterCache;
+    }
+
+    if (cosmeticTesterCache?.root?.parentElement) {
+      cosmeticTesterCache.root.parentElement.removeChild(cosmeticTesterCache.root);
+    }
+
+    const faces = Array.isArray(config.faces) ? config.faces.filter(spec => spec && spec.id) : [];
+    const hair = Array.isArray(config.hair) ? config.hair.filter(spec => spec && spec.id) : [];
+    const fullEntries = Object.entries(config.outfits?.full || {});
+    const fullSpecs = fullEntries.map(([key, spec]) => ({ ...(spec || {}), id: spec?.id || key }));
+    const shoeEntries = Object.entries(config.shoes || {});
+    const shoeSpecs = shoeEntries.map(([key, spec]) => ({ ...(spec || {}), id: spec?.id || key }));
+    const accessoryEntries = Object.entries(config.accessories || {});
+    const accessorySpecs = accessoryEntries.map(([key, spec]) => ({ ...(spec || {}), id: spec?.id || key }));
+
+    if (!faces.length && !hair.length && !fullSpecs.length && !shoeSpecs.length && !accessorySpecs.length) {
+      cosmeticTesterCache = null;
+      return null;
+    }
+
+    const card = document.createElement("div");
+    cardStyle(card);
+    card.classList.add("hud-cosmetic-card");
+    card.style.minWidth = "220px";
+
+    const title = document.createElement("strong");
+    title.textContent = "Cosmetics (Test)";
+    title.style.fontSize = "0.68rem";
+    title.style.letterSpacing = "0.08em";
+    title.style.textTransform = "uppercase";
+    title.style.opacity = "0.8";
+    card.appendChild(title);
+
+    const row = document.createElement("div");
+    row.className = "cosmetic-test-row";
+    card.appendChild(row);
+
+    const faceIds = faces.map(spec => spec.id);
+    const faceMap = new Map(faces.map(spec => [spec.id, spec]));
+    const hairIds = hair.map(spec => spec.id);
+    const hairMap = new Map(hair.map(spec => [spec.id, spec]));
+    const fullIds = fullSpecs.map(spec => spec.id);
+    const fullMap = new Map(fullSpecs.map(spec => [spec.id, spec]));
+    const shoeIds = shoeSpecs.map(spec => spec.id);
+    const shoeMap = new Map(shoeSpecs.map(spec => [spec.id, spec]));
+    const accessoryMap = new Map(accessorySpecs.map(spec => [spec.id, spec]));
+
+    const accessoryCombosRaw = [];
+    accessoryCombosRaw.push([]);
+    if (accessorySpecs[0]) accessoryCombosRaw.push([accessorySpecs[0].id]);
+    if (accessorySpecs[1]) accessoryCombosRaw.push([accessorySpecs[1].id]);
+    if (accessorySpecs[0] && accessorySpecs[1]) accessoryCombosRaw.push([accessorySpecs[0].id, accessorySpecs[1].id]);
+    if (accessorySpecs[2]) accessoryCombosRaw.push([accessorySpecs[2].id]);
+    const seenCombo = new Set();
+    const accessoryCombos = accessoryCombosRaw
+      .map(combo => combo.filter(id => accessoryMap.has(id)))
+      .map(combo => combo.slice().sort())
+      .filter(combo => {
+        const key = combo.join("|");
+        if (seenCombo.has(key)) return false;
+        seenCombo.add(key);
+        return true;
+      });
+
+    let faceIndex = 0;
+    let hairIndex = 0;
+    let fullIndex = 0;
+    let shoeIndex = 0;
+    let accIndex = 0;
+    let outfitCustom = false;
+    let accessoriesCustom = false;
+
+    const faceBtn = faces.length ? makeButton("Face") : null;
+    const hairBtn = hair.length ? makeButton("Hair") : null;
+    const outfitBtn = fullSpecs.length ? makeButton("Outfit") : null;
+    const shoeBtn = shoeSpecs.length ? makeButton("Shoes") : null;
+    const accessoryBtn = accessoryCombos.length ? makeButton("Accessories") : null;
+
+    [faceBtn, hairBtn, outfitBtn, shoeBtn, accessoryBtn].forEach(btn => {
+      if (!btn) return;
+      btn.style.minWidth = "140px";
+      btn.style.justifyContent = "center";
+      row.appendChild(btn);
+    });
+
+    function labelFromMap(map, id, fallback = id || "—") {
+      const spec = id ? map.get(id) : null;
+      return spec?.label || fallback;
+    }
+
+    function formatAccessories(ids = []) {
+      if (!ids.length) return "None";
+      const names = ids.map(id => labelFromMap(accessoryMap, id, id));
+      return names.join(" + ");
+    }
+
+    function syncIndices(selection = {}) {
+      if (selection.face && faceIds.includes(selection.face)) faceIndex = faceIds.indexOf(selection.face);
+      if (selection.hair && hairIds.includes(selection.hair)) hairIndex = hairIds.indexOf(selection.hair);
+      if (selection.shoes && shoeIds.includes(selection.shoes)) shoeIndex = shoeIds.indexOf(selection.shoes);
+
+      outfitCustom = true;
+      if (selection.outfit && selection.outfit.full && fullIds.includes(selection.outfit.full)) {
+        fullIndex = fullIds.indexOf(selection.outfit.full);
+        outfitCustom = false;
+      }
+
+      accessoriesCustom = true;
+      const selAcc = Array.isArray(selection.accessories) ? selection.accessories.slice().sort() : [];
+      for (let i = 0; i < accessoryCombos.length; i += 1) {
+        const combo = accessoryCombos[i];
+        if (combo.length === selAcc.length && combo.every((id, idx) => id === selAcc[idx])) {
+          accIndex = i;
+          accessoriesCustom = false;
+          break;
+        }
+      }
+      if (accessoriesCustom) accIndex = 0;
+    }
+
+    function update(selectionOverride) {
+      const selection = selectionOverride && typeof selectionOverride === "object"
+        ? selectionOverride
+        : getCosmeticSelectionSnapshot();
+      syncIndices(selection);
+
+      if (faceBtn) faceBtn.textContent = `Face: ${labelFromMap(faceMap, faceIds[faceIndex], "Default")}`;
+      if (hairBtn) hairBtn.textContent = `Hair: ${labelFromMap(hairMap, hairIds[hairIndex], "Default")}`;
+      if (outfitBtn) {
+        outfitBtn.textContent = outfitCustom
+          ? "Outfit: Custom"
+          : `Outfit: ${labelFromMap(fullMap, fullIds[fullIndex], "Preset")}`;
+      }
+      if (shoeBtn) shoeBtn.textContent = `Shoes: ${labelFromMap(shoeMap, shoeIds[shoeIndex], "Default")}`;
+      if (accessoryBtn) {
+        accessoryBtn.textContent = accessoriesCustom
+          ? "Accessories: Mixed"
+          : `Accessories: ${formatAccessories(accessoryCombos[accIndex] || [])}`;
+      }
+    }
+
+    if (faceBtn && faceIds.length) {
+      faceBtn.addEventListener("click", () => {
+        faceIndex = (faceIndex + 1) % faceIds.length;
+        const id = faceIds[faceIndex];
+        callHx("setFace", id);
+        update();
+      });
+    }
+
+    if (hairBtn && hairIds.length) {
+      hairBtn.addEventListener("click", () => {
+        hairIndex = (hairIndex + 1) % hairIds.length;
+        const id = hairIds[hairIndex];
+        callHx("setHair", id);
+        update();
+      });
+    }
+
+    if (outfitBtn && fullIds.length) {
+      outfitBtn.addEventListener("click", () => {
+        fullIndex = (fullIndex + 1) % fullIds.length;
+        const id = fullIds[fullIndex];
+        callHx("setOutfit", { full: id });
+        update();
+      });
+    }
+
+    if (shoeBtn && shoeIds.length) {
+      shoeBtn.addEventListener("click", () => {
+        shoeIndex = (shoeIndex + 1) % shoeIds.length;
+        const id = shoeIds[shoeIndex];
+        callHx("setShoes", id);
+        update();
+      });
+    }
+
+    if (accessoryBtn && accessoryCombos.length) {
+      accessoryBtn.addEventListener("click", () => {
+        accIndex = (accIndex + 1) % accessoryCombos.length;
+        const combo = accessoryCombos[accIndex] || [];
+        callHx("setAccessories", combo.slice());
+        update();
+      });
+    }
+
+    dock.appendChild(card);
+    cosmeticTesterCache = { root: card, update };
+    update();
+    return cosmeticTesterCache;
+  }
+
+  function refreshCosmeticTester(selection) {
+    if (cosmeticTesterCache?.update) {
+      cosmeticTesterCache.update(selection);
+    }
+  }
+
   const performanceTargetListeners = new Set();
   let dynamicResolutionState = { enabled: false, minScale: 0.7, currentScale: 1 };
   const PERF_SETTINGS_KEY = "hxh-perf-settings";
@@ -746,6 +988,8 @@
     dynCard.appendChild(dynSliderRow);
     dock.appendChild(dynCard);
 
+    const cosmeticTester = buildCosmeticTester({ dock, cardStyle, makeButton });
+
     const qualityBadge = document.createElement("span");
     qualityBadge.style.padding = "0.35rem 0.7rem";
     qualityBadge.style.borderRadius = "999px";
@@ -768,7 +1012,8 @@
       dynSlider,
       dynValue,
       dynCurrent,
-      qualityBadge
+      qualityBadge,
+      cosmeticTester
     };
 
     setPerformanceTarget(performanceTargetValue);
@@ -3233,6 +3478,7 @@
     closeTrainingMenu,
     bindTrainingButton,
     ensureControlDock,
+    refreshCosmeticTester,
     getPerformanceTarget: () => performanceTargetValue,
     setPerformanceTarget: (value) => setPerformanceTarget(value, { emit: false }),
     onPerformanceTargetChange,
