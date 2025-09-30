@@ -11,6 +11,7 @@
   const warmedNeighbors = new Set();
   const interiorSpecsByRegion = new Map();
   const interiorRuntimeByRegion = new Map();
+  const chunkMeshes = new Map();
   let interiorRevisionCounter = 1;
   let activeRegionId = null;
   let lastCommand = null;
@@ -1474,6 +1475,55 @@
     }
   }
 
+  function chunkKey(chunkId) {
+    if (!chunkId || typeof chunkId !== "object") return null;
+    const cx = Number.isFinite(chunkId.cx) ? chunkId.cx : Number(chunkId.cx) || 0;
+    const cy = Number.isFinite(chunkId.cy) ? chunkId.cy : Number(chunkId.cy) || 0;
+    const cz = Number.isFinite(chunkId.cz) ? chunkId.cz : Number(chunkId.cz) || 0;
+    return `${cx},${cy},${cz}`;
+  }
+
+  function disposeChunkMesh(chunkId) {
+    const key = chunkKey(chunkId);
+    if (!key) return false;
+    const existing = chunkMeshes.get(key);
+    if (existing && typeof existing.dispose === "function") {
+      try {
+        existing.dispose(false, true);
+      } catch (err) {
+        try {
+          existing.dispose();
+        } catch (inner) {
+          console.warn(`[RegionManager] Failed to dispose chunk mesh ${key}`, inner || err);
+        }
+      }
+    }
+    chunkMeshes.delete(key);
+    return true;
+  }
+
+  function ensureChunkMesh(chunkId, blocks, opts = {}) {
+    const key = chunkKey(chunkId);
+    if (!key) return null;
+    disposeChunkMesh(chunkId);
+    const builder = window.WorldUtils?.buildChunkMesh;
+    if (typeof builder !== "function") {
+      console.warn("[RegionManager] buildChunkMesh is not available.");
+      return null;
+    }
+    try {
+      const mesh = builder(blocks, { ...opts, chunkId });
+      if (mesh) {
+        chunkMeshes.set(key, mesh);
+      }
+      return mesh || null;
+    } catch (err) {
+      console.warn(`[RegionManager] Failed to build chunk mesh ${key}`, err);
+      chunkMeshes.delete(key);
+      return null;
+    }
+  }
+
   const API = {
     registerRegion,
     listRegions,
@@ -1493,6 +1543,8 @@
     getTerrainRadius: () => window.WorldUtils?.getTerrainStreamingRadius?.() || null,
     showMenu: (...a)=>window.MenuScreen?.showMenu?.(...a),
     setScene,
+    ensureChunkMesh,
+    disposeChunkMesh,
     distanceToRegionBoundary: (id, point) => {
       const region = typeof id === "string" ? registry.get(id) : id;
       if (!region) return Infinity;
