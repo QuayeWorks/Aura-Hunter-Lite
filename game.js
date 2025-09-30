@@ -458,6 +458,41 @@
       { key: "grass", color: [0.32, 0.62, 0.3], emissive: [0.1, 0.22, 0.1], destructible: true, thickness: 0.25 }
    ];
 
+   const TERRAIN_ATLAS_SOURCES = (() => {
+      if (typeof window === "undefined") {
+         return { compressed: null, tileSize: 256, padding: 4 };
+      }
+      const atlasConfig = window.HXH_TEXTURES?.terrainAtlas || {};
+      const compressed = typeof atlasConfig.compressed === "string" && atlasConfig.compressed.trim()
+         ? atlasConfig.compressed.trim()
+         : (typeof window.__HXH_TERRAIN_ATLAS_KTX2__ === "string" && window.__HXH_TERRAIN_ATLAS_KTX2__.trim()
+            ? window.__HXH_TERRAIN_ATLAS_KTX2__.trim()
+            : null);
+      const tileSize = Number.isFinite(atlasConfig.tileSize) && atlasConfig.tileSize > 0
+         ? Math.max(32, Math.min(1024, Math.round(atlasConfig.tileSize)))
+         : 256;
+      const padding = Number.isFinite(atlasConfig.padding)
+         ? Math.max(0, Math.min(Math.round(atlasConfig.padding), Math.floor(tileSize / 3)))
+         : 4;
+      return { compressed, tileSize, padding };
+   })();
+
+   const terrainTextureState = {
+      material: null,
+      diffuseTexture: null,
+      atlasRects: [],
+      compressedUrl: TERRAIN_ATLAS_SOURCES.compressed,
+      tileSize: TERRAIN_ATLAS_SOURCES.tileSize,
+      padding: TERRAIN_ATLAS_SOURCES.padding,
+      compressedLoading: false,
+      compressedReady: false
+   };
+
+   const terrainKtx2State = {
+      promise: null,
+      supported: false
+   };
+
    const DEFAULT_CHUNK_SIZE = 16;
    const DEFAULT_STREAM_INTERVAL = 0.05;
    const DEFAULT_STREAM_BUDGET_MS = 3.5;
@@ -512,6 +547,200 @@
 
    const savedTerrainSettings = normalizeTerrainSettings(loadTerrainSettings());
 
+   const COLOR3_WHITE = BABYLON.Color3.White();
+   const COLOR3_BLACK = BABYLON.Color3.Black();
+
+   const clamp01 = (value) => Math.min(1, Math.max(0, value));
+
+   const arrayToColor3 = (arr = []) => {
+      if (arr instanceof BABYLON.Color3) return arr.clone();
+      const r = clamp01(Number(arr[0]) || 0);
+      const g = clamp01(Number(arr[1]) || 0);
+      const b = clamp01(Number(arr[2]) || 0);
+      return new BABYLON.Color3(r, g, b);
+   };
+
+   const tintColor = (color, strength) => {
+      if (!(color instanceof BABYLON.Color3)) return tintColor(arrayToColor3(color), strength);
+      if (!Number.isFinite(strength) || strength === 0) return color.clone();
+      const s = Math.min(1, Math.max(-1, strength));
+      if (s > 0) {
+         return BABYLON.Color3.Lerp(color, COLOR3_WHITE, s);
+      }
+      return BABYLON.Color3.Lerp(color, COLOR3_BLACK, Math.abs(s));
+   };
+
+   const color3ToCss = (color) => {
+      const c = color instanceof BABYLON.Color3 ? color : arrayToColor3(color);
+      const r = Math.round(clamp01(c.r) * 255);
+      const g = Math.round(clamp01(c.g) * 255);
+      const b = Math.round(clamp01(c.b) * 255);
+      return `rgb(${r},${g},${b})`;
+   };
+
+   const makeSeededRandom = (seed) => {
+      let state = seed >>> 0;
+      return () => {
+         state = (state * 1664525 + 1013904223) >>> 0;
+         return state / 0x100000000;
+      };
+   };
+
+   function createDynamicTerrainAtlas(scene) {
+      const tileSize = terrainTextureState.tileSize;
+      const padding = terrainTextureState.padding;
+      const layers = TERRAIN_LAYER_DEFS.length;
+      const width = tileSize * layers;
+      const height = tileSize;
+      const dynamicTexture = new BABYLON.DynamicTexture("terrainAtlasDynamic", { width, height }, scene, false, BABYLON.Texture.NEAREST_SAMPLINGMODE);
+      dynamicTexture.hasAlpha = false;
+      dynamicTexture.wrapU = BABYLON.Texture.CLAMP_ADDRESSMODE;
+      dynamicTexture.wrapV = BABYLON.Texture.CLAMP_ADDRESSMODE;
+      const ctx = dynamicTexture.getContext();
+      ctx.clearRect(0, 0, width, height);
+      const rects = new Array(layers);
+      for (let i = 0; i < layers; i += 1) {
+         const def = TERRAIN_LAYER_DEFS[i] || {};
+         const baseColor = arrayToColor3(def.color || [0.5, 0.5, 0.5]);
+         const highlight = tintColor(baseColor, 0.22);
+         const shadow = tintColor(baseColor, -0.24);
+         const x = i * tileSize;
+         // Base fill with subtle shadow to reduce seams.
+         ctx.fillStyle = color3ToCss(tintColor(baseColor, -0.05));
+         ctx.fillRect(x, 0, tileSize, height);
+         const grad = ctx.createLinearGradient(x, 0, x, height);
+         grad.addColorStop(0, color3ToCss(highlight));
+         grad.addColorStop(1, color3ToCss(shadow));
+         ctx.fillStyle = grad;
+         const innerX = x + padding;
+         const innerY = padding;
+         const innerWidth = tileSize - padding * 2;
+         const innerHeight = height - padding * 2;
+         ctx.fillRect(innerX, innerY, innerWidth, innerHeight);
+
+         const noise = makeSeededRandom(0x9e3779b9 ^ (i * 0x45d9f3b));
+         const density = Math.max(24, Math.round((innerWidth * innerHeight) / 1800));
+         ctx.globalAlpha = 0.28;
+         for (let n = 0; n < density; n += 1) {
+            const nx = innerX + noise() * innerWidth;
+            const ny = innerY + noise() * innerHeight;
+            const size = 1 + noise() * 2.8;
+            const tint = (noise() - 0.5) * 0.18;
+            ctx.fillStyle = color3ToCss(tintColor(baseColor, tint));
+            ctx.fillRect(nx, ny, size, size);
+         }
+         ctx.globalAlpha = 1;
+
+         const u0 = innerX / width;
+         const v0 = innerY / height;
+         const u1 = (innerX + innerWidth) / width;
+         const v1 = (innerY + innerHeight) / height;
+         rects[i] = { u0, v0, u1, v1 };
+      }
+      dynamicTexture.update(false);
+      return { texture: dynamicTexture, rects };
+   }
+
+   function configureAtlasTexture(texture) {
+      if (!texture) return;
+      texture.hasAlpha = false;
+      texture.wrapU = BABYLON.Texture.CLAMP_ADDRESSMODE;
+      texture.wrapV = BABYLON.Texture.CLAMP_ADDRESSMODE;
+      texture.anisotropicFilteringLevel = 1;
+   }
+
+   function loadTextureAsync(url, scene, options = {}) {
+      return new Promise((resolve, reject) => {
+         if (!url) {
+            reject(new Error("Texture URL missing"));
+            return;
+         }
+         const noMipmap = !!options.noMipmap;
+         const invertY = options.invertY ?? false;
+         const sampling = options.samplingMode ?? BABYLON.Texture.NEAREST_SAMPLINGMODE;
+         const texture = new BABYLON.Texture(url, scene, noMipmap, invertY, sampling,
+            () => resolve(texture),
+            (message, exception) => {
+               if (texture && !texture.isDisposed()) {
+                  try { texture.dispose(); } catch (err) {}
+               }
+               reject(exception || new Error(message || "Failed to load texture"));
+            }
+         );
+         configureAtlasTexture(texture);
+      });
+   }
+
+   function ensureKtx2Support(engine) {
+      if (!engine) return Promise.resolve(false);
+      if (terrainKtx2State.promise) return terrainKtx2State.promise;
+      try {
+         if (BABYLON?.KTX2DecodeManager?.SetTranscoderPath) {
+            BABYLON.KTX2DecodeManager.SetTranscoderPath("https://cdn.babylonjs.com/basis/");
+         } else if (BABYLON?.KhronosTextureContainer2) {
+            const current = BABYLON.KhronosTextureContainer2.URLConfig || {};
+            if (!current.jsDecoderModule) {
+               BABYLON.KhronosTextureContainer2.URLConfig = {
+                  ...current,
+                  jsDecoderModule: "https://cdn.babylonjs.com/babylon.ktx2Decoder.js"
+               };
+            }
+         }
+      } catch (err) {
+         console.debug("[HXH] Failed to configure KTX2 decoder", err);
+      }
+
+      if (typeof BABYLON?.KTX2DecodeManager?.IsTranscoderAvailableAsync === "function") {
+         terrainKtx2State.promise = BABYLON.KTX2DecodeManager.IsTranscoderAvailableAsync(engine)
+            .then((supported) => {
+               terrainKtx2State.supported = !!supported;
+               return terrainKtx2State.supported;
+            })
+            .catch((err) => {
+               console.debug("[HXH] KTX2 transcoder unavailable", err);
+               return false;
+            });
+      } else {
+         const fallbackSupport = !!BABYLON?.KhronosTextureContainer2;
+         terrainKtx2State.promise = Promise.resolve(fallbackSupport);
+         terrainKtx2State.supported = fallbackSupport;
+      }
+
+      return terrainKtx2State.promise;
+   }
+
+   function maybeLoadCompressedTerrainAtlas(scene) {
+      if (!terrainTextureState.compressedUrl || terrainTextureState.compressedLoading || terrainTextureState.compressedReady || !terrainTextureState.material) return;
+      terrainTextureState.compressedLoading = true;
+      ensureKtx2Support(scene.getEngine())
+         .then((supported) => {
+            if (!supported) return null;
+            return loadTextureAsync(terrainTextureState.compressedUrl, scene, { invertY: false })
+               .then((texture) => {
+                  configureAtlasTexture(texture);
+                  const material = terrainTextureState.material;
+                  if (material) {
+                     material.diffuseTexture = texture;
+                     material.ambientTexture = null;
+                  }
+                  if (terrainTextureState.diffuseTexture && terrainTextureState.diffuseTexture !== texture) {
+                     try { terrainTextureState.diffuseTexture.dispose(); } catch (err) {}
+                  }
+                  terrainTextureState.diffuseTexture = texture;
+                  terrainTextureState.compressedReady = true;
+               })
+               .catch((err) => {
+                  console.debug("[HXH] Terrain atlas KTX2 load failed", err);
+               });
+         })
+         .catch((err) => {
+            console.debug("[HXH] Terrain atlas compression probe failed", err);
+         })
+         .finally(() => {
+            terrainTextureState.compressedLoading = false;
+         });
+   }
+
    const DEFAULT_ENVIRONMENT_LOD_PROFILE = Object.freeze({
       tree: Object.freeze({ mediumDistance: 48, farDistance: 96, cullDistance: 160, billboard: true }),
       rock: Object.freeze({ mediumDistance: 36, farDistance: 78, cullDistance: 148, billboard: false }),
@@ -533,6 +762,8 @@
       trees: [],
       treeColumns: [],
       terrain: null,
+      terrainMaterial: null,
+      terrainAtlas: terrainTextureState,
       terrainSettings: { ...savedTerrainSettings },
       lodProfile: JSON.parse(JSON.stringify(DEFAULT_ENVIRONMENT_LOD_PROFILE)),
       updateAccumulator: 0,
@@ -1425,6 +1656,41 @@
          localStorage.setItem(TERRAIN_SETTINGS_KEY, JSON.stringify(settings));
       } catch (err) {}
    }
+
+   function ensureTerrainMaterial(scene) {
+      if (terrainTextureState.material && !terrainTextureState.material.isDisposed()) {
+         environment.terrainMaterial = terrainTextureState.material;
+         if (!terrainTextureState.compressedReady && !terrainTextureState.compressedLoading) {
+            maybeLoadCompressedTerrainAtlas(scene);
+         }
+         return {
+            material: terrainTextureState.material,
+            rects: terrainTextureState.atlasRects
+         };
+      }
+
+      const atlas = createDynamicTerrainAtlas(scene);
+      terrainTextureState.diffuseTexture = atlas.texture;
+      terrainTextureState.atlasRects = atlas.rects;
+
+      const sharedMaterial = new BABYLON.StandardMaterial("terrainSharedMat", scene);
+      sharedMaterial.diffuseTexture = atlas.texture;
+      sharedMaterial.specularColor = BABYLON.Color3.Black();
+      sharedMaterial.ambientColor = new BABYLON.Color3(0.3, 0.3, 0.32);
+      sharedMaterial.useGlossinessFromSpecularMapAlpha = false;
+      configureAtlasTexture(atlas.texture);
+
+      terrainTextureState.material = sharedMaterial;
+      environment.terrainMaterial = sharedMaterial;
+      environment.terrainAtlas = terrainTextureState;
+
+      maybeLoadCompressedTerrainAtlas(scene);
+
+      return {
+         material: sharedMaterial,
+         rects: terrainTextureState.atlasRects
+      };
+   }
 	// Precompile terrain layer materials for smooth startup.
 	// Call: await precompileTerrainMaterials(scene) after createTerrain(scene) and before mass instancing (trees, etc).
 	async function precompileTerrainMaterials(scene) {
@@ -1517,38 +1783,26 @@
           const columnStates = new Array(length * width).fill(false);
           const centers = new Array(length * width);
 
-          // Build materials once (unchanged logic)
-          const layerMaterials = TERRAIN_LAYER_DEFS.map(def => {
-		const mat = new BABYLON.StandardMaterial(`terrain_${def.key}`, scene);
-		const diffuse = new BABYLON.Color3(def.color[0], def.color[1], def.color[2]);
-		const emissive = new BABYLON.Color3(def.emissive[0], def.emissive[1], def.emissive[2]);
-		mat.diffuseColor = diffuse;
-		mat.ambientColor = diffuse.scale(0.45);
-		mat.emissiveColor = emissive;
-		mat.specularColor = BABYLON.Color3.Black();
-		return mat;
-	  });
+          const { material: terrainMaterial, rects: atlasRects } = ensureTerrainMaterial(scene);
+          const defaultRect = atlasRects && atlasRects.length ? atlasRects[0] : { u0: 0, v0: 0, u1: 1, v1: 1 };
 
-	  // IMPORTANT CHANGE:
-	  // Create ONE template box PER LAYER, assign the layer's material ONCE,
-	  // and thin-hide the templates. We will instance from these. Do NOT
-	  // assign materials on instances.
-	  const layerTemplates = [];
+          const layerTemplates = [];
           for (let layer = 0; layer < layers; layer++) {
+                const rect = atlasRects && atlasRects[layer] ? atlasRects[layer] : defaultRect;
+                const faceUV = Array.from({ length: 6 }, () => new BABYLON.Vector4(rect.u0, rect.v0, rect.u1, rect.v1));
                 const template = BABYLON.MeshBuilder.CreateBox(`terrainCubeTemplate_L${layer}`, {
                       width: cubeSize,
                       depth: cubeSize,
-                      height: layerThicknesses[layer]
+                      height: layerThicknesses[layer],
+                      faceUV
                 }, scene);
                 template.parent = root;
-                // Assign the matching material ONCE to the source mesh
-                const matIndex = Math.min(layer, layerMaterials.length - 1);
-                template.material = layerMaterials[matIndex];
+                template.material = terrainMaterial;
 
-		// Behavior flags to match the previous template
-		template.isVisible = false;          // hide the template
-		template.isPickable = false;
-		template.checkCollisions = true;
+                // Behavior flags to match the previous template
+                template.isVisible = false;          // hide the template
+                template.isPickable = false;
+                template.checkCollisions = true;
 
 		// Keep the template around (DO NOT dispose), but disable its own rendering
 		template.setEnabled(false);
@@ -1616,6 +1870,8 @@
                 totalHeight: totalLayerHeight,
                 layerOffsets,
                 layerThicknesses,
+                material: terrainMaterial,
+                atlasRects: atlasRects?.slice() || [],
                 settings: { ...settings },
                 streamAccumulator: 0,
                 streamInterval: DEFAULT_STREAM_INTERVAL,
