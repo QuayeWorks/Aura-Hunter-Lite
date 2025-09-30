@@ -499,6 +499,355 @@
       platforms: []
    };
 
+   const physics = {
+      bodies: new Set(),
+      slowLaneBodies: new Set(),
+      sleepingBodies: new Set(),
+      toRemove: new Set(),
+      accumulator: 0,
+      slowLaneAccumulator: 0,
+      fixedTimeStep: 1 / 60,
+      maxSubSteps: 4,
+      budgetMs: 3.0,
+      slowLaneBudgetMs: 1.2,
+      slowLaneInterval: 1 / 18,
+      defaultSleepDelay: 0.45,
+      sleepLinearThreshold: 0.12,
+      sleepAngularThreshold: 0.18,
+      maxVelocity: 80,
+      instrumentation: {
+         lastStepCount: 0,
+         lastSlowCount: 0,
+         skippedSteps: 0,
+         budgetUsedMs: 0,
+         slowBudgetUsedMs: 0,
+         activeBodies: 0,
+         sleepingBodies: 0
+      },
+      tmp: {
+         delta: new BABYLON.Vector3(),
+         before: new BABYLON.Vector3(),
+         after: new BABYLON.Vector3(),
+         actual: new BABYLON.Vector3(),
+         impulse: new BABYLON.Vector3()
+      }
+   };
+
+   function clamp01Fast(value) {
+      return value < 0 ? 0 : value > 1 ? 1 : value;
+   }
+
+   function configurePhysics(options = {}) {
+      if (!options || typeof options !== "object") {
+         return {
+            budgetMs: physics.budgetMs,
+            slowLaneBudgetMs: physics.slowLaneBudgetMs,
+            slowLaneInterval: physics.slowLaneInterval,
+            fixedTimeStep: physics.fixedTimeStep,
+            maxSubSteps: physics.maxSubSteps,
+            sleepLinearThreshold: physics.sleepLinearThreshold,
+            sleepAngularThreshold: physics.sleepAngularThreshold
+         };
+      }
+      if (Number.isFinite(options.budgetMs)) {
+         physics.budgetMs = clamp(options.budgetMs, 0.5, 12);
+      }
+      if (Number.isFinite(options.slowLaneBudgetMs)) {
+         physics.slowLaneBudgetMs = clamp(options.slowLaneBudgetMs, 0.2, 8);
+      }
+      if (Number.isFinite(options.slowLaneInterval)) {
+         physics.slowLaneInterval = clamp(options.slowLaneInterval, 1 / 60, 1);
+      }
+      if (Number.isFinite(options.fixedTimeStep) && options.fixedTimeStep > 0) {
+         physics.fixedTimeStep = clamp(options.fixedTimeStep, 1 / 240, 1 / 30);
+      }
+      if (Number.isInteger(options.maxSubSteps) && options.maxSubSteps > 0) {
+         physics.maxSubSteps = clamp(options.maxSubSteps, 1, 10);
+      }
+      if (Number.isFinite(options.sleepLinearThreshold)) {
+         physics.sleepLinearThreshold = Math.max(0.0001, Math.abs(options.sleepLinearThreshold));
+      }
+      if (Number.isFinite(options.sleepAngularThreshold)) {
+         physics.sleepAngularThreshold = Math.max(0.0001, Math.abs(options.sleepAngularThreshold));
+      }
+      return configurePhysics();
+   }
+
+   function wakePhysicsBody(body, { hard = false } = {}) {
+      if (!body) return false;
+      if (!physics.bodies.has(body)) return false;
+      body.sleeping = false;
+      body.sleepTimer = 0;
+      if (hard) {
+         body.velocity.set(0, 0, 0);
+         if (body.angularVelocity) body.angularVelocity.set(0, 0, 0);
+      }
+      physics.sleepingBodies.delete(body);
+      body.wakeRequested = false;
+      return true;
+   }
+
+   function unregisterPhysicsBody(body) {
+      if (!body) return false;
+      if (!physics.bodies.has(body)) return false;
+      physics.bodies.delete(body);
+      physics.slowLaneBodies.delete(body);
+      physics.sleepingBodies.delete(body);
+      if (body.mesh && body.mesh.metadata && body.mesh.metadata.physicsBody === body) {
+         delete body.mesh.metadata.physicsBody;
+      }
+      body.mesh = null;
+      return true;
+   }
+
+   function registerPhysicsBody(mesh, options = {}) {
+      if (!mesh) return null;
+      if (!mesh.metadata) mesh.metadata = {};
+      if (mesh.metadata.physicsBody) {
+         unregisterPhysicsBody(mesh.metadata.physicsBody);
+      }
+      const linearDamping = Number.isFinite(options.linearDamping)
+         ? clamp01Fast(options.linearDamping)
+         : 0.06;
+      const angularDamping = Number.isFinite(options.angularDamping)
+         ? clamp01Fast(options.angularDamping)
+         : 0.1;
+      const mass = Number.isFinite(options.mass) && options.mass > 0 ? options.mass : 1;
+      const velocity = options.velocity instanceof BABYLON.Vector3
+         ? options.velocity.clone()
+         : new BABYLON.Vector3();
+      const angularVelocity = options.angularVelocity instanceof BABYLON.Vector3
+         ? options.angularVelocity.clone()
+         : new BABYLON.Vector3();
+      const body = {
+         mesh,
+         mass,
+         invMass: 1 / mass,
+         velocity,
+         angularVelocity,
+         linearDamping,
+         angularDamping,
+         gravityScale: Number.isFinite(options.gravityScale) ? options.gravityScale : 1,
+         dynamic: options.dynamic !== false,
+         allowSleep: options.allowSleep !== false,
+         sleepLinearThreshold: Number.isFinite(options.sleepLinearThreshold)
+            ? Math.max(0.0001, Math.abs(options.sleepLinearThreshold))
+            : physics.sleepLinearThreshold,
+         sleepAngularThreshold: Number.isFinite(options.sleepAngularThreshold)
+            ? Math.max(0.0001, Math.abs(options.sleepAngularThreshold))
+            : physics.sleepAngularThreshold,
+         sleepDelay: Number.isFinite(options.sleepDelay)
+            ? Math.max(0, options.sleepDelay)
+            : physics.defaultSleepDelay,
+         sleepTimer: 0,
+         sleeping: !!options.startSleeping,
+         wakeRequested: false,
+         maxSpeed: Number.isFinite(options.maxSpeed) && options.maxSpeed > 0 ? options.maxSpeed : physics.maxVelocity,
+         useCollisions: options.useCollisions !== false,
+         priority: options.priority === "low" ? "low" : "normal",
+         onBeforeStep: typeof options.onBeforeStep === "function" ? options.onBeforeStep : null,
+         onAfterStep: typeof options.onAfterStep === "function" ? options.onAfterStep : null,
+         userData: options.userData || null
+      };
+      if (body.sleeping) physics.sleepingBodies.add(body);
+      physics.bodies.add(body);
+      if (body.priority === "low" || options.nonCritical === true) {
+         physics.slowLaneBodies.add(body);
+      }
+      mesh.metadata.physicsBody = body;
+      return body;
+   }
+
+   function applyPhysicsImpulse(body, impulse) {
+      if (!body || !impulse) return false;
+      if (!physics.bodies.has(body)) return false;
+      wakePhysicsBody(body);
+      const vec = impulse instanceof BABYLON.Vector3 ? impulse : null;
+      if (!vec) return false;
+      physics.tmp.impulse.copyFrom(vec);
+      physics.tmp.impulse.scaleInPlace(body.invMass);
+      body.velocity.addInPlace(physics.tmp.impulse);
+      const speedSq = body.velocity.lengthSquared();
+      const maxSpeed = body.maxSpeed || physics.maxVelocity;
+      if (speedSq > maxSpeed * maxSpeed) {
+         body.velocity.normalize().scaleInPlace(maxSpeed);
+      }
+      return true;
+   }
+
+   function integratePhysicsStep(dt, phase) {
+      const gravityY = world.gravityY;
+      const tmpDelta = physics.tmp.delta;
+      const tmpBefore = physics.tmp.before;
+      const tmpAfter = physics.tmp.after;
+      const tmpActual = physics.tmp.actual;
+      const toRemove = physics.toRemove;
+      let processed = 0;
+      let sleeping = 0;
+      for (const body of physics.bodies) {
+         const mesh = body.mesh;
+         if (!mesh || (typeof mesh.isDisposed === "function" && mesh.isDisposed())) {
+            toRemove.add(body);
+            continue;
+         }
+         const isSlowLane = physics.slowLaneBodies.has(body);
+         if (phase === "regular" && isSlowLane) {
+            continue;
+         }
+         if (phase === "slow" && !isSlowLane) {
+            continue;
+         }
+         if (!body.dynamic) {
+            continue;
+         }
+         if (body.sleeping) {
+            sleeping += 1;
+            continue;
+         }
+         if (body.onBeforeStep) {
+            try {
+               if (body.onBeforeStep(body, dt) === false) {
+                  continue;
+               }
+            } catch (err) {
+               console.warn("[Physics] onBeforeStep failed", err);
+            }
+         }
+         processed += 1;
+         if (body.gravityScale !== 0) {
+            body.velocity.y += gravityY * body.gravityScale * dt;
+         }
+         if (body.linearDamping > 0) {
+            const damp = Math.max(0, 1 - body.linearDamping * dt * 60);
+            body.velocity.scaleInPlace(damp < 0 ? 0 : damp);
+         }
+         const maxSpeed = body.maxSpeed || physics.maxVelocity;
+         const speedSq = body.velocity.lengthSquared();
+         if (speedSq > maxSpeed * maxSpeed) {
+            body.velocity.normalize().scaleInPlace(maxSpeed);
+         }
+         tmpDelta.copyFrom(body.velocity);
+         tmpDelta.scaleInPlace(dt);
+         tmpBefore.copyFrom(mesh.position);
+         if (body.useCollisions && typeof mesh.moveWithCollisions === "function") {
+            mesh.moveWithCollisions(tmpDelta);
+         } else {
+            mesh.position.addInPlace(tmpDelta);
+         }
+         tmpAfter.copyFrom(mesh.position);
+         tmpActual.copyFrom(tmpAfter);
+         tmpActual.subtractInPlace(tmpBefore);
+         const actualSpeedSq = tmpActual.lengthSquared() / Math.max(dt * dt, 1e-8);
+         if (Number.isFinite(actualSpeedSq)) {
+            body.velocity.copyFrom(tmpActual);
+            body.velocity.scaleInPlace(1 / Math.max(dt, 1e-5));
+         }
+         if (body.angularVelocity && body.angularVelocity.lengthSquared() > 1e-6) {
+            if (!mesh.rotationQuaternion) {
+               mesh.rotationQuaternion = BABYLON.Quaternion.FromEulerAngles(mesh.rotation.x, mesh.rotation.y, mesh.rotation.z);
+            }
+            const av = body.angularVelocity;
+            const angLen = av.length();
+            const angle = angLen * dt;
+            if (angle > 1e-5 && angLen > 1e-6) {
+               const axis = physics.tmp.impulse;
+               axis.copyFrom(av);
+               axis.scaleInPlace(1 / angLen);
+               const deltaRot = BABYLON.Quaternion.RotationAxis(axis, angle);
+               mesh.rotationQuaternion.multiplyInPlace(deltaRot);
+               mesh.rotationQuaternion.normalize();
+            }
+            if (body.angularDamping > 0) {
+               const dampAng = Math.max(0, 1 - body.angularDamping * dt * 60);
+               av.scaleInPlace(dampAng < 0 ? 0 : dampAng);
+            }
+         }
+         if (body.onAfterStep) {
+            try {
+               body.onAfterStep(body, dt, tmpActual);
+            } catch (err) {
+               console.warn("[Physics] onAfterStep failed", err);
+            }
+         }
+         if (body.allowSleep) {
+            const linearSleep = body.sleepLinearThreshold * body.sleepLinearThreshold;
+            const angularSleep = body.sleepAngularThreshold * body.sleepAngularThreshold;
+            const curLinear = body.velocity.lengthSquared();
+            const curAngular = body.angularVelocity ? body.angularVelocity.lengthSquared() : 0;
+            if (curLinear < linearSleep && curAngular < angularSleep) {
+               body.sleepTimer += dt;
+               if (body.sleepTimer >= body.sleepDelay) {
+                  body.sleeping = true;
+                  body.velocity.set(0, 0, 0);
+                  if (body.angularVelocity) body.angularVelocity.set(0, 0, 0);
+                  physics.sleepingBodies.add(body);
+                  sleeping += 1;
+               }
+            } else {
+               body.sleepTimer = 0;
+            }
+         }
+      }
+      if (toRemove.size) {
+         toRemove.forEach(b => unregisterPhysicsBody(b));
+         toRemove.clear();
+      }
+      return { processed, sleeping };
+   }
+
+   function stepPhysics(dt) {
+      if (!Number.isFinite(dt) || dt <= 0) return;
+      if (physics.bodies.size === 0) {
+         physics.accumulator = 0;
+         physics.slowLaneAccumulator = 0;
+         physics.instrumentation.lastStepCount = 0;
+         physics.instrumentation.lastSlowCount = 0;
+         physics.instrumentation.activeBodies = 0;
+         physics.instrumentation.sleepingBodies = 0;
+         physics.instrumentation.budgetUsedMs = 0;
+         physics.instrumentation.slowBudgetUsedMs = 0;
+         physics.instrumentation.skippedSteps = 0;
+         return;
+      }
+      const step = physics.fixedTimeStep;
+      physics.accumulator = Math.min(physics.accumulator + dt, step * physics.maxSubSteps * 4);
+      physics.slowLaneAccumulator = Math.min(physics.slowLaneAccumulator + dt, physics.slowLaneInterval * 4);
+      let steps = 0;
+      let spentMs = 0;
+      const startBudget = physics.budgetMs;
+      const subStepLimit = physics.maxSubSteps;
+      while (physics.accumulator >= step && steps < subStepLimit) {
+         const stepStart = nowMs();
+         integratePhysicsStep(step, "regular");
+         spentMs += nowMs() - stepStart;
+         physics.accumulator -= step;
+         steps += 1;
+         if (spentMs >= startBudget) {
+            break;
+         }
+      }
+      const skipped = Math.max(0, Math.floor(physics.accumulator / step));
+      physics.instrumentation.lastStepCount = steps;
+      physics.instrumentation.budgetUsedMs = spentMs;
+      physics.instrumentation.skippedSteps = skipped;
+      let slowSpent = 0;
+      let slowSteps = 0;
+      if (physics.slowLaneBodies.size > 0 && physics.slowLaneAccumulator >= physics.slowLaneInterval) {
+         if (spentMs < startBudget + physics.slowLaneBudgetMs * 0.75) {
+            const slowDt = Math.min(step, physics.slowLaneAccumulator);
+            const slowStart = nowMs();
+            const stats = integratePhysicsStep(slowDt, "slow");
+            slowSpent = nowMs() - slowStart;
+            slowSteps = stats.processed;
+            physics.slowLaneAccumulator -= slowDt;
+         }
+      }
+      physics.instrumentation.lastSlowCount = slowSteps;
+      physics.instrumentation.slowBudgetUsedMs = slowSpent;
+      physics.instrumentation.activeBodies = physics.bodies.size - physics.sleepingBodies.size;
+      physics.instrumentation.sleepingBodies = physics.sleepingBodies.size;
+   }
+
    const TERRAIN_LAYER_DEFS = [
       { key: "bedrock", color: [0.5, 0.5, 0.56], emissive: [0.14, 0.14, 0.16], destructible: false, thickness: 1 },
       { key: "dirt", color: [0.5, 0.34, 0.2], emissive: [0.1, 0.06, 0.03], destructible: true, thickness: 1 },
@@ -1675,6 +2024,11 @@
          }
       }
       if (Array.isArray(streaming?.queue)) chunksPending += streaming.queue.length;
+      const physicsBudget = physics.instrumentation.budgetUsedMs;
+      const physicsSlowBudget = physics.instrumentation.slowBudgetUsedMs;
+      const physicsBodies = physics.bodies.size;
+      const physicsSleeping = physics.sleepingBodies.size;
+      const physicsSkipped = physics.instrumentation.skippedSteps;
       hudApi.updateProfilerOverlayMetrics({
          fps,
          drawCalls,
@@ -1682,7 +2036,12 @@
          gpuFrameTime,
          chunksLoaded,
          chunksPending,
-         workerQueueDepth: workerMetrics.pending
+         workerQueueDepth: workerMetrics.pending,
+         physicsBodies,
+         physicsSleeping,
+         physicsBudget,
+         physicsSlowBudget,
+         physicsSkipped
       });
       profilerState.lastMetricsUpdate = now;
    }
@@ -3683,8 +4042,17 @@
          for (const mesh of entry.meshes) {
             if (!mesh || typeof mesh.isDisposed === "function" && mesh.isDisposed()) continue;
             if (typeof mesh.setEnabled === "function") mesh.setEnabled(enabled);
-            mesh.checkCollisions = !!enabled;
+            mesh.checkCollisions = false;
             mesh.isPickable = !!enabled;
+         }
+      }
+      if (Array.isArray(entry.impostors)) {
+         for (const collider of entry.impostors) {
+            if (!collider || typeof collider.isDisposed === "function" && collider.isDisposed()) continue;
+            collider.isPickable = false;
+            collider.isVisible = false;
+            if (typeof collider.setEnabled === "function") collider.setEnabled(enabled);
+            collider.checkCollisions = !!enabled;
          }
       }
    }
@@ -3708,6 +4076,18 @@
                delete mesh.metadata.treePart;
             }
          }
+      }
+      if (Array.isArray(entry.impostors)) {
+         for (const collider of entry.impostors) {
+            if (!collider || typeof collider.isDisposed === "function" && collider.isDisposed()) continue;
+            if (collider.metadata && collider.metadata.treeEntry === entry) {
+               delete collider.metadata.treeEntry;
+            }
+            try {
+               collider.dispose();
+            } catch (err) {}
+         }
+         entry.impostors = null;
       }
       if (entry.root && entry.root.metadata && entry.root.metadata.tree === entry) {
          delete entry.root.metadata.tree;
@@ -3862,6 +4242,98 @@
       return bindings;
    }
 
+   function createTreeImpostors(scene, entry, childMeshes = []) {
+      if (!scene || !entry || !entry.root) return [];
+      const root = entry.root;
+      const impostors = [];
+      const meshes = childMeshes.filter(mesh => mesh && !mesh.metadata?.lodProxy);
+      if (!meshes.length) return impostors;
+
+      let trunkMesh = null;
+      let fallbackScore = Infinity;
+      for (const mesh of meshes) {
+         const name = typeof mesh.name === "string" ? mesh.name.toLowerCase() : "";
+         if (name.includes("trunk") || name.includes("stem")) {
+            trunkMesh = mesh;
+            break;
+         }
+         const info = mesh.getBoundingInfo();
+         if (!info) continue;
+         const ext = info.boundingBox.extendSizeWorld;
+         const horiz = Math.max(ext.x, ext.z);
+         if (horiz < fallbackScore) {
+            fallbackScore = horiz;
+            trunkMesh = mesh;
+         }
+      }
+
+      if (trunkMesh) {
+         const info = trunkMesh.getBoundingInfo();
+         if (info) {
+            const box = info.boundingBox;
+            const extend = box.extendSizeWorld;
+            const height = Math.max(0.6, extend.y * 2 * 1.02);
+            const radius = Math.max(0.25, Math.max(extend.x, extend.z) * 0.6);
+            const capsule = BABYLON.MeshBuilder.CreateCapsule(`${root.name || "tree"}-trunk-imp`, {
+               height,
+               radius,
+               tessellation: 6,
+               subdivisions: 1
+            }, scene);
+            capsule.position.copyFrom(box.centerWorld);
+            capsule.isPickable = false;
+            capsule.checkCollisions = true;
+            capsule.visibility = 0;
+            capsule.isVisible = false;
+            capsule.setParent(root, true);
+            capsule.metadata = { treeCollider: true, treePart: "trunk", impostor: true, treeEntry: entry };
+            impostors.push(capsule);
+         }
+      }
+
+      const canopyMeshes = meshes.filter(mesh => mesh !== trunkMesh);
+      if (canopyMeshes.length) {
+         const canopyMin = new BABYLON.Vector3(Infinity, Infinity, Infinity);
+         const canopyMax = new BABYLON.Vector3(-Infinity, -Infinity, -Infinity);
+         for (const mesh of canopyMeshes) {
+            const info = mesh.getBoundingInfo();
+            if (!info) continue;
+            const box = info.boundingBox;
+            canopyMin.x = Math.min(canopyMin.x, box.minimumWorld.x);
+            canopyMin.y = Math.min(canopyMin.y, box.minimumWorld.y);
+            canopyMin.z = Math.min(canopyMin.z, box.minimumWorld.z);
+            canopyMax.x = Math.max(canopyMax.x, box.maximumWorld.x);
+            canopyMax.y = Math.max(canopyMax.y, box.maximumWorld.y);
+            canopyMax.z = Math.max(canopyMax.z, box.maximumWorld.z);
+         }
+         if (Number.isFinite(canopyMin.x) && Number.isFinite(canopyMax.x)) {
+            const size = BABYLON.Vector3.Subtract(canopyMax, canopyMin);
+            const width = Math.max(0.6, size.x * 1.02);
+            const depth = Math.max(0.6, size.z * 1.02);
+            const height = Math.max(0.5, size.y * 0.85);
+            const center = BABYLON.Vector3.Center(canopyMin, canopyMax);
+            const box = BABYLON.MeshBuilder.CreateBox(`${root.name || "tree"}-canopy-imp`, {
+               width,
+               height,
+               depth
+            }, scene);
+            box.position.copyFrom(center);
+            box.isPickable = false;
+            box.checkCollisions = true;
+            box.visibility = 0;
+            box.isVisible = false;
+            box.setParent(root, true);
+            box.metadata = { treeCollider: true, treePart: "canopy", impostor: true, treeEntry: entry };
+            impostors.push(box);
+         }
+      }
+
+      if (!root.metadata) root.metadata = {};
+      root.metadata.treeColliders = impostors;
+      entry.impostors = impostors;
+      return impostors;
+   }
+
    function createFallbackTree(scene, name, position, scale) {
       const root = new BABYLON.TransformNode(name, scene);
       const prototypes = ensureTreePrototypes(scene);
@@ -3904,7 +4376,7 @@
             mesh.checkCollisions = false;
          } else {
             mesh.isPickable = false;
-            mesh.checkCollisions = true;
+            mesh.checkCollisions = false;
          }
       });
 
@@ -4118,9 +4590,10 @@
             }
             mesh.metadata.treePart = entry;
             mesh.isPickable = true;
-            mesh.checkCollisions = true;
+            mesh.checkCollisions = false;
             interactiveMeshes.push(mesh);
          }
+         createTreeImpostors(scene, entry, childMeshes);
          applyTreeLOD(entry);
          if (!environment.treeColumns[columnIndex]) environment.treeColumns[columnIndex] = [];
          environment.treeColumns[columnIndex].push(entry);
@@ -5938,6 +6411,77 @@
       return spawned;
    }
 
+   const physicsPropMaterials = new Map();
+
+   function getPhysicsPropMaterial(colorHex, targetScene) {
+      const key = typeof colorHex === "string" ? colorHex.toLowerCase() : "default";
+      if (physicsPropMaterials.has(key)) return physicsPropMaterials.get(key);
+      const mat = new BABYLON.StandardMaterial(`physics-prop-mat-${physicsPropMaterials.size + 1}`, targetScene);
+      try {
+         mat.diffuseColor = BABYLON.Color3.FromHexString(colorHex);
+      } catch {
+         mat.diffuseColor = new BABYLON.Color3(0.56, 0.6, 0.68);
+      }
+      mat.specularColor = new BABYLON.Color3(0.08, 0.08, 0.08);
+      mat.emissiveColor = BABYLON.Color3.Black();
+      physicsPropMaterials.set(key, mat);
+      return mat;
+   }
+
+   function spawnPhysicsProp(options = {}) {
+      if (!scene) return null;
+      const type = options.type === "capsule" ? "capsule" : "box";
+      const size = Number.isFinite(options.size) ? Math.max(0.4, options.size) : 1;
+      const mass = Number.isFinite(options.mass) && options.mass > 0 ? options.mass : 1;
+      const colorHex = typeof options.color === "string" && options.color.trim() ? options.color.trim() : "#9098a8";
+      const spawnBase = options.position instanceof BABYLON.Vector3
+         ? options.position.clone()
+         : playerRoot
+            ? playerRoot.position.add(new BABYLON.Vector3(0, 2.2, 0))
+            : new BABYLON.Vector3(0, 4, 0);
+      let mesh = null;
+      if (type === "capsule") {
+         mesh = BABYLON.MeshBuilder.CreateCapsule(`phys-prop-${Date.now()}`, {
+            height: size * 1.6,
+            radius: size * 0.45,
+            tessellation: 8,
+            subdivisions: 2
+         }, scene);
+      } else {
+         mesh = BABYLON.MeshBuilder.CreateBox(`phys-prop-${Date.now()}`, {
+            width: size,
+            height: size,
+            depth: size
+         }, scene);
+      }
+      mesh.position.copyFrom(spawnBase);
+      mesh.checkCollisions = true;
+      mesh.isPickable = true;
+      mesh.material = getPhysicsPropMaterial(colorHex, scene);
+      const registerOpts = {
+         mass,
+         linearDamping: Number.isFinite(options.linearDamping) ? options.linearDamping : 0.08,
+         angularDamping: Number.isFinite(options.angularDamping) ? options.angularDamping : 0.12,
+         allowSleep: options.allowSleep !== false,
+         sleepDelay: Number.isFinite(options.sleepDelay) ? Math.max(0, options.sleepDelay) : 0.55,
+         sleepLinearThreshold: Number.isFinite(options.sleepLinearThreshold) ? options.sleepLinearThreshold : 0.18,
+         sleepAngularThreshold: Number.isFinite(options.sleepAngularThreshold) ? options.sleepAngularThreshold : 0.25,
+         priority: options.priority === "low" ? "low" : "normal",
+         velocity: options.velocity instanceof BABYLON.Vector3 ? options.velocity : undefined,
+         gravityScale: Number.isFinite(options.gravityScale) ? options.gravityScale : 1,
+         useCollisions: true
+      };
+      const body = registerPhysicsBody(mesh, registerOpts);
+      if (!body) {
+         mesh.dispose();
+         return null;
+      }
+      if (options.impulse instanceof BABYLON.Vector3) {
+         applyPhysicsImpulse(body, options.impulse);
+      }
+      return { mesh, body };
+   }
+
  function defaultVowTotals() {
     return {
        koMultiplier: 1,
@@ -7601,6 +8145,7 @@
       }
 
       advanceEnvironment(dt);
+      stepPhysics(dt);
       updateVowRuntimeFrame(dt);
 
       // inputs / abilities
@@ -8156,7 +8701,22 @@
       closeTrainingMenu,
       getSimulationBubble,
       configureSimulationBubble,
-      setSimulationBehaviorOverride
+      setSimulationBehaviorOverride,
+      registerPhysicsBody,
+      unregisterPhysicsBody,
+      wakePhysicsBody,
+      applyPhysicsImpulse,
+      configurePhysics,
+      spawnPhysicsProp,
+      getPhysicsStats: () => ({
+         bodies: physics.bodies.size,
+         sleeping: physics.sleepingBodies.size,
+         budgetMs: physics.instrumentation.budgetUsedMs,
+         slowBudgetMs: physics.instrumentation.slowBudgetUsedMs,
+         regularSteps: physics.instrumentation.lastStepCount,
+         slowSteps: physics.instrumentation.lastSlowCount,
+         skippedSteps: physics.instrumentation.skippedSteps
+      })
    };
 // === Added: expose subsystems so auxiliary files can reuse them ===
 try {
@@ -8181,6 +8741,12 @@ try {
     spawnInstances: (type, transforms, options) => INSTANCE_POOL.spawnInstances(type, transforms, options),
     despawnInstances: (type, ids) => INSTANCE_POOL.despawnInstances(type, ids),
     resetInstancePools: (opts) => INSTANCE_POOL.reset(opts),
+    configurePhysics,
+    registerPhysicsBody,
+    unregisterPhysicsBody,
+    wakePhysicsBody,
+    applyPhysicsImpulse,
+    spawnPhysicsProp,
 
     // HUD & cooldowns
     setCooldown, cdActive, markCooldownDirty, updateHealthHud, updateNenHud, updateXpHud, updateAuraHud, updateFlowHud, updateCooldownUI, updateHUD, msg,
