@@ -254,13 +254,19 @@ const DEF = {
   const anim = { playing:false, mode:"walk", speed:1.0, grounded:true, phase:0, attackT:0 };
 
   function buildAnimEditor(){
-    const tl = document.getElementById("an-timeline");
-    const tSlider = document.getElementById("an-time");
-    const tOut = document.getElementById("an-time-readout");
+    const timelineRoot = document.getElementById("an-timeline");
+    const timeSlider = document.getElementById("an-time");
+    const timeOut = document.getElementById("an-time-readout");
     const btnPlay = document.getElementById("an-play");
     const btnStop = document.getElementById("an-stop");
+    const btnToStart = document.getElementById("an-to-start");
+    const btnPrev = document.getElementById("an-prev");
+    const btnNext = document.getElementById("an-next");
+    const btnToEnd = document.getElementById("an-to-end");
     const lenEl = document.getElementById("an-length");
     const fpsEl = document.getElementById("an-fps");
+    const rangeStartEl = document.getElementById("an-range-start");
+    const rangeEndEl = document.getElementById("an-range-end");
     const partSel = document.getElementById("an-track");
     const chSel = document.getElementById("an-channel");
     const easeSel = document.getElementById("an-ease");
@@ -275,92 +281,341 @@ const DEF = {
       partSel.appendChild(opt);
     });
 
-    function syncLen(){
-      const len = currentLengthSeconds();
-      tSlider.max = String(len);
-      lenEl.value = String(len);
-      fpsEl.value = String(currentFps());
-    }
-    lenEl.oninput = ()=>{
-      const fps = currentFps();
-      const seconds = Math.max(0.25, Math.min(60, Number(lenEl.value) || 2));
-      const range = currentRange();
-      range.end = range.start + Math.max(1, seconds * fps);
-      syncLen();
-      drawTimeline();
-    };
-    fpsEl.oninput = ()=>{
-      const anim = ensureAnimation();
-      const fps = Math.max(6, Math.min(120, Number(fpsEl.value) || 30));
-      anim.fps = fps;
-      syncLen();
-      drawTimeline();
-    };
+    timelineRoot.innerHTML = "";
+    const rulerEl = document.createElement("div");
+    rulerEl.className = "timeline-ruler";
+    const trackEl = document.createElement("div");
+    trackEl.className = "timeline-track";
+    const playheadEl = document.createElement("div");
+    playheadEl.className = "timeline-playhead";
+    const playheadHandle = document.createElement("div");
+    playheadHandle.className = "playhead-handle";
+    playheadEl.appendChild(playheadHandle);
+    timelineRoot.appendChild(rulerEl);
+    timelineRoot.appendChild(trackEl);
+    timelineRoot.appendChild(playheadEl);
 
-    function setTime(t){
-      const len = currentLengthSeconds();
-      t = Math.max(0, Math.min(len, t));
-      tSlider.value = String(t);
-      tOut.textContent = `${Number(t).toFixed(3)}s`;
-      applyAtTime(t);
+    const selectedKeys = new Set();
+    const keyElements = new Map();
+    let playheadFrame = currentRange().start;
+    let playheadDrag = null;
+    let keyDrag = null;
+
+    function currentTrackKeys(){
+      return trackOf(partSel.value, chSel.value);
     }
-    tSlider.oninput = ()=> setTime(Number(tSlider.value)||0);
+
+    function frameFromClientX(x){
+      const rect = timelineRoot.getBoundingClientRect();
+      const pct = rect.width ? (x - rect.left) / rect.width : 0;
+      const range = currentRange();
+      const total = Math.max(1, range.end - range.start);
+      return range.start + Math.min(1, Math.max(0, pct)) * total;
+    }
+
+    function positionPlayhead(frame){
+      const range = currentRange();
+      const total = Math.max(1, range.end - range.start);
+      const pct = ((frame - range.start) / total) * 100;
+      playheadEl.style.left = `${Math.max(0, Math.min(100, pct))}%`;
+    }
+
+    function updateTimeReadout(){
+      const displayFrame = Math.round(playheadFrame);
+      const seconds = frameToSeconds(playheadFrame);
+      timeOut.textContent = `F${displayFrame} (${seconds.toFixed(3)}s)`;
+    }
+
+    function updateKeySelection(){
+      keyElements.forEach((el, key)=>{
+        el.classList.toggle("selected", selectedKeys.has(key));
+      });
+    }
+
+    function syncRangeUI(){
+      const range = currentRange();
+      const fps = currentFps();
+      const frames = Math.max(1, range.end - range.start);
+      timeSlider.min = String(range.start);
+      timeSlider.max = String(range.end);
+      timeSlider.step = "1";
+      lenEl.value = (frames / fps).toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+      fpsEl.value = String(fps);
+      rangeStartEl.value = String(range.start);
+      rangeEndEl.value = String(range.end);
+      setFrame(playheadFrame, { snap: true });
+    }
+
+    function updateRuler(){
+      const range = currentRange();
+      const total = Math.max(1, range.end - range.start);
+      const width = timelineRoot.clientWidth || 1;
+      const targetPx = 60;
+      let framesPerTick = Math.max(1, Math.round(total / Math.max(1, width / targetPx)));
+      const pow = Math.pow(10, Math.floor(Math.log10(framesPerTick)));
+      const norm = framesPerTick / pow;
+      let step;
+      if (norm <= 1) step = 1;
+      else if (norm <= 2) step = 2;
+      else if (norm <= 5) step = 5;
+      else step = 10;
+      framesPerTick = Math.max(1, Math.round(step * pow));
+      rulerEl.innerHTML = "";
+      for (let f = range.start; f <= range.end; f += framesPerTick){
+        const pct = ((f - range.start) / total) * 100;
+        const tick = document.createElement("div");
+        tick.className = "tick";
+        tick.style.left = `${Math.max(0, Math.min(100, pct))}%`;
+        rulerEl.appendChild(tick);
+        const label = document.createElement("div");
+        label.className = "tick-label";
+        label.textContent = `F${Math.round(f)}`;
+        label.style.left = `${Math.max(0, Math.min(100, pct))}%`;
+        rulerEl.appendChild(label);
+      }
+    }
+
+    function setFrame(frame, opts = {}){
+      const { snap = true } = opts;
+      const range = currentRange();
+      const clamped = Math.min(range.end, Math.max(range.start, frame));
+      playheadFrame = snap ? Math.round(clamped) : clamped;
+      const displayFrame = Math.round(playheadFrame);
+      timeSlider.value = String(displayFrame);
+      positionPlayhead(playheadFrame);
+      updateTimeReadout();
+      applyAtTime(frameToSeconds(playheadFrame));
+    }
+
+    function drawTimeline(){
+      updateRuler();
+      trackEl.innerHTML = "";
+      keyElements.clear();
+      const range = currentRange();
+      const total = Math.max(1, range.end - range.start);
+      const keys = currentTrackKeys();
+      keys.forEach(key=>{
+        const el=document.createElement("div");
+        el.className="timeline-key";
+        const pct = ((key.frame - range.start) / total) * 100;
+        el.style.left = `${Math.max(0, Math.min(100, pct))}%`;
+        el.title = `Frame ${key.frame.toFixed(2)} (${frameToSeconds(key.frame).toFixed(3)}s)`;
+        el.addEventListener("pointerdown", e=>{
+          e.preventDefault();
+          e.stopPropagation();
+          if (!e.shiftKey && !selectedKeys.has(key)){
+            selectedKeys.clear();
+          }
+          if (e.shiftKey){
+            selectedKeys.add(key);
+          } else {
+            selectedKeys.add(key);
+          }
+          updateKeySelection();
+          const dragKeys = selectedKeys.size ? Array.from(selectedKeys) : [key];
+          keyDrag = {
+            pointerId: e.pointerId,
+            anchor: key,
+            original: new Map(dragKeys.map(k=>[k, k.frame])),
+            lastDelta: 0
+          };
+          keyElements.forEach((node, k)=>{ if (selectedKeys.has(k)) node.classList.add("dragging"); });
+          el.setPointerCapture(e.pointerId);
+          setFrame(key.frame, { snap: true });
+        });
+        el.addEventListener("pointermove", e=>{
+          if (!keyDrag || keyDrag.pointerId !== e.pointerId) return;
+          const desired = Math.round(frameFromClientX(e.clientX));
+          const anchorStart = keyDrag.original.get(keyDrag.anchor) ?? keyDrag.anchor.frame;
+          let delta = desired - Math.round(anchorStart);
+          const originals = Array.from(keyDrag.original.values());
+          const rangeInner = currentRange();
+          const minOriginal = Math.min(...originals);
+          const maxOriginal = Math.max(...originals);
+          const minDelta = rangeInner.start - minOriginal;
+          const maxDelta = rangeInner.end - maxOriginal;
+          delta = Math.max(minDelta, Math.min(maxDelta, delta));
+          if (delta === keyDrag.lastDelta) return;
+          keyDrag.lastDelta = delta;
+          keyDrag.original.forEach((startFrame, k)=>{
+            const target = startFrame + delta;
+            const moved = AnimationStore.moveKey(partSel.value, chSel.value, k.frame, target, { tolerance: 0.25 });
+            if (moved){
+              const pctMoved = ((moved.frame - rangeInner.start) / Math.max(1, rangeInner.end - rangeInner.start)) * 100;
+              const node = keyElements.get(k);
+              if (node){
+                node.style.left = `${Math.max(0, Math.min(100, pctMoved))}%`;
+              }
+            }
+          });
+          setFrame(anchorStart + delta, { snap: true });
+        });
+        const finishDrag = e=>{
+          if (!keyDrag || keyDrag.pointerId !== e.pointerId) return;
+          el.releasePointerCapture(e.pointerId);
+          keyDrag = null;
+          keyElements.forEach(node=>node.classList.remove("dragging"));
+          drawTimeline();
+        };
+        el.addEventListener("pointerup", finishDrag);
+        el.addEventListener("pointercancel", finishDrag);
+        el.addEventListener("click", e=>{
+          e.stopPropagation();
+          setFrame(key.frame, { snap: true });
+        });
+        trackEl.appendChild(el);
+        keyElements.set(key, el);
+      });
+      updateKeySelection();
+      positionPlayhead(playheadFrame);
+    }
+
+    function clearSelection(){
+      if (!selectedKeys.size) return;
+      selectedKeys.clear();
+      updateKeySelection();
+    }
+
+    timeSlider.oninput = ()=> setFrame(Number(timeSlider.value)||currentRange().start, { snap: true });
 
     btnPlay.onclick = togglePlay;
     btnStop.onclick = ()=>{ anim.playing=false; btnPlay.textContent="▶"; };
+    btnToStart.onclick = ()=>{ anim.playing=false; btnPlay.textContent="▶"; setFrame(currentRange().start, { snap: true }); };
+    btnToEnd.onclick = ()=>{ anim.playing=false; btnPlay.textContent="▶"; setFrame(currentRange().end, { snap: true }); };
+
+    function stepToNeighbor(dir){
+      const keys = currentTrackKeys().slice().sort((a,b)=>a.frame-b.frame);
+      if (!keys.length) return;
+      const current = Math.round(playheadFrame);
+      let target = null;
+      if (dir < 0){
+        for (let i = keys.length - 1; i >= 0; i--){
+          if (keys[i].frame < current - 1e-3){ target = keys[i]; break; }
+        }
+        if (!target) target = keys[0];
+      } else {
+        for (let i = 0; i < keys.length; i++){
+          if (keys[i].frame > current + 1e-3){ target = keys[i]; break; }
+        }
+        if (!target) target = keys[keys.length-1];
+      }
+      if (target){
+        selectedKeys.clear();
+        selectedKeys.add(target);
+        setFrame(target.frame, { snap: true });
+        drawTimeline();
+      }
+    }
+
+    btnPrev.onclick = ()=>{ anim.playing=false; btnPlay.textContent="▶"; stepToNeighbor(-1); };
+    btnNext.onclick = ()=>{ anim.playing=false; btnPlay.textContent="▶"; stepToNeighbor(1); };
+
+    lenEl.addEventListener("change", ()=>{
+      const fps = currentFps();
+      const seconds = Math.max(0.25, Math.min(60, Number(lenEl.value) || 2));
+      const frames = Math.max(1, Math.round(seconds * fps));
+      const range = currentRange();
+      range.end = range.start + frames;
+      syncRangeUI();
+      drawTimeline();
+    });
+
+    fpsEl.addEventListener("change", ()=>{
+      const animData = ensureAnimation();
+      const fps = Math.max(6, Math.min(120, Number(fpsEl.value) || 30));
+      animData.fps = fps;
+      syncRangeUI();
+      drawTimeline();
+    });
+
+    rangeStartEl.addEventListener("change", ()=>{
+      const range = currentRange();
+      let start = Math.floor(Number(rangeStartEl.value) || 0);
+      start = Math.max(0, start);
+      if (start >= range.end){
+        range.end = start + 1;
+      }
+      range.start = start;
+      syncRangeUI();
+      drawTimeline();
+    });
+
+    rangeEndEl.addEventListener("change", ()=>{
+      const range = currentRange();
+      let end = Math.floor(Number(rangeEndEl.value) || (range.start + 1));
+      end = Math.max(range.start + 1, end);
+      range.end = end;
+      syncRangeUI();
+      drawTimeline();
+    });
+
+    timelineRoot.addEventListener("pointerdown", e=>{
+      if (e.target === playheadHandle || e.target.closest(".timeline-key")) return;
+      const frame = Math.round(frameFromClientX(e.clientX));
+      if (!e.shiftKey){
+        clearSelection();
+      }
+      setFrame(frame, { snap: true });
+    });
+
+    playheadHandle.addEventListener("pointerdown", e=>{
+      e.preventDefault();
+      playheadDrag = { pointerId:e.pointerId };
+      playheadHandle.setPointerCapture(e.pointerId);
+    });
+    playheadHandle.addEventListener("pointermove", e=>{
+      if (!playheadDrag || playheadDrag.pointerId !== e.pointerId) return;
+      const frame = frameFromClientX(e.clientX);
+      setFrame(frame, { snap: true });
+    });
+    const finishPlayheadDrag = e=>{
+      if (!playheadDrag || playheadDrag.pointerId !== e.pointerId) return;
+      playheadHandle.releasePointerCapture(e.pointerId);
+      playheadDrag = null;
+    };
+    playheadHandle.addEventListener("pointerup", finishPlayheadDrag);
+    playheadHandle.addEventListener("pointercancel", finishPlayheadDrag);
 
     addBtn.onclick = ()=>{
       const part = partSel.value, ch = chSel.value;
-      const t = Number(tSlider.value)||0;
       const cur = currentTRSAt(part,ch);
-      const frame = secondsToFrame(t);
-      AnimationStore.addKey(part, ch, frame, cur, { ease: easeSel.value || "linear", tolerance: 0.5 });
+      const frame = Math.round(playheadFrame);
+      const key = AnimationStore.addKey(part, ch, frame, cur, { ease: easeSel.value || "linear", tolerance: 0.5 });
+      selectedKeys.clear();
+      if (key) selectedKeys.add(key);
+      setFrame(frame, { snap: true });
       drawTimeline();
     };
 
     delBtn.onclick = ()=>{
       const part = partSel.value, ch = chSel.value;
-      const t = Number(tSlider.value)||0;
-      const frame = secondsToFrame(t);
-      if (AnimationStore.removeKey(part, ch, frame, { tolerance: 0.5 })){
+      let removed = false;
+      if (selectedKeys.size){
+        const targets = Array.from(selectedKeys);
+        targets.forEach(key=>{
+          if (AnimationStore.removeKey(part, ch, key.frame, { tolerance: 0.5 })){
+            removed = true;
+            selectedKeys.delete(key);
+          }
+        });
+      } else {
+        const frame = Math.round(playheadFrame);
+        removed = AnimationStore.removeKey(part, ch, frame, { tolerance: 0.5 });
+      }
+      if (removed){
         drawTimeline();
       }
     };
 
-    function drawTimeline(){
-      tl.innerHTML="";
-      const row=document.createElement("div"); row.className="row"; tl.appendChild(row);
-      const keys = trackOf(partSel.value, chSel.value);
-      keys.forEach((k, idx)=>{
-        const el=document.createElement("div");
-        el.className="kf";
-        let frames = totalFrames();
-        let range = currentRange();
-        const pct = frames > 0 ? ((k.frame - range.start) / frames) * 100 : 0;
-        el.style.left = `${Math.max(0, Math.min(100, pct))}%`;
-        el.title=`Frame ${k.frame.toFixed(2)} (${frameToSeconds(k.frame).toFixed(3)}s)`;
-        el.dataset.idx=String(idx);
-        let dragging=false;
-        let startFrame = k.frame;
-        el.onpointerdown=(e)=>{ dragging=true; el.setPointerCapture(e.pointerId); el.classList.add("active"); };
-        el.onpointermove=(e)=>{
-          if (!dragging) return;
-          const rect=tl.getBoundingClientRect();
-          const len = currentLengthSeconds();
-          const t = Math.max(0, Math.min(len, ((e.clientX-rect.left)/rect.width)*len));
-          const newFrame = secondsToFrame(t);
-          AnimationStore.moveKey(partSel.value, chSel.value, startFrame, newFrame, { tolerance: 0.5 });
-          startFrame = newFrame;
-          frames = totalFrames();
-          range = currentRange();
-          el.style.left = `${Math.max(0, Math.min(100, ((newFrame - range.start)/frames)*100))}%`;
-          setTime(t);
-        };
-        el.onpointerup=(e)=>{ dragging=false; el.releasePointerCapture(e.pointerId); el.classList.remove("active"); drawTimeline(); };
-        el.onclick=()=> setTime(frameToSeconds(k.frame));
-        row.appendChild(el);
-      });
-    }
+    partSel.addEventListener("change", ()=>{ selectedKeys.clear(); drawTimeline(); });
+    chSel.addEventListener("change", ()=>{ selectedKeys.clear(); drawTimeline(); });
+
+    window.addEventListener("resize", drawTimeline);
+
+    syncRangeUI();
+    setFrame(playheadFrame, { snap: true });
+    drawTimeline();
+  }
 
     function currentTRSAt(part,ch){
       const p = nodes[part]; if (!p) return {x:0,y:0,z:0};
@@ -402,14 +657,12 @@ const DEF = {
     scene.onBeforeRenderObservable.add(()=>{
       if(!anim.playing) return;
       const dt = engine.getDeltaTime()/1000;
-      let t = Number(tSlider.value)||0;
-      t += dt;
-      const len = currentLengthSeconds();
-      if(t>len) t=0;
-      setTime(t);
+      const fps = currentFps();
+      const range = currentRange();
+      let next = playheadFrame + dt * fps;
+      if (next > range.end) next = range.start;
+      setFrame(next, { snap: false });
     });
-
-    syncLen(); setTime(0); drawTimeline();
   }
 
   function boot(){
@@ -589,7 +842,7 @@ const DEF = {
       if (e.key==="w"||e.key==="W") setGizmoMode("move");
       if (e.key==="e"||e.key==="E") setGizmoMode("rotate");
       if (e.key==="r"||e.key==="R") setGizmoMode("scale");
-      if (e.code==="Space"){ e.preventDefault(); anim.playing=!anim.playing; }
+      if (e.code==="Space"){ e.preventDefault(); document.getElementById("an-play")?.click(); }
     });
   }
 

@@ -285,13 +285,18 @@
           <!-- NEW: animation editor panel -->
           <div id="anim-panel" class="anim-panel">
             <div class="anim-top">
-              <div class="left">
+              <div class="left transport">
+                <button id="an-to-start" class="secondary" title="Jump to start">⏮</button>
+                <button id="an-prev" class="secondary" title="Previous keyframe">⏴</button>
                 <button id="an-play" class="secondary" title="Space">▶</button>
-                <button id="an-stop" class="secondary">⏹</button>
-                <input id="an-time" type="range" min="0" max="2" step="0.001" value="0" />
-                <span id="an-time-readout">0.000s</span>
+                <button id="an-next" class="secondary" title="Next keyframe">⏵</button>
+                <button id="an-to-end" class="secondary" title="Jump to end">⏭</button>
+                <button id="an-stop" class="secondary" title="Stop">⏹</button>
+                <input id="an-time" type="range" min="0" max="2" step="1" value="0" />
+                <span id="an-time-readout">F0 (0.000s)</span>
               </div>
               <div class="right">
+                <label>Range <input id="an-range-start" type="number" min="0" step="1" value="0" /> – <input id="an-range-end" type="number" min="1" step="1" value="30" /></label>
                 <label>Length <input id="an-length" type="number" min="0.25" max="20" step="0.05" value="2.0" /> s </label>
                 <label>FPS <input id="an-fps" type="number" min="6" max="120" step="1" value="30" />
                 </label>
