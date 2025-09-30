@@ -189,21 +189,60 @@ if (c) c.style.pointerEvents = "none";
 
 .timeline{
   position:relative;
-  height:140px;
+  --timeline-label-width: 220px;
+  min-height:240px;
+  height:240px;
   background:linear-gradient(180deg, rgba(14,22,36,0.95), rgba(10,16,25,0.95));
   border:1px solid #1f2f50;
   border-radius:10px;
   overflow:hidden;
   user-select:none;
   cursor:default;
+  display:flex;
+  flex-direction:column;
+  color:#c6d4ff;
 }
 
-.timeline-ruler{
-  position:absolute;
-  top:0; left:0; right:0;
-  height:32px;
-  border-bottom:1px solid #26385f;
+.dope-header{
+  display:flex;
+  align-items:center;
+  gap:0.4rem;
+  height:38px;
   background:rgba(12,19,31,0.9);
+  border-bottom:1px solid #26385f;
+}
+
+.dope-header-left{
+  flex:0 0 var(--timeline-label-width);
+  padding:0.4rem 0.6rem;
+  border-right:1px solid #26385f;
+  display:flex;
+  align-items:center;
+  gap:0.45rem;
+  font-size:0.8rem;
+}
+
+.dope-filter{
+  display:flex;
+  align-items:center;
+  gap:0.4rem;
+  color:#8fb7ff;
+  font-size:0.75rem;
+}
+
+.dope-filter select{
+  background:#142035;
+  border:1px solid #2a3c61;
+  color:#c6d4ff;
+  border-radius:6px;
+  padding:0.15rem 0.45rem;
+  font-size:0.75rem;
+}
+
+.dope-header-right{
+  position:relative;
+  flex:1;
+  height:100%;
 }
 
 .timeline-ruler .tick{
@@ -216,19 +255,93 @@ if (c) c.style.pointerEvents = "none";
 
 .timeline-ruler .tick-label{
   position:absolute;
-  top:4px;
+  top:6px;
   transform:translateX(-50%);
-  font-size:.7rem;
+  font-size:0.7rem;
   color:#8fb7ff;
   pointer-events:none;
 }
 
-.timeline-track{
-  position:absolute;
-  top:32px; left:0; right:0; bottom:0;
+.dope-body{
+  position:relative;
+  flex:1;
+  overflow:auto;
+  background:rgba(9,15,24,0.85);
 }
 
-.timeline-track::before{
+.dope-rows{
+  display:flex;
+  flex-direction:column;
+}
+
+.dope-row{
+  display:flex;
+  min-height:32px;
+}
+
+.dope-label{
+  flex:0 0 var(--timeline-label-width);
+  padding:0.45rem 0.7rem;
+  border-right:1px solid #26385f;
+  display:flex;
+  align-items:center;
+  gap:0.45rem;
+  background:rgba(16,23,35,0.82);
+  color:#c6d4ff;
+  font-size:0.78rem;
+  cursor:pointer;
+  transition:background 0.15s ease, color 0.15s ease;
+}
+
+.dope-label.joint{
+  font-weight:600;
+}
+
+.dope-label.channel{
+  font-size:0.72rem;
+  padding-left:1.8rem;
+  background:rgba(14,22,36,0.78);
+}
+
+.dope-row.active .dope-label{
+  background:linear-gradient(90deg, rgba(76,118,187,0.55), rgba(47,74,122,0.65));
+  color:#ffffff;
+}
+
+.dope-row:hover .dope-label{
+  background:rgba(34,52,88,0.68);
+}
+
+.dope-row.active:hover .dope-label{
+  background:linear-gradient(90deg, rgba(76,118,187,0.55), rgba(47,74,122,0.65));
+}
+
+.dope-caret{
+  all:unset;
+  color:#8fb7ff;
+  font-size:0.85rem;
+  line-height:1;
+  cursor:pointer;
+  transition:color 0.15s ease;
+}
+
+.dope-caret:hover{
+  color:#ffd166;
+}
+
+.dope-track{
+  position:relative;
+  flex:1;
+  border-bottom:1px solid #1f2f50;
+  min-height:32px;
+  background:rgba(8,13,21,0.7);
+}
+
+.dope-track.channel{
+  background:rgba(11,18,29,0.78);
+}
+
+.dope-track.channel::before{
   content:"";
   position:absolute;
   inset:0;
@@ -243,37 +356,42 @@ if (c) c.style.pointerEvents = "none";
   pointer-events:none;
 }
 
-.timeline-key{
+.empty-msg{
   position:absolute;
-  width:14px;
-  height:14px;
-  background:#4ec9b0;
-  border:1px solid #0f3b35;
-  transform:translate(-50%, -50%) rotate(45deg);
+  left:0.85rem;
   top:50%;
-  border-radius:2px;
-  box-shadow:0 0 6px rgba(78,201,176,0.6);
-  cursor:pointer;
+  transform:translateY(-50%);
+  font-size:0.7rem;
+  color:#5f739c;
+  pointer-events:none;
 }
 
-.timeline-key.selected{
-  background:#ffd166;
-  border-color:#40300d;
-  box-shadow:0 0 8px rgba(255,209,102,0.7);
+.dope-empty{
+  padding:1.5rem;
+  text-align:center;
+  font-size:0.85rem;
+  color:#5f739c;
 }
 
-.timeline-key.dragging{
-  opacity:0.75;
+.dope-overlay{
+  position:absolute;
+  top:0;
+  bottom:0;
+  left:var(--timeline-label-width);
+  right:0;
+  pointer-events:none;
+  z-index:2;
 }
 
 .timeline-playhead{
   position:absolute;
   top:0;
   bottom:0;
-  width:1px;
+  width:2px;
   background:#ff4d6d;
   pointer-events:none;
   transform:translateX(-50%);
+  box-shadow:0 0 8px rgba(255,77,109,0.55);
 }
 
 .timeline-playhead::after{
@@ -288,15 +406,78 @@ if (c) c.style.pointerEvents = "none";
   border-radius:2px;
 }
 
-.timeline .playhead-handle{
+.playhead-handle{
   position:absolute;
-  top:-6px;
-  left:50%;
-  transform:translate(-50%, -50%);
+  top:0;
   width:26px;
   height:26px;
+  transform:translate(-50%, -60%);
   cursor:ew-resize;
   pointer-events:auto;
+  z-index:3;
+}
+
+.playhead-handle::after{
+  content:"";
+  position:absolute;
+  top:50%;
+  left:50%;
+  transform:translate(-50%, -50%) rotate(45deg);
+  width:16px;
+  height:16px;
+  background:rgba(255,77,109,0.92);
+  border-radius:2px;
+  box-shadow:0 0 8px rgba(255,77,109,0.65);
+}
+
+.dope-selection{
+  position:absolute;
+  border:1px dashed rgba(143,183,255,0.6);
+  background:rgba(143,183,255,0.15);
+  pointer-events:none;
+}
+
+.timeline-key{
+  position:absolute;
+  width:14px;
+  height:14px;
+  transform:translate(-50%, -50%) rotate(45deg);
+  top:50%;
+  border-radius:2px;
+  cursor:pointer;
+  border:1px solid rgba(0,0,0,0.45);
+  transition:transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.timeline-key.channel-pos{
+  background:#4ec9b0;
+  border-color:#0f3b35;
+  box-shadow:0 0 6px rgba(78,201,176,0.55);
+}
+
+.timeline-key.channel-rot{
+  background:#ffd166;
+  border-color:#604b14;
+  box-shadow:0 0 6px rgba(255,209,102,0.6);
+}
+
+.timeline-key.channel-scl{
+  background:#56ccf2;
+  border-color:#14485d;
+  box-shadow:0 0 6px rgba(86,204,242,0.6);
+}
+
+.timeline-key.selected{
+  outline:2px solid #ffe28a;
+  box-shadow:0 0 10px rgba(255,226,138,0.85);
+}
+
+.timeline-key.dragging{
+  opacity:0.75;
+}
+
+.timeline-key:hover{
+  transform:translate(-50%, -50%) rotate(45deg) scale(1.08);
 }
 
 /* Toolbar on canvas */
