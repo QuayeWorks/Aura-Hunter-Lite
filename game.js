@@ -1073,7 +1073,7 @@
             const stats = integratePhysicsStep(slowDt, "slow");
             slowSpent = nowMs() - slowStart;
             slowSteps = stats.processed;
-            physics.slowLaneAccumulator -= slowDt;
+            physics.slowLaneAccumulator = Math.max(0, physics.slowLaneAccumulator - physics.slowLaneInterval);
          }
       }
       physics.instrumentation.lastSlowCount = slowSteps;
