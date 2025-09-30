@@ -23,9 +23,36 @@
   let performanceTargetValue = 60;
   const performanceTargetListeners = new Set();
   let dynamicResolutionState = { enabled: false, minScale: 0.7, currentScale: 1 };
+  const PERF_SETTINGS_KEY = "hxh-perf-settings";
   const dynamicResolutionListeners = new Set();
   let adaptiveQualityLabel = "High";
   const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+  (function hydratePerfPreferences() {
+    if (typeof localStorage === "undefined") return;
+    try {
+      const raw = localStorage.getItem(PERF_SETTINGS_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object") return;
+      if (typeof parsed.qualityLabel === "string" && parsed.qualityLabel.trim()) {
+        adaptiveQualityLabel = parsed.qualityLabel.trim();
+      }
+      const dyn = parsed.dynamic && typeof parsed.dynamic === "object" ? parsed.dynamic : {};
+      if (typeof dyn.enabled === "boolean") {
+        dynamicResolutionState.enabled = dyn.enabled;
+      }
+      if (Number.isFinite(dyn.minScale)) {
+        dynamicResolutionState.minScale = clamp(dyn.minScale, 0.5, 1);
+      }
+      let storedScale = Number.isFinite(dyn.currentScale) ? clamp(dyn.currentScale, 0.3, 1) : null;
+      if (dynamicResolutionState.enabled) {
+        const target = storedScale != null ? Math.max(storedScale, dynamicResolutionState.minScale) : dynamicResolutionState.minScale;
+        dynamicResolutionState.currentScale = clamp(target, dynamicResolutionState.minScale, 1);
+      } else {
+        dynamicResolutionState.currentScale = 1;
+      }
+    } catch (err) {}
+  })();
   let helpOverlayCache = null;
   let logOverlayCache = null;
   let devPanelCache = null;
