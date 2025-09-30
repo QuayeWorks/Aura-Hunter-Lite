@@ -68,7 +68,7 @@ legend{ padding:0 .4rem; color:var(--muted); }
 
 #hud{ position:fixed; inset:0; pointer-events:none; padding:.6rem; }
 .hud-left{ position:absolute; top:.6rem; left:.6rem; }
-.hud-right{ position:absolute; top:.6rem; right:.6rem; min-width:260px; }
+.hud-right{ position:absolute; top:.6rem; right:.6rem; min-width:260px; display:flex; flex-direction:column; gap:.55rem; align-items:stretch; }
 #hud-name{ font-weight:700; }
 #hud-nen,#hud-level{ font-size:.9rem; color:var(--muted); }
 
@@ -77,8 +77,11 @@ legend{ padding:0 .4rem; color:var(--muted); }
 .bar>span{ display:block; height:100%; width:100%; background:linear-gradient(90deg,#ff6b6b,#ff9f6b); }
 .bar.alt>span{ background:linear-gradient(90deg,#47a8bd,#00ffcc); }
 
-#hud-bottom{ position:absolute; left:0; right:0; bottom:.6rem; display:flex; justify-content:space-between; align-items:flex-end; }
-#hud-message{ padding:.4rem 1rem; background:#0f1a30cc; border:1px solid #27355e; border-radius:12px; max-width:60%; }
+#hud-bottom{ position:absolute; left:0; right:0; bottom:.6rem; display:grid; grid-template-columns:1fr auto 1fr; align-items:end; gap:1.5rem; pointer-events:none; padding:0 1.5rem; }
+#hud-bottom-left{ justify-self:end; display:flex; flex-wrap:wrap; align-items:flex-end; justify-content:flex-end; gap:.5rem; pointer-events:auto; max-width:min(34vw,460px); }
+#hud-bottom-center{ justify-self:center; display:flex; flex-direction:column; align-items:center; pointer-events:none; }
+#hud-bottom-right{ justify-self:start; display:flex; align-items:flex-end; pointer-events:auto; }
+#hud-message{ padding:.4rem 1rem; background:#0f1a30cc; border:1px solid #27355e; border-radius:12px; max-width:min(70vw,440px); margin:0 0 5px; text-align:center; pointer-events:none; }
 #cooldowns{ display:flex; gap:.4rem; pointer-events:auto; }
 .cd{ width:48px; height:48px; display:flex; align-items:center; justify-content:center; border-radius:10px; background:#101a2e; border:1px solid #27355e; color:#9fb3d9; position:relative; overflow:hidden; }
 .cd::after{ content:""; position:absolute; inset:0; background:#0008; transform:translateY(100%); transition:transform .15s linear; }
