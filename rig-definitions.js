@@ -66,5 +66,185 @@
     RigDefinitions.DEFAULT_COSMETICS = fallbackDefaultCosmetics;
   }
 
+  if (!RigDefinitions.AnimationStore) {
+    const CHANNEL_ALIASES = {
+      pos: "position",
+      position: "position",
+      rot: "rotation",
+      rotation: "rotation",
+      scl: "scale",
+      scale: "scale"
+    };
+
+    const animations = {};
+    let activeName = null;
+
+    function normalizeChannel(channel) {
+      const key = CHANNEL_ALIASES[channel];
+      if (!key) throw new Error(`Unknown channel: ${channel}`);
+      return key;
+    }
+
+    function sanitizeFps(fps) {
+      const num = Number(fps);
+      if (!Number.isFinite(num) || num <= 0) return 30;
+      return Math.max(1, Math.min(480, num));
+    }
+
+    function sanitizeRange(range, fps) {
+      let start = 0;
+      let end = fps;
+      if (Array.isArray(range)) {
+        start = Number(range[0]) || 0;
+        end = Number(range[1]);
+      } else if (range && typeof range === "object") {
+        start = Number(range.start ?? range.min ?? 0) || 0;
+        end = Number(range.end ?? range.max ?? start);
+      }
+      if (!Number.isFinite(end)) end = start + fps;
+      if (end < start) [start, end] = [end, start];
+      if (end === start) end = start + fps;
+      return { start, end };
+    }
+
+    function cloneValue(value) {
+      if (value && typeof value === "object") {
+        if ("x" in value || "y" in value || "z" in value) {
+          return {
+            x: Number(value.x) || 0,
+            y: Number(value.y) || 0,
+            z: Number(value.z) || 0
+          };
+        }
+        return JSON.parse(JSON.stringify(value));
+      }
+      const num = Number(value);
+      return Number.isFinite(num) ? num : 0;
+    }
+
+    function ensureAnimation(name) {
+      const anim = animations[name];
+      if (!anim) throw new Error(`Animation '${name}' not found`);
+      anim.joints = anim.joints || {};
+      anim.range = anim.range || { start: 0, end: anim.fps };
+      return anim;
+    }
+
+    function ensureJointChannel(anim, joint, channel) {
+      const normalized = normalizeChannel(channel);
+      if (!anim.joints[joint]) {
+        anim.joints[joint] = {
+          position: [],
+          rotation: [],
+          scale: []
+        };
+      }
+      if (!Array.isArray(anim.joints[joint][normalized])) {
+        anim.joints[joint][normalized] = [];
+      }
+      return anim.joints[joint][normalized];
+    }
+
+    function requireActive() {
+      if (!activeName) throw new Error("No active animation");
+      return ensureAnimation(activeName);
+    }
+
+    RigDefinitions.AnimationStore = {
+      createAnimation(name, fps = 30, range = [0, fps]) {
+        if (!name) throw new Error("Animation name is required");
+        if (animations[name]) throw new Error(`Animation '${name}' already exists`);
+        const cleanFps = sanitizeFps(fps);
+        const cleanRange = sanitizeRange(range, cleanFps);
+        const anim = {
+          name,
+          fps: cleanFps,
+          range: cleanRange,
+          joints: {}
+        };
+        animations[name] = anim;
+        if (!activeName) {
+          activeName = name;
+        }
+        return anim;
+      },
+
+      deleteAnimation(name) {
+        if (!animations[name]) return false;
+        delete animations[name];
+        if (activeName === name) {
+          activeName = this.listAnimations()[0] || null;
+        }
+        return true;
+      },
+
+      addKey(joint, channel, frame, value, options = {}) {
+        const anim = requireActive();
+        const track = ensureJointChannel(anim, joint, channel);
+        const key = {
+          frame: Number(frame) || 0,
+          value: cloneValue(value),
+          ease: options.ease || options.easing || "linear"
+        };
+        const tolerance = Number(options.tolerance ?? 1e-4);
+        const idx = track.findIndex(k => Math.abs(k.frame - key.frame) <= tolerance);
+        if (idx >= 0) {
+          track[idx] = { ...track[idx], ...key };
+          return track[idx];
+        }
+        track.push(key);
+        track.sort((a, b) => a.frame - b.frame);
+        return key;
+      },
+
+      removeKey(joint, channel, frame, options = {}) {
+        const anim = requireActive();
+        const track = ensureJointChannel(anim, joint, channel);
+        const tolerance = Number(options.tolerance ?? 1e-4);
+        const idx = track.findIndex(k => Math.abs(k.frame - frame) <= tolerance);
+        if (idx < 0) return false;
+        track.splice(idx, 1);
+        return true;
+      },
+
+      moveKey(joint, channel, frame, newFrame, options = {}) {
+        const anim = requireActive();
+        const track = ensureJointChannel(anim, joint, channel);
+        const tolerance = Number(options.tolerance ?? 1e-4);
+        const idx = track.findIndex(k => Math.abs(k.frame - frame) <= tolerance);
+        if (idx < 0) return null;
+        track[idx].frame = Number(newFrame) || 0;
+        track.sort((a, b) => a.frame - b.frame);
+        return track[idx];
+      },
+
+      listAnimations() {
+        return Object.keys(animations);
+      },
+
+      getAnimation(name) {
+        return animations[name] || null;
+      },
+
+      getActiveName() {
+        return activeName;
+      },
+
+      setActive(name) {
+        if (name == null) {
+          activeName = null;
+          return null;
+        }
+        if (!animations[name]) throw new Error(`Animation '${name}' not found`);
+        activeName = name;
+        return animations[name];
+      },
+
+      getActive() {
+        return activeName ? animations[activeName] : null;
+      }
+    };
+  }
+
   window.RigDefinitions = RigDefinitions;
 })();
