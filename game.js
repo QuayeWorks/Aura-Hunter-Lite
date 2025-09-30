@@ -5682,6 +5682,7 @@
       });
       resetAdaptiveQualityState();
       scene = new BABYLON.Scene(engine);
+      window.RegionManager?.setScene?.(scene);
       scene.collisionsEnabled = true;
       scene.clearColor = new BABYLON.Color4(0.04, 0.06, 0.10, 1.0);
       scene.ambientColor = new BABYLON.Color3(0.25, 0.25, 0.3);
@@ -5716,6 +5717,7 @@
          animPhase: 0
       };
       updateTerrainStreaming(playerRoot.position, 0, true);
+      window.RegionManager?.updateSpatialState?.(playerRoot.position, { silent: true });
 
       state.nenLight = new BABYLON.PointLight("nenLight", playerRoot.position.add(new BABYLON.Vector3(0, 1.2, 0)), scene);
       state.nenLight.intensity = 0.0;
@@ -6909,6 +6911,7 @@
       }
 
       updateTerrainStreaming(playerRoot.position, dt);
+      window.RegionManager?.updateSpatialState?.(playerRoot.position);
 
       // passive regen + aura flow
       const aura = state.aura;
