@@ -712,6 +712,7 @@
    let vowInitAttempts = 0;
 
    let engine, scene, camera;
+   let rearDebugCamera = null;
    let player, playerRoot, input = {},
       inputOnce = {},
       inputUp = {};
@@ -2855,6 +2856,8 @@
    const TMP_PLAYER_DELTA = new BABYLON.Vector3();
    const TMP_ENEMY_TO_PLAYER = new BABYLON.Vector3();
    const TMP_ENEMY_DELTA = new BABYLON.Vector3();
+   const TMP_REAR_DIR = new BABYLON.Vector3();
+   const TMP_REAR_TARGET = new BABYLON.Vector3();
    const TMP_IK_DELTA = new BABYLON.Vector3();
    const TMP_IK_ORIGIN = new BABYLON.Vector3();
    const lerp = (a, b, t) => a + (b - a) * t;
@@ -7259,7 +7262,134 @@
       });
    }
 
+   function isRearDebugCameraActive() {
+      return !!(rearDebugCamera && !rearDebugCamera.isDisposed());
+   }
+
+   function disableRearDebugCamera() {
+      const rear = rearDebugCamera;
+      rearDebugCamera = null;
+      if (!rear) {
+         window.HUD?.setRearViewActive?.(false);
+         return false;
+      }
+
+      const owningScene = typeof rear.getScene === "function" ? rear.getScene() : scene;
+      if (owningScene && rear._dbgObserver) {
+         try { owningScene.onBeforeRenderObservable.remove(rear._dbgObserver); } catch {}
+      }
+      rear._dbgObserver = null;
+
+      try { rear.dispose(); } catch {}
+
+      if (owningScene) {
+         const active = Array.isArray(owningScene.activeCameras)
+            ? owningScene.activeCameras.filter(cam => cam && cam !== rear && !cam.__isRearDebug)
+            : [];
+         const next = [];
+         const seen = new Set();
+         const push = (cam) => {
+            if (cam && !seen.has(cam)) {
+               seen.add(cam);
+               next.push(cam);
+            }
+         };
+         if (owningScene === scene && camera) push(camera);
+         active.forEach(push);
+         if (next.length > 0) {
+            owningScene.activeCameras = next;
+            if (owningScene === scene && camera && next.includes(camera)) {
+               owningScene.activeCamera = camera;
+            } else if (!owningScene.activeCamera) {
+               owningScene.activeCamera = next[0];
+            }
+         } else if (owningScene === scene && camera) {
+            owningScene.activeCameras = [camera];
+            owningScene.activeCamera = camera;
+         } else {
+            owningScene.activeCameras = [];
+         }
+      }
+
+      window.HUD?.setRearViewActive?.(false);
+      return true;
+   }
+
+   function enableRearDebugCamera(options = {}) {
+      if (!scene || !playerRoot || !camera) {
+         return null;
+      }
+      if (rearDebugCamera && !rearDebugCamera.isDisposed()) {
+         return rearDebugCamera;
+      }
+
+      const width = Number.isFinite(options.w) ? options.w : 0.24;
+      const height = Number.isFinite(options.h) ? options.h : 0.24;
+      const margin = Number.isFinite(options.margin) ? options.margin : 0.01;
+      const x = Number.isFinite(options.x) ? options.x : (1 - width - margin);
+      const y = Number.isFinite(options.y) ? options.y : (1 - height - margin);
+      const offsetY = Number.isFinite(options.offsetY)
+         ? options.offsetY
+         : (camera?.target ? (camera.target.y - playerRoot.position.y) : 0.9);
+
+      const rear = new BABYLON.FreeCamera("rear-debug-camera", playerRoot.position.clone(), scene);
+      rear.minZ = camera.minZ;
+      rear.maxZ = camera.maxZ;
+      rear.fov = Number.isFinite(options.fov) ? options.fov : camera.fov;
+      rear.viewport = new BABYLON.Viewport(x, y, width, height);
+      rear.layerMask = camera.layerMask;
+      rear.inputs?.clear?.();
+      rear.speed = 0;
+      rear.inertia = 0;
+      rear.__isRearDebug = true;
+
+      const updateObserver = scene.onBeforeRenderObservable.add(() => {
+         if (!playerRoot || !camera) return;
+         rear.position.copyFrom(playerRoot.position);
+         rear.position.y += offsetY;
+
+         TMP_REAR_DIR.copyFrom(camera.target);
+         TMP_REAR_DIR.subtractInPlace(camera.position);
+         const lenSq = TMP_REAR_DIR.lengthSquared();
+         if (lenSq > 1e-6) {
+            TMP_REAR_DIR.scaleInPlace(1 / Math.sqrt(lenSq));
+         } else {
+            TMP_REAR_DIR.set(0, 0, 1);
+         }
+         const pitchY = TMP_REAR_DIR.y;
+         TMP_REAR_DIR.x *= -1;
+         TMP_REAR_DIR.z *= -1;
+         TMP_REAR_DIR.y = pitchY;
+
+         TMP_REAR_TARGET.copyFrom(rear.position);
+         TMP_REAR_TARGET.addInPlace(TMP_REAR_DIR);
+         rear.setTarget(TMP_REAR_TARGET);
+      });
+      rear._dbgObserver = updateObserver;
+
+      const existing = Array.isArray(scene.activeCameras) ? scene.activeCameras.filter(Boolean) : [];
+      const keep = existing.filter(cam => cam !== rear && !cam.__isRearDebug);
+      const combined = [];
+      const seen = new Set();
+      const push = (cam) => {
+         if (cam && !seen.has(cam)) {
+            seen.add(cam);
+            combined.push(cam);
+         }
+      };
+      push(camera);
+      keep.forEach(push);
+      push(rear);
+      scene.activeCameras = combined;
+      scene.activeCamera = camera;
+
+      rearDebugCamera = rear;
+      window.HUD?.setRearViewActive?.(true);
+      return rear;
+   }
+
    async function setupBabylon(canvas) {
+      disableRearDebugCamera();
       engine = new BABYLON.Engine(canvas, true, {
          stencil: true
       });
@@ -7283,6 +7413,8 @@
       }
       camera.panningSensibility = 0;
       window.addEventListener("contextmenu", e => e.preventDefault());
+      scene.activeCamera = camera;
+      scene.activeCameras = [camera];
       initializeAdaptiveQuality(scene, engine, camera);
       await setupEnvironment(scene);
 
@@ -7435,9 +7567,22 @@
                if (target === "hp") return refillResources({ hp: true, nen: false });
                if (target === "nen") return refillResources({ hp: false, nen: true });
                return refillResources({ hp: true, nen: true });
+            },
+            toggleRearView: (enabled) => {
+               if (enabled) {
+                  const rearCam = enableRearDebugCamera({ w: 0.26, h: 0.26 });
+                  if (!rearCam) {
+                     window.HUD?.setRearViewActive?.(false);
+                     return false;
+                  }
+                  return true;
+               }
+               disableRearDebugCamera();
+               return true;
             }
          });
          hudApi.updateDevPanelState?.(getAuraSnapshot());
+         hudApi.setRearViewActive?.(isRearDebugCameraActive());
          scheduleTerrainRadiusUiUpdate();
       }
 
@@ -8960,6 +9105,7 @@
    });
    hud.btnExit?.addEventListener("click", () => {
       paused = false;
+      disableRearDebugCamera();
       try {
          engine.stopRenderLoop();
          engine.dispose();
@@ -9008,6 +9154,9 @@
       spawnPhysicsProp,
       setChunkWorkerEnabled,
       isChunkWorkerEnabled,
+      enableRearDebugCamera,
+      disableRearDebugCamera,
+      isRearDebugCameraActive,
       getPhysicsStats: () => ({
          bodies: physics.bodies.size,
          sleeping: physics.sleepingBodies.size,
@@ -9051,6 +9200,7 @@ try {
 
     // HUD & cooldowns
     setCooldown, cdActive, markCooldownDirty, updateHealthHud, updateNenHud, updateXpHud, updateAuraHud, updateFlowHud, updateCooldownUI, updateHUD, msg,
+    enableRearDebugCamera, disableRearDebugCamera, isRearDebugCameraActive,
 
     // combat
     blast, dash, special, nearestEnemy,
