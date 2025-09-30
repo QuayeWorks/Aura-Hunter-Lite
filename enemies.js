@@ -29,6 +29,87 @@
     caster: { chance: 0.22, duration: 7200, dot: 6, slow: 0.1, maxStacks: 4 }
   };
 
+  function getWorkerJobs() {
+    const utils = window.WorldUtils;
+    if (!utils || !utils.WorkerJobs) return null;
+    return utils.WorkerJobs;
+  }
+
+  function normalizeGridInput(grid, width, height) {
+    const w = Math.max(1, width | 0);
+    const h = Math.max(1, height | 0);
+    const total = w * h;
+    if (ArrayBuffer.isView(grid)) {
+      const copy = new Uint8Array(total);
+      const source = grid.subarray(0, Math.min(grid.length, total));
+      copy.set(source);
+      return { grid: copy, width: w, height: h };
+    }
+    const data = new Uint8Array(total);
+    if (Array.isArray(grid)) {
+      const limit = Math.min(total, grid.length);
+      for (let i = 0; i < limit; i++) {
+        data[i] = grid[i] ? 1 : 0;
+      }
+    }
+    return { grid: data, width: w, height: h };
+  }
+
+  function fallbackPath(start, goal, width, height, reason = null) {
+    const w = Math.max(1, width | 0);
+    const h = Math.max(1, height | 0);
+    const sx = Math.max(0, Math.min(w - 1, start?.x ?? 0));
+    const sy = Math.max(0, Math.min(h - 1, start?.y ?? 0));
+    const gx = Math.max(0, Math.min(w - 1, goal?.x ?? sx));
+    const gy = Math.max(0, Math.min(h - 1, goal?.y ?? sy));
+    const points = [];
+    points.push({ x: sx, y: sy });
+    if (sx !== gx || sy !== gy) {
+      points.push({ x: gx, y: gy });
+    }
+    return { success: true, points, reason };
+  }
+
+  function requestPathJob(grid, width, height, start, goal, opts = {}) {
+    const jobs = getWorkerJobs();
+    const normalized = normalizeGridInput(grid, width, height);
+    if (!jobs || typeof jobs.requestPathGrid !== "function") {
+      return Promise.resolve(fallbackPath(start, goal, normalized.width, normalized.height, "no-worker"));
+    }
+    try {
+      const job = jobs.requestPathGrid({
+        grid: normalized.grid,
+        width: normalized.width,
+        height: normalized.height,
+        start: { x: start?.x ?? 0, y: start?.y ?? 0 },
+        goal: { x: goal?.x ?? 0, y: goal?.y ?? 0 },
+        allowDiagonal: !!opts.allowDiagonal
+      });
+      if (!job || typeof job.then !== "function") {
+        return Promise.resolve(fallbackPath(start, goal, normalized.width, normalized.height, "job-unavailable"));
+      }
+      return job.then((result) => {
+        const payload = result || {};
+        const typed = ArrayBuffer.isView(payload.path) ? payload.path : null;
+        const raw = typed ? Array.from(typed) : Array.isArray(payload.path) ? payload.path.slice() : [];
+        const points = [];
+        for (let i = 0; i < raw.length; i += 2) {
+          points.push({ x: raw[i], y: raw[i + 1] });
+        }
+        if (!points.length) {
+          return fallbackPath(start, goal, normalized.width, normalized.height, payload.reason || "empty");
+        }
+        return { success: payload.success !== false, points, reason: payload.reason || null };
+      }).catch((err) => {
+        console.warn("[Enemies] Path worker failed", err);
+        return fallbackPath(start, goal, normalized.width, normalized.height, "worker-error");
+      });
+    } catch (err) {
+      console.warn("[Enemies] Unable to queue path job", err);
+      return Promise.resolve(fallbackPath(start, goal, normalized.width, normalized.height, "exception"));
+    }
+  }
+
   const intelState = {
     list: [],
     updatedAt: 0
@@ -444,6 +525,9 @@
     getCurseProfile(enemy) {
       if (!enemy) return null;
       return enemy.__curseProfile || null;
+    },
+    requestPath(grid, width, height, start, goal, opts) {
+      return requestPathJob(grid, width, height, start, goal, opts);
     },
     onSpawnPlan(cb) {
       if (typeof cb !== "function") return () => {};
