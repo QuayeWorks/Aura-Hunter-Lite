@@ -58,6 +58,7 @@ const DEF = {
   let gizmoMgr, selectedKey = null;
   const UNIT_POS = 1000; // set to 1 if you prefer scene units
   let outlinedMesh = null;
+  let refreshDopeSheet = null;
 
   // Visible mesh helper + red outline
   function meshForPart(key){ return scene.getMeshByName(key) || null; }
@@ -282,42 +283,104 @@ const DEF = {
     });
 
     timelineRoot.innerHTML = "";
+
+    const sheetEl = document.createElement("div");
+    sheetEl.className = "dope-sheet timeline";
+
+    const headerEl = document.createElement("div");
+    headerEl.className = "dope-header";
+
+    const headerLeft = document.createElement("div");
+    headerLeft.className = "dope-header-left";
+    const filterLabel = document.createElement("label");
+    filterLabel.className = "dope-filter";
+    filterLabel.textContent = "View";
+    const filterSel = document.createElement("select");
+    filterSel.id = "dope-filter";
+    const optAll = document.createElement("option");
+    optAll.value = "animated";
+    optAll.textContent = "All Animated";
+    const optSel = document.createElement("option");
+    optSel.value = "selected";
+    optSel.textContent = "Only Selected Joint";
+    filterSel.append(optAll, optSel);
+    filterLabel.appendChild(filterSel);
+    headerLeft.appendChild(filterLabel);
+
     const rulerEl = document.createElement("div");
-    rulerEl.className = "timeline-ruler";
-    const trackEl = document.createElement("div");
-    trackEl.className = "timeline-track";
-    const playheadEl = document.createElement("div");
-    playheadEl.className = "timeline-playhead";
+    rulerEl.className = "dope-header-right timeline-ruler";
+
+    headerEl.append(headerLeft, rulerEl);
+    sheetEl.appendChild(headerEl);
+
+    const bodyEl = document.createElement("div");
+    bodyEl.className = "dope-body";
+    const rowsEl = document.createElement("div");
+    rowsEl.className = "dope-rows";
+    bodyEl.appendChild(rowsEl);
+
+    const overlayEl = document.createElement("div");
+    overlayEl.className = "dope-overlay";
+    const playheadLine = document.createElement("div");
+    playheadLine.className = "timeline-playhead";
+    overlayEl.appendChild(playheadLine);
+    const selectionBox = document.createElement("div");
+    selectionBox.className = "dope-selection";
+    selectionBox.style.display = "none";
+    overlayEl.appendChild(selectionBox);
+    bodyEl.appendChild(overlayEl);
+
     const playheadHandle = document.createElement("div");
     playheadHandle.className = "playhead-handle";
-    playheadEl.appendChild(playheadHandle);
-    timelineRoot.appendChild(rulerEl);
-    timelineRoot.appendChild(trackEl);
-    timelineRoot.appendChild(playheadEl);
+    bodyEl.appendChild(playheadHandle);
+
+    sheetEl.appendChild(bodyEl);
+    timelineRoot.appendChild(sheetEl);
+
+    const CHANNELS = [
+      { short: "pos", name: "position", label: "Position" },
+      { short: "rot", name: "rotation", label: "Rotation" },
+      { short: "scl", name: "scale", label: "Scale" }
+    ];
 
     const selectedKeys = new Set();
     const keyElements = new Map();
+    const keyMeta = new Map();
+    const rowElements = new Map();
+    const expandedJoints = new Map();
     let playheadFrame = currentRange().start;
     let playheadDrag = null;
     let keyDrag = null;
+    let boxSelect = null;
 
     function currentTrackKeys(){
       return trackOf(partSel.value, chSel.value);
     }
 
+    function getOverlayRect(){
+      return overlayEl.getBoundingClientRect();
+    }
+
     function frameFromClientX(x){
-      const rect = timelineRoot.getBoundingClientRect();
-      const pct = rect.width ? (x - rect.left) / rect.width : 0;
+      const rect = getOverlayRect();
+      if (rect.width <= 0){
+        const range = currentRange();
+        return range.start;
+      }
+      const pct = Math.min(1, Math.max(0, (x - rect.left) / rect.width));
       const range = currentRange();
       const total = Math.max(1, range.end - range.start);
-      return range.start + Math.min(1, Math.max(0, pct)) * total;
+      return range.start + pct * total;
     }
 
     function positionPlayhead(frame){
       const range = currentRange();
       const total = Math.max(1, range.end - range.start);
-      const pct = ((frame - range.start) / total) * 100;
-      playheadEl.style.left = `${Math.max(0, Math.min(100, pct))}%`;
+      const pct = Math.min(1, Math.max(0, (frame - range.start) / total));
+      playheadLine.style.left = `${pct * 100}%`;
+      const overlayLeft = overlayEl.offsetLeft;
+      const overlayWidth = overlayEl.clientWidth || 1;
+      playheadHandle.style.left = `${overlayLeft + overlayWidth * pct}px`;
     }
 
     function updateTimeReadout(){
@@ -329,6 +392,21 @@ const DEF = {
     function updateKeySelection(){
       keyElements.forEach((el, key)=>{
         el.classList.toggle("selected", selectedKeys.has(key));
+      });
+    }
+
+    function updateActiveRowHighlight(){
+      const activeJoint = partSel.value;
+      const activeChannel = chSel.value;
+      rowElements.forEach((row, key)=>{
+        const parts = key.split("|");
+        let isActive = false;
+        if (parts[0] === "channel"){
+          isActive = parts[1] === activeJoint && parts[2] === activeChannel;
+        } else if (parts[0] === "joint"){
+          isActive = parts[1] === activeJoint;
+        }
+        row.classList.toggle("active", isActive);
       });
     }
 
@@ -349,7 +427,7 @@ const DEF = {
     function updateRuler(){
       const range = currentRange();
       const total = Math.max(1, range.end - range.start);
-      const width = timelineRoot.clientWidth || 1;
+      const width = overlayEl.clientWidth || 1;
       const targetPx = 60;
       let framesPerTick = Math.max(1, Math.round(total / Math.max(1, width / targetPx)));
       const pow = Math.pow(10, Math.floor(Math.log10(framesPerTick)));
@@ -387,93 +465,251 @@ const DEF = {
       applyAtTime(frameToSeconds(playheadFrame));
     }
 
-    function drawTimeline(){
-      updateRuler();
-      trackEl.innerHTML = "";
-      keyElements.clear();
-      const range = currentRange();
-      const total = Math.max(1, range.end - range.start);
-      const keys = currentTrackKeys();
-      keys.forEach(key=>{
-        const el=document.createElement("div");
-        el.className="timeline-key";
-        const pct = ((key.frame - range.start) / total) * 100;
-        el.style.left = `${Math.max(0, Math.min(100, pct))}%`;
-        el.title = `Frame ${key.frame.toFixed(2)} (${frameToSeconds(key.frame).toFixed(3)}s)`;
-        el.addEventListener("pointerdown", e=>{
-          e.preventDefault();
-          e.stopPropagation();
-          if (!e.shiftKey && !selectedKeys.has(key)){
-            selectedKeys.clear();
-          }
-          if (e.shiftKey){
-            selectedKeys.add(key);
-          } else {
-            selectedKeys.add(key);
-          }
-          updateKeySelection();
-          const dragKeys = selectedKeys.size ? Array.from(selectedKeys) : [key];
-          keyDrag = {
-            pointerId: e.pointerId,
-            anchor: key,
-            original: new Map(dragKeys.map(k=>[k, k.frame])),
-            lastDelta: 0
-          };
-          keyElements.forEach((node, k)=>{ if (selectedKeys.has(k)) node.classList.add("dragging"); });
-          el.setPointerCapture(e.pointerId);
-          setFrame(key.frame, { snap: true });
-        });
-        el.addEventListener("pointermove", e=>{
-          if (!keyDrag || keyDrag.pointerId !== e.pointerId) return;
-          const desired = Math.round(frameFromClientX(e.clientX));
-          const anchorStart = keyDrag.original.get(keyDrag.anchor) ?? keyDrag.anchor.frame;
-          let delta = desired - Math.round(anchorStart);
-          const originals = Array.from(keyDrag.original.values());
-          const rangeInner = currentRange();
-          const minOriginal = Math.min(...originals);
-          const maxOriginal = Math.max(...originals);
-          const minDelta = rangeInner.start - minOriginal;
-          const maxDelta = rangeInner.end - maxOriginal;
-          delta = Math.max(minDelta, Math.min(maxDelta, delta));
-          if (delta === keyDrag.lastDelta) return;
-          keyDrag.lastDelta = delta;
-          keyDrag.original.forEach((startFrame, k)=>{
-            const target = startFrame + delta;
-            const moved = AnimationStore.moveKey(partSel.value, chSel.value, k.frame, target, { tolerance: 0.25 });
-            if (moved){
-              const pctMoved = ((moved.frame - rangeInner.start) / Math.max(1, rangeInner.end - rangeInner.start)) * 100;
-              const node = keyElements.get(k);
-              if (node){
-                node.style.left = `${Math.max(0, Math.min(100, pctMoved))}%`;
-              }
-            }
-          });
-          setFrame(anchorStart + delta, { snap: true });
-        });
-        const finishDrag = e=>{
-          if (!keyDrag || keyDrag.pointerId !== e.pointerId) return;
-          el.releasePointerCapture(e.pointerId);
-          keyDrag = null;
-          keyElements.forEach(node=>node.classList.remove("dragging"));
-          drawTimeline();
-        };
-        el.addEventListener("pointerup", finishDrag);
-        el.addEventListener("pointercancel", finishDrag);
-        el.addEventListener("click", e=>{
-          e.stopPropagation();
-          setFrame(key.frame, { snap: true });
-        });
-        trackEl.appendChild(el);
-        keyElements.set(key, el);
-      });
-      updateKeySelection();
-      positionPlayhead(playheadFrame);
-    }
-
-    function clearSelection(){
+    function clearKeySelection(){
       if (!selectedKeys.size) return;
       selectedKeys.clear();
       updateKeySelection();
+    }
+
+    function setActiveTrackInternal(joint, channel){
+      if (joint && partSel.value !== joint){
+        partSel.value = joint;
+      }
+      if (channel && chSel.value !== channel){
+        chSel.value = channel;
+      }
+      updateActiveRowHighlight();
+    }
+
+    function updateSelectionFromRect(rect, additive){
+      keyElements.forEach((node, key)=>{
+        const bounds = node.getBoundingClientRect();
+        const intersects = bounds.right >= rect.left && bounds.left <= rect.right && bounds.bottom >= rect.top && bounds.top <= rect.bottom;
+        if (intersects){
+          selectedKeys.add(key);
+        } else if (!additive){
+          selectedKeys.delete(key);
+        }
+      });
+      updateKeySelection();
+    }
+
+    function drawTimeline(){
+      updateRuler();
+      selectionBox.style.display = "none";
+      rowsEl.innerHTML = "";
+      keyElements.clear();
+      rowElements.clear();
+      const animData = ensureAnimation();
+      const jointsData = animData.joints || {};
+      const filterMode = filterSel.value || "animated";
+      const jointSet = new Set();
+      const addJoint = j=>{ if (j) jointSet.add(j); };
+      if (filterMode === "selected"){
+        addJoint(selectedKey);
+        addJoint(partSel.value);
+      } else {
+        Object.keys(jointsData).forEach(joint=>{
+          const data = jointsData[joint];
+          if (!data) return;
+          const hasKeys = CHANNELS.some(ch=>Array.isArray(data[ch.name]) && data[ch.name].length);
+          if (hasKeys) addJoint(joint);
+        });
+        if (!jointSet.size) addJoint(partSel.value);
+      }
+      if (!jointSet.size && PART_KEYS.length){
+        addJoint(PART_KEYS[0]);
+      }
+      const jointNames = Array.from(jointSet).filter(Boolean).sort((a,b)=>a.localeCompare(b));
+
+      keyMeta.clear();
+      jointNames.forEach(joint=>{
+        const jointData = jointsData[joint] || {};
+        CHANNELS.forEach(ch=>{
+          const arr = jointData[ch.name];
+          if (!Array.isArray(arr)) return;
+          arr.forEach(key=>{
+            keyMeta.set(key, { part: joint, channel: ch.short });
+          });
+        });
+      });
+
+      Array.from(selectedKeys).forEach(key=>{
+        if (!keyMeta.has(key)) selectedKeys.delete(key);
+      });
+
+      const range = currentRange();
+      const total = Math.max(1, range.end - range.start);
+
+      if (!jointNames.length){
+        const empty = document.createElement("div");
+        empty.className = "dope-empty";
+        empty.textContent = "No joints available.";
+        rowsEl.appendChild(empty);
+        updateKeySelection();
+        updateActiveRowHighlight();
+        positionPlayhead(playheadFrame);
+        return;
+      }
+
+      jointNames.forEach(joint=>{
+        const jointRow = document.createElement("div");
+        jointRow.className = "dope-row joint-row";
+        const label = document.createElement("div");
+        label.className = "dope-label joint";
+        const caret = document.createElement("button");
+        caret.type = "button";
+        caret.className = "dope-caret";
+        const expanded = expandedJoints.get(joint) ?? false;
+        caret.textContent = expanded ? "▾" : "▸";
+        caret.addEventListener("click", e=>{
+          e.preventDefault();
+          e.stopPropagation();
+          expandedJoints.set(joint, !expanded);
+          drawTimeline();
+        });
+        const nameSpan = document.createElement("span");
+        nameSpan.textContent = joint;
+        label.append(caret, nameSpan);
+        label.addEventListener("click", e=>{
+          e.preventDefault();
+          e.stopPropagation();
+          if (partSel.value !== joint){
+            partSel.value = joint;
+            drawTimeline();
+          } else {
+            updateActiveRowHighlight();
+          }
+        });
+        const track = document.createElement("div");
+        track.className = "dope-track joint";
+        const jointData = jointsData[joint] || {};
+        const hasKeys = CHANNELS.some(ch=>Array.isArray(jointData[ch.name]) && jointData[ch.name].length);
+        if (!hasKeys){
+          const msg = document.createElement("span");
+          msg.className = "empty-msg";
+          msg.textContent = "No keys";
+          track.appendChild(msg);
+        }
+        jointRow.append(label, track);
+        rowsEl.appendChild(jointRow);
+        rowElements.set(`joint|${joint}`, jointRow);
+
+        if (!expanded) return;
+
+        CHANNELS.forEach(ch=>{
+          const arr = jointData[ch.name];
+          if (!Array.isArray(arr) || !arr.length) return;
+          const chRow = document.createElement("div");
+          chRow.className = `dope-row channel-row channel-${ch.short}`;
+          chRow.dataset.part = joint;
+          chRow.dataset.channel = ch.short;
+          const chLabel = document.createElement("div");
+          chLabel.className = "dope-label channel";
+          chLabel.textContent = ch.label;
+          chLabel.addEventListener("click", e=>{
+            e.preventDefault();
+            e.stopPropagation();
+            setActiveTrackInternal(joint, ch.short);
+            if (filterSel.value === "selected") drawTimeline();
+          });
+          const chTrack = document.createElement("div");
+          chTrack.className = `dope-track channel channel-${ch.short}`;
+          arr.forEach(key=>{
+            const el=document.createElement("div");
+            el.className=`timeline-key channel-${ch.short}`;
+            const pct = ((key.frame - range.start) / total) * 100;
+            el.style.left = `${Math.max(0, Math.min(100, pct))}%`;
+            el.title = `Frame ${key.frame.toFixed(2)} (${frameToSeconds(key.frame).toFixed(3)}s)`;
+            el.addEventListener("pointerdown", e=>{
+              e.preventDefault();
+              e.stopPropagation();
+              const additive = e.shiftKey || e.ctrlKey || e.metaKey;
+              if (!additive && !selectedKeys.has(key)){
+                selectedKeys.clear();
+              }
+              if (e.ctrlKey || e.metaKey){
+                if (selectedKeys.has(key)){
+                  selectedKeys.delete(key);
+                } else {
+                  selectedKeys.add(key);
+                }
+              } else {
+                selectedKeys.add(key);
+              }
+              setActiveTrackInternal(joint, ch.short);
+              updateKeySelection();
+              selectionBox.style.display = "none";
+              boxSelect = null;
+              if (!selectedKeys.has(key)) return;
+              const dragKeys = selectedKeys.size ? Array.from(selectedKeys) : [key];
+              keyDrag = {
+                pointerId: e.pointerId,
+                anchor: key,
+                original: new Map(dragKeys.map(k=>[k, k.frame])),
+                lastDelta: 0
+              };
+              keyElements.forEach((node, k)=>{ if (selectedKeys.has(k)) node.classList.add("dragging"); });
+              el.setPointerCapture(e.pointerId);
+              setFrame(key.frame, { snap: true });
+            });
+            el.addEventListener("pointermove", e=>{
+              if (!keyDrag || keyDrag.pointerId !== e.pointerId) return;
+              const desired = Math.round(frameFromClientX(e.clientX));
+              const anchorStart = keyDrag.original.get(keyDrag.anchor) ?? keyDrag.anchor.frame;
+              let delta = desired - Math.round(anchorStart);
+              const originals = Array.from(keyDrag.original.values());
+              const rangeInner = currentRange();
+              const minOriginal = Math.min(...originals);
+              const maxOriginal = Math.max(...originals);
+              const minDelta = rangeInner.start - minOriginal;
+              const maxDelta = rangeInner.end - maxOriginal;
+              delta = Math.max(minDelta, Math.min(maxDelta, delta));
+              if (delta === keyDrag.lastDelta) return;
+              keyDrag.lastDelta = delta;
+              keyDrag.original.forEach((startFrame, k)=>{
+                const meta = keyMeta.get(k);
+                if (!meta) return;
+                const target = startFrame + delta;
+                const moved = AnimationStore.moveKey(meta.part, meta.channel, k.frame, target, { tolerance: 0.25 });
+                if (moved){
+                  const pctMoved = ((moved.frame - rangeInner.start) / Math.max(1, rangeInner.end - rangeInner.start)) * 100;
+                  const node = keyElements.get(k);
+                  if (node){
+                    const clamped = Math.max(0, Math.min(100, pctMoved));
+                    node.style.left = `${clamped}%`;
+                    node.title = `Frame ${moved.frame.toFixed(2)} (${frameToSeconds(moved.frame).toFixed(3)}s)`;
+                  }
+                }
+              });
+              setFrame(anchorStart + delta, { snap: true });
+            });
+            const finishDrag = e=>{
+              if (!keyDrag || keyDrag.pointerId !== e.pointerId) return;
+              el.releasePointerCapture(e.pointerId);
+              keyDrag = null;
+              keyElements.forEach(node=>node.classList.remove("dragging"));
+              drawTimeline();
+            };
+            el.addEventListener("pointerup", finishDrag);
+            el.addEventListener("pointercancel", finishDrag);
+            el.addEventListener("click", e=>{
+              e.stopPropagation();
+              setFrame(key.frame, { snap: true });
+              setActiveTrackInternal(joint, ch.short);
+            });
+            chTrack.appendChild(el);
+            keyElements.set(key, el);
+          });
+          chRow.append(chLabel, chTrack);
+          rowsEl.appendChild(chRow);
+          rowElements.set(`channel|${joint}|${ch.short}`, chRow);
+        });
+      });
+
+      updateKeySelection();
+      updateActiveRowHighlight();
+      positionPlayhead(playheadFrame);
     }
 
     timeSlider.oninput = ()=> setFrame(Number(timeSlider.value)||currentRange().start, { snap: true });
@@ -549,14 +785,71 @@ const DEF = {
       drawTimeline();
     });
 
-    timelineRoot.addEventListener("pointerdown", e=>{
+    bodyEl.addEventListener("pointerdown", e=>{
+      if (e.button !== 0) return;
       if (e.target === playheadHandle || e.target.closest(".timeline-key")) return;
-      const frame = Math.round(frameFromClientX(e.clientX));
-      if (!e.shiftKey){
-        clearSelection();
+      if (e.target.closest(".dope-label")) return;
+      const overlayRect = getOverlayRect();
+      if (overlayRect.width <= 0 || e.clientX < overlayRect.left) return;
+      const channelRow = e.target.closest(".dope-row.channel-row");
+      if (channelRow){
+        setActiveTrackInternal(channelRow.dataset.part, channelRow.dataset.channel);
       }
-      setFrame(frame, { snap: true });
+      const additive = e.shiftKey || e.ctrlKey || e.metaKey;
+      if (!additive){
+        clearKeySelection();
+      }
+      setFrame(Math.round(frameFromClientX(e.clientX)), { snap: true });
+      selectionBox.style.display = "none";
+      boxSelect = {
+        pointerId: e.pointerId,
+        additive,
+        startX: e.clientX,
+        startY: e.clientY,
+        active: false
+      };
+      bodyEl.setPointerCapture(e.pointerId);
+      e.preventDefault();
     });
+
+    bodyEl.addEventListener("pointermove", e=>{
+      if (keyDrag && keyDrag.pointerId === e.pointerId) return;
+      if (!boxSelect || boxSelect.pointerId !== e.pointerId) return;
+      const overlayRect = getOverlayRect();
+      if (overlayRect.width <= 0){
+        selectionBox.style.display = "none";
+        return;
+      }
+      const dx = e.clientX - boxSelect.startX;
+      const dy = e.clientY - boxSelect.startY;
+      if (!boxSelect.active && Math.hypot(dx, dy) > 4){
+        boxSelect.active = true;
+        if (!boxSelect.additive){
+          selectedKeys.clear();
+        }
+      }
+      if (!boxSelect.active) return;
+      const left = Math.max(overlayRect.left, Math.min(boxSelect.startX, e.clientX));
+      const right = Math.min(overlayRect.right, Math.max(boxSelect.startX, e.clientX));
+      const top = Math.max(overlayRect.top, Math.min(boxSelect.startY, e.clientY));
+      const bottom = Math.min(overlayRect.bottom, Math.max(boxSelect.startY, e.clientY));
+      selectionBox.style.display = "block";
+      selectionBox.style.left = `${left - overlayRect.left}px`;
+      selectionBox.style.top = `${top - overlayRect.top}px`;
+      selectionBox.style.width = `${Math.max(0, right - left)}px`;
+      selectionBox.style.height = `${Math.max(0, bottom - top)}px`;
+      updateSelectionFromRect({ left, right, top, bottom }, boxSelect.additive);
+      e.preventDefault();
+    });
+
+    const finishBoxSelect = e=>{
+      if (!boxSelect || boxSelect.pointerId !== e.pointerId) return;
+      bodyEl.releasePointerCapture(e.pointerId);
+      boxSelect = null;
+      selectionBox.style.display = "none";
+    };
+    bodyEl.addEventListener("pointerup", finishBoxSelect);
+    bodyEl.addEventListener("pointercancel", finishBoxSelect);
 
     playheadHandle.addEventListener("pointerdown", e=>{
       e.preventDefault();
@@ -588,17 +881,19 @@ const DEF = {
     };
 
     delBtn.onclick = ()=>{
-      const part = partSel.value, ch = chSel.value;
       let removed = false;
       if (selectedKeys.size){
         const targets = Array.from(selectedKeys);
         targets.forEach(key=>{
-          if (AnimationStore.removeKey(part, ch, key.frame, { tolerance: 0.5 })){
+          const meta = keyMeta.get(key);
+          if (!meta) return;
+          if (AnimationStore.removeKey(meta.part, meta.channel, key.frame, { tolerance: 0.5 })){
             removed = true;
             selectedKeys.delete(key);
           }
         });
       } else {
+        const part = partSel.value, ch = chSel.value;
         const frame = Math.round(playheadFrame);
         removed = AnimationStore.removeKey(part, ch, frame, { tolerance: 0.5 });
       }
@@ -609,12 +904,14 @@ const DEF = {
 
     partSel.addEventListener("change", ()=>{ selectedKeys.clear(); drawTimeline(); });
     chSel.addEventListener("change", ()=>{ selectedKeys.clear(); drawTimeline(); });
+    filterSel.addEventListener("change", ()=>{ selectedKeys.clear(); drawTimeline(); });
 
     window.addEventListener("resize", drawTimeline);
 
     syncRangeUI();
     setFrame(playheadFrame, { snap: true });
     drawTimeline();
+    refreshDopeSheet = drawTimeline;
   }
 
     function currentTRSAt(part,ch){
@@ -766,6 +1063,7 @@ const DEF = {
     gizmoMgr.attachToMesh(pivot);
     setOutline(meshForPart(key));
     updateToolbar();
+    refreshDopeSheet?.();
   }
 
   function clearSelection(){
@@ -773,6 +1071,7 @@ const DEF = {
     gizmoMgr.attachToMesh(null);
     setOutline(null);
     updateToolbar();
+    refreshDopeSheet?.();
   }
 
   function setGizmoMode(mode){
