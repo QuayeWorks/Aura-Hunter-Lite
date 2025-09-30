@@ -2,117 +2,202 @@ You are modifying a JS game with this file layout:
 world-utils.js, rig-definitions.js, items-and-crafting.js, spawns.js, region-manager.js, nen-core.js, nen-advanced.js, nen-combat.js, hud.js, game.js, enemies.js, rig-editor.js, index.html, styles.css.
 
 Hard rules for code output (follow exactly):
-
 Before removing any feature, ask if it’s relevant; otherwise do not remove.
 
 Constraints: Do not break existing HUD buttons, attacks, gameplay, or terrain generation. Keep index.html and styles.css working. Use modern, clean JS (no transpile step).
 
 Deliverables per task:
-
 • The code per the rules above
 • A short “What changed / Why” note
 • Quick manual test steps
 
-Task 16 — Streamed Chunks + Budgeted Queue
+Task 31 — Avatar Head & Cosmetics (Roblox-style base)
 
-Files: world-utils.js, region-manager.js, game.js
+Files: rig-definitions.js, game.js, hud.js, index.html, styles.css
 Prompt:
-Implement Minecraft-style chunk streaming with a bounded work queue. Define a CHUNK_SIZE (e.g., 16×16×16 for voxels; parametric) and maintain a “loaded radius” around the player. Add a per-frame budget (e.g., N ms or N ops) to enqueue/dequeue chunk (load/gen/mesh/dispose) work so no frame exceeds budget. Persist existing terrain generation API; do not break current gameplay. Provide hooks to adjust loaded radius via HUD dev toggle.
-Done check: Moving quickly in any direction never drops below target FPS due to chunk spikes; profiler shows chunk tasks spread over frames.
-Quick manual test: Sprint diagonally across the map with FPS counter visible; toggle radius up/down; confirm no stutter when chunks swap.
+Add a humanoid head with swappable face decals/expressions and support for hair/hats, clothes (tops/bottoms/full outfits), shoes, accessories. Provide a runtime API:
+setFace(id), setHair(id), setOutfit({top,bottom,full}), setShoes(id), setAccessories(ids[]).
+Selections must preview live on the player rig. Persist current selection in memory (no save UI yet).
+Done check: Switching any cosmetic updates the rig immediately, no broken materials/animations.
+Quick manual test: Cycle through 3 faces, 3 hairs, 2 outfits, 2 shoes via simple temporary buttons and verify visual swap without errors.
 
-Task 17 — Voxel Mesh Builder: Face Culling + (Optional) Greedy Meshing
+Task 32 — Character Creator (3D orbit/pan/rotate + selectors)
 
-Files: world-utils.js
+Files: hud.js, game.js, index.html, styles.css, rig-definitions.js
 Prompt:
-Add mesh generation that omits hidden faces (adjacent opaque neighbors). Gate an optional “greedy meshing” pass behind a feature flag for merging coplanar quads. Keep materials/UVs compatible with current block textures. Expose buildChunkMesh(blockData, opts) with {faceCulling:true, greedy:false}.
-Done check: Triangle count per solid chunk reduced ~8–10× with face culling; greedy flag further reduces in large flat areas without visual regressions.
-Quick manual test: Generate a flat stone platform and a solid cube; compare vertex counts with/without flags; walk around to verify visuals.
+Create a Character Creation screen containing:
 
-Task 18 — Distance LOD for Major Meshes (Trees/Rocks/Structures)
+A 3D preview of the full rig with orbit/pan/zoom camera.
 
-Files: game.js, region-manager.js
+Selectors for Hair/Hats, Clothes, Shoes, Faces, Accessories.
+
+Instant application to the rig via Task 31 API.
+Provide Open/Close flows from main menu; no gameplay breakage.
+Done check: Users can orbit the model and swap items; returning to game preserves chosen look.
+Quick manual test: Open creator → rotate/zoom model → change items → close → re-open and confirm selections persist in session.
+
+Task 33 — HUD Reorganization (inventory, cooldowns, perf sliders, messages, grudge bar)
+
+Files: hud.js, index.html, styles.css
 Prompt:
-Introduce Babylon LOD for repeated assets: add at least two LOD levels per major prop (high/low), and set mesh.addLODLevel(distance, lodMesh). Ensure LOD works with instances/thin instances where applicable. Provide JSON config for LOD distances and per-asset overrides.
-Done check: Camera fly-through shows smooth LOD swaps; draw calls and active vertices drop at distance.
-Quick manual test: Place a dense forest; fly from far → near and watch LOD transitions; verify no popping/shader errors.
+Re-layout the in-game HUD:
 
-Task 19 — Instancing / Thin Instances for Repeated Props
+Inventory 1–9: bottom-center.
 
-Files: game.js, region-manager.js
+Cooldowns: to the right of inventory bar.
+
+Dynamic resolution & Performance target sliders: to the left of inventory bar.
+
+HUD message line: 5px above the inventory bar.
+
+Grudge menu/bar: relocate to area of EXP/Health/Nan bars, same style, purple fill.
+Maintain functionality of all HUD buttons and stats.
+Done check: Visual layout matches spec on 16:9 and 16:10; no overlap or broken clicks.
+Quick manual test: Enter combat, use hotkeys 1–9, watch cooldowns, slide perf controls, verify message line offset and purple grudge bar.
+
+Task 34 — Rig Editor Secret Access (“QuayeWorks” gate)
+
+Files: rig-editor.js, hud.js
 Prompt:
-Replace cloned meshes for repeated props (foliage, rocks, pickups) with hardware instancing; upgrade to thin instances for very large counts. Add an instance pool API: spawnInstances(type, transforms) and despawnInstances(type, ids). Keep material compatibility with LOD from Task 18.
-Done check: Same scene renders with drastically fewer draw calls; FPS improves measurably.
-Quick manual test: Spawn 1k+ small props via pool; toggle “instances vs clones” in a dev menu; compare FPS & draw calls.
+Make the Rig Editor a hidden menu. Require entering the exact phrase “QuayeWorks” via a small unlock dialog/console. After unlock, show the editor entry. Store unlock in-session only.
+Done check: Editor not visible until correct phrase entered; wrong inputs do nothing.
+Quick manual test: Try wrong phrase → locked; enter “QuayeWorks” → editor button appears; reload → locked again.
 
-Task 20 — AI & Physics Activation Bubble
+Task 35 — Animation Data Model (per-joint keyframes)
 
-Files: enemies.js, game.js
+Files: rig-editor.js, rig-definitions.js
 Prompt:
-Add a configurable “simulation bubble” centered on player. Inside bubble: full AI ticks + physics; outside: sleep or despawn according to type. Provide graceful reactivation when re-entering bubble. Preserve combat logic and spawns.
-Done check: CPU usage scales with nearby entities only; no “zombie” AI far away.
-Quick manual test: Lure enemies away; walk 100m; return—entities resume correctly without duplicates.
+Introduce an animation data model that maps rig joints → channels (position/rotation/scale) → keyframes { frame, value }. Provide APIs:
 
-Task 21 — Web Worker Offload (Chunk Gen / Pathfinding)
+createAnimation(name, fps, range), deleteAnimation(name)
 
-Files: world-utils.js, enemies.js, game.js
+addKey(joint, channel, frame, value), removeKey(...), moveKey(...)
+
+listAnimations(), getAnimation(name)
+This is the single source of truth for the editor UI and Babylon binding.
+Done check: Can create animation, add/move/delete keys on a few joints programmatically; data serializes to JSON.
+Quick manual test: Create “TestWalk” 1–48; add a few keys to a leg joint; dump JSON to console and verify structure.
+
+Task 36 — Blender-like Timeline UI (scrub bar, playhead, snapping, frame range, transport)
+
+Files: rig-editor.js, index.html, styles.css
 Prompt:
-Move expensive chunk generation and (if used) pathfinding to Web Workers. Use transferable TypedArrays for block data/paths. Add a simple job system: main thread posts jobs; worker returns results; main thread integrates meshes or paths next frame.
-Done check: Main thread frame time drops during generation spikes; no visible hitching when entering new areas.
-Quick manual test: Force rapid travel across new terrain; observe stable FPS while chunks appear.
+Add a Timeline UI:
 
-Task 22 — Texture Atlas / Array + KTX2 (BasisU) Compression
+Horizontal ruler with frame ticks and a draggable playhead (snaps to whole frames).
 
-Files: game.js, index.html
+Editable frame range (start/end).
+
+Transport controls: jump to start/end, play/pause, step prev/next keyframe.
+
+Keyframe diamonds on the current channel(s); click-select, shift-multi-select, drag to move (snap to frames).
+No curve editor yet.
+Done check: Users can scrub, set range, play/pause, select and reposition key diamonds with snapping.
+Quick manual test: Make keys on frames 1, 12, 24; drag frame 24 to 20; play; verify timing changed.
+
+Task 37 — Dope Sheet (multi-track view of joints/channels)
+
+Files: rig-editor.js, index.html, styles.css
 Prompt:
-Combine terrain/block textures into a single atlas or texture array and switch materials to atlas sampling. Add KTX2 loader path for compressed textures; fall back gracefully if unsupported. Do not alter styles.css.
-Done check: VRAM usage drops, fewer material switches; scene looks identical.
-Quick manual test: Open Spector/Inspector; confirm single terrain material and compressed textures loaded.
+Add a Dope Sheet panel (left list of joints/channels, right multi-track timeline):
 
-Task 23 — Adaptive Quality: SceneOptimizer + Dynamic Resolution
+Rows per joint (expandable for pos/rot/scale sub-tracks if available).
 
-Files: hud.js, game.js
+Keyframe diamonds per row; box-select range; drag multiple keys together.
+
+Filter: Only Selected Joint vs All Animated.
+Done check: Can view/edit keys across multiple joints at once; multi-select drag works and updates data model.
+Quick manual test: Animate both arms; select both rows; box-select keys around frames 10–20; drag to shift timing; play to confirm.
+
+Task 38 — Babylon Binding (AnimationGroup + goToFrame scrubbing)
+
+Files: rig-editor.js, rig-definitions.js, game.js
 Prompt:
-Expose a “Performance Target” HUD control. Integrate Babylon SceneOptimizer to step down shadows/postfx when FPS < target for several seconds, and recover quality on stability. Add optional dynamic resolution scaler (render at scale <1.0, upscale to canvas).
-Done check: Heavy scenes auto-stabilize above target FPS without manual tweaking; quality restores when load drops.
-Quick manual test: Toggle a “Stress Test” spawn; watch optimizer gradually reduce features; confirm recovery after despawn.
+Bind the data model (Task 35) to Babylon:
 
-Task 24 — Profiler Overlay & Dev Toggles
+Build per-joint BABYLON.Animation tracks (prefer rotationQuaternion for bones).
 
-Files: hud.js, game.js
+Group tracks in an AnimationGroup.
+
+Implement scrub with animationGroup.goToFrame(frame); play/pause with group controls; optional loop.
+
+Keep editor UI and 3D rig in sync both ways.
+Done check: Scrubbing updates the pose instantly; play runs at fps; changing keys updates playback.
+Quick manual test: Create 2-sec clip at 24fps; add arm swing keys; scrub and play; confirm rig follows.
+
+Task 39 — Keyframe Ops & Auto-Key (insert/delete/duplicate, hotkeys)
+
+Files: rig-editor.js
 Prompt:
-Add an in-game dev overlay showing FPS, draw calls, active vertices, GPU frame time, chunks loaded/pending, worker queue depth. Include toggles for: LOD on/off, instances vs clones, chunk radius, greedy meshing, dynamic resolution. Dev-only; hidden in production.
-Done check: Overlay reflects live metrics; toggles flip features without reload.
-Quick manual test: Flip each toggle and verify metric deltas and visual effect.
+Add core operations mirroring Blender basics:
 
-Task 25 — Asset Region Streaming & Eviction
+Insert key (UI button & hotkey I) for selected joint/channel at current frame.
 
-Files: region-manager.js, game.js
+Delete key (hotkey Alt+I or Del).
+
+Duplicate keys (copy/paste selected keys at playhead).
+
+Auto-Key toggle: when on, editing a joint on a new frame inserts/updates a key automatically.
+Done check: Keys can be inserted, deleted, duplicated; Auto-Key records edits on move/rotate/scale.
+Quick manual test: Toggle Auto-Key; move a hand at frame 8 → key appears; duplicate at frame 16; delete at frame 12.
+
+Task 40 — Interpolation & Stepped Mode (global/simple toggle)
+
+Files: rig-editor.js
 Prompt:
-Implement a simple region graph (biomes/zones). When entering a region, prefetch meshes/textures; when exiting, schedule eviction of region-scoped assets not referenced elsewhere. Respect current loading paths; add a small “look-ahead” distance to prefetch.
-Done check: Fast travel across region boundaries shows minimal pop-in; memory plateaus over time.
-Quick manual test: Traverse City→Desert→City loop; verify old region assets get disposed; memory Inspector shows reclaim.
+Provide a simple interpolation control: global mode Linear (default) vs Stepped (hold). Apply when building Babylon animations (linear vs no interpolation). Mark stepped keys visually (e.g., diamond outline).
+Done check: Switching to Stepped yields hold-poses between keys; Linear smooths motion.
+Quick manual test: Animate head turn across 3 keys; compare Linear vs Stepped playback.
 
-Task 26 — Interior/Portal Occlusion Hints
+Task 41 — Onion-Skin (ghost) Preview (optional toggle)
 
-Files: region-manager.js, game.js
+Files: rig-editor.js, game.js
 Prompt:
-Add lightweight occlusion hints: interior sets (disabled unless player inside trigger) and “portal quads” at doorways to toggle groups. When outside, interior props/FX are not rendered/ticked. Preserve existing building interactions.
-Done check: Looking at a city block culls most interior meshes; GPU time drops when outside.
-Quick manual test: Stand outside a large building; confirm interiors off; enter—interiors enable smoothly.
+Add an Onion Skin toggle for editor viewport: render ghost poses at a small set of frames (e.g., −2, −1, +1, +2) around playhead with reduced opacity. Implementation can temporarily apply transforms to a cloned rig or draw overlay poses; keep perf budgeted.
+Done check: Toggling shows faded poses before/after current frame; off restores normal view.
+Quick manual test: Enable ghosting; scrub; verify translucent past/future poses update.
 
-Task 27 — Physics Budget & Simplified Colliders
+Task 42 — Rig Type Selector & Xform Gizmos (multi-rig support)
 
-Files: game.js
+Files: rig-editor.js, rig-definitions.js
 Prompt:
-Introduce a physics step budget and lower-cost impostors for scenery (boxes/capsules). Add sleep thresholds on resting bodies. Non-critical physics can tick at reduced frequency under load.
-Done check: Physics spikes are bounded; no gameplay regressions.
-Quick manual test: Pile many dynamic props; confirm stability and acceptable performance.
+Add rig type selection inside editor: anthropomorphic bipedal, aquatic quadruped, monkey build, etc. For each, expose the same Translate/Rotate/Scale limb editing tools (reuse current humanoid T/R/S flow). Ensure timelines work across rig types.
+Done check: Switching rig type swaps the joint list and preserves editor features; T/R/S works on limbs.
+Quick manual test: Switch to “aquatic quadruped”, rotate a fin, insert key, play; repeat on “monkey build.”
 
-Task 28 — Settings Save/Load for Perf Features (pairs with Task 23/24)
+Task 43 — Creator ↔ Rig Editor Hand-off (preview what you animate)
 
-Files: game.js, hud.js
+Files: game.js, rig-editor.js, hud.js
 Prompt:
-Persist optimization settings (chunk radius, LOD enabled, dynamic res scale, optimizer level, worker on/off, greedy meshing flag) to localStorage. On load, restore HUD and states.
-Done check: Quit/reload returns to identical perf configuration.
-Quick manual test: Change multiple toggles; reload page; verify restored.
+Allow sending the current character from the Character Creator (Task 32) into the Rig Editor, and vice-versa. Preserve cosmetics and rig selection; ensure editor playback doesn’t leak into gameplay.
+Done check: “Edit in Rig Editor” button loads the same rig look; exit returns to game with cosmetics intact.
+Quick manual test: Style avatar (hair/face/outfit); open editor; confirm look; exit editor; return to game unchanged.
+
+Task 44 — Minor UX Polish (color cues, indicators, zoom/pan)
+
+Files: rig-editor.js, styles.css
+Prompt:
+Polish the editor UI:
+
+Selected keyframe highlight (yellow/bright).
+
+Channel keyed indicators (e.g., small dot/green state).
+
+Timeline zoom/pan (wheel to zoom time, drag to pan), ruler tick density adapts.
+
+Tooltips on icons (play, add key, auto-key).
+Done check: Visual cues match expectations; zoom/pan works on long clips.
+Quick manual test: Zoom out to 300 frames; pan; hover icons for tooltips; confirm selected vs unselected key colors.
+
+Task 45 — Save/Load Animations & Cosmetics (session + JSON export)
+
+Files: rig-editor.js, game.js, hud.js
+Prompt:
+Add Save/Load for:
+
+Animation clips (JSON export/import for the data model).
+
+Cosmetic loadouts from Character Creator (faces/hair/outfits/shoes/accessories).
+Integrate with existing save system if present; otherwise use localStorage fallback.
+Done check: Reloading restores current clip and cosmetic setup; JSON export/import round-trips.
+Quick manual test: Save a “Walk” clip and “Explorer” outfit; reload page; load both; verify identical state.
