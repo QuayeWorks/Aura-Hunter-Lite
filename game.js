@@ -1440,6 +1440,94 @@
       UNLOADING: "unloading"
    };
 
+   function getWorkerJobs() {
+      const utils = window.WorldUtils;
+      if (!utils || !utils.WorkerJobs) return null;
+      return utils.WorkerJobs;
+   }
+
+   function toUint32Array(source) {
+      if (!source) return new Uint32Array(0);
+      if (ArrayBuffer.isView(source)) {
+         if (source instanceof Uint32Array) return source;
+         const copy = new Uint32Array(source.length);
+         for (let i = 0; i < source.length; i++) copy[i] = source[i];
+         return copy;
+      }
+      if (Array.isArray(source)) {
+         try { return new Uint32Array(source); } catch (err) {
+            const copy = new Uint32Array(source.length);
+            for (let i = 0; i < source.length; i++) copy[i] = source[i] | 0;
+            return copy;
+         }
+      }
+      const jobs = getWorkerJobs();
+      if (jobs && typeof jobs.cloneToUint32 === "function") {
+         const cloned = jobs.cloneToUint32(source);
+         if (cloned) return cloned;
+      }
+      return new Uint32Array(0);
+   }
+
+   function applyChunkDescriptor(streaming, descriptor, terrain) {
+      if (!streaming || !descriptor || !terrain) return false;
+      const chunkSize = Math.max(1, descriptor.chunkSize | 0 || streaming.chunkSize || 1);
+      const chunkCountX = Math.max(1, descriptor.chunkCountX | 0 || 1);
+      const chunkCountZ = Math.max(1, descriptor.chunkCountZ | 0 || 1);
+      const list = Array.isArray(descriptor.chunks) ? descriptor.chunks : [];
+      const normalized = new Array(list.length);
+      for (let i = 0; i < list.length; i++) {
+         const src = list[i];
+         if (!src) {
+            normalized[i] = null;
+            continue;
+         }
+         const indices = toUint32Array(src.columnIndices);
+         const chunk = {
+            index: Number.isFinite(src.index) ? src.index : i,
+            chunkX: Number.isFinite(src.chunkX) ? src.chunkX : Math.floor((src.startX ?? 0) / chunkSize),
+            chunkZ: Number.isFinite(src.chunkZ) ? src.chunkZ : Math.floor((src.startZ ?? 0) / chunkSize),
+            startX: src.startX ?? 0,
+            startZ: src.startZ ?? 0,
+            spanX: src.spanX ?? chunkSize,
+            spanZ: src.spanZ ?? chunkSize,
+            columnIndices: indices,
+            center: {
+               x: src.center?.x ?? src.centerX ?? 0,
+               z: src.center?.z ?? src.centerZ ?? 0
+            },
+            bounds: {
+               minX: src.bounds?.minX ?? src.minX ?? 0,
+               maxX: src.bounds?.maxX ?? src.maxX ?? 0,
+               minZ: src.bounds?.minZ ?? src.minZ ?? 0,
+               maxZ: src.bounds?.maxZ ?? src.maxZ ?? 0
+            },
+            state: STREAMING_STATES.UNLOADED,
+            pendingKey: null
+         };
+         const states = terrain.columnStates;
+         if (Array.isArray(states)) {
+            for (let k = 0; k < indices.length; k++) {
+               if (states[indices[k]]) {
+                  chunk.state = STREAMING_STATES.LOADED;
+                  break;
+               }
+            }
+         }
+         normalized[i] = chunk;
+      }
+      streaming.chunkSize = chunkSize;
+      streaming.chunkWorldSize = terrain.cubeSize * chunkSize;
+      streaming.chunkCountX = chunkCountX;
+      streaming.chunkCountZ = chunkCountZ;
+      streaming.chunks = normalized;
+      terrain.chunkSize = chunkSize;
+      terrain.chunkWorldSize = streaming.chunkWorldSize;
+      terrain.chunkCountX = chunkCountX;
+      terrain.chunkCountZ = chunkCountZ;
+      return true;
+   }
+
    function clampStreamingRadius(streaming, radius) {
       if (!streaming) return 0;
       const min = Number.isFinite(streaming.minRadius) ? streaming.minRadius : 0;
@@ -1533,29 +1621,13 @@
       const desiredChunk = Math.max(1, Math.round(settings?.chunkSize ?? terrain.settings?.chunkSize ?? DEFAULT_CHUNK_SIZE));
       const chunkSize = Math.max(1, Math.min(desiredChunk, Math.max(terrain.colsX, terrain.colsZ)));
       const rebuild = !previous || previous.chunkSize !== chunkSize || opts.forceRebuild;
-      const descriptor = rebuild ? buildChunkDescriptors(terrain, chunkSize) : { chunks: previous.chunks, chunkCountX: previous.chunkCountX, chunkCountZ: previous.chunkCountZ };
-      if (!descriptor.chunks) descriptor.chunks = [];
-      if (!rebuild) {
-         for (const chunk of descriptor.chunks) {
-            if (!chunk) continue;
-            let loaded = false;
-            for (const idx of chunk.columnIndices) {
-               if (terrain.columnStates[idx]) {
-                  loaded = true;
-                  break;
-               }
-            }
-            chunk.state = loaded ? STREAMING_STATES.LOADED : STREAMING_STATES.UNLOADED;
-            chunk.pendingKey = null;
-         }
-      }
       const padding = Number.isFinite(settings?.streamingPadding) ? settings.streamingPadding : terrain.settings?.streamingPadding ?? defaultTerrainSettings.streamingPadding;
       const streaming = {
          terrain,
          chunkSize,
-         chunkCountX: descriptor.chunkCountX,
-         chunkCountZ: descriptor.chunkCountZ,
-         chunks: descriptor.chunks,
+         chunkCountX: 0,
+         chunkCountZ: 0,
+         chunks: [],
          queue: [],
          queueMap: new Map(),
          batchSize: Math.max(1, Math.round(settings?.chunkBatchSize ?? previous?.batchSize ?? DEFAULT_STREAM_BATCH)),
@@ -1572,7 +1644,10 @@
          baseRadius: Number.isFinite(settings?.activeRadius) ? settings.activeRadius : defaultTerrainSettings.activeRadius,
          radiusOverride: prevOverride,
          lastPlayerPosition: prevLastPos,
-         stats: { lastOps: 0 }
+         stats: { lastOps: 0 },
+         ready: false,
+         pendingDescriptor: null,
+         descriptorVersion: (previous?.descriptorVersion || 0) + 1
       };
       streaming.minRadius = Math.max(6, streaming.chunkWorldSize * 0.75);
       const maxRadiusEstimate = Math.sqrt((terrain.halfX + streaming.padding) ** 2 + (terrain.halfZ + streaming.padding) ** 2);
@@ -1587,12 +1662,70 @@
       applyStreamingRadius(streaming);
       terrain.streaming = streaming;
       terrain.chunkSize = chunkSize;
-      terrain.chunkCountX = descriptor.chunkCountX;
-      terrain.chunkCountZ = descriptor.chunkCountZ;
+      terrain.chunkCountX = 0;
+      terrain.chunkCountZ = 0;
       terrain.chunkWorldSize = streaming.chunkWorldSize;
       terrain.streamInterval = streaming.interval;
       terrain.streamAccumulator = 0;
-      scheduleTerrainRadiusUiUpdate();
+      const workerJobs = getWorkerJobs();
+      const adoptPrevious = !rebuild && Array.isArray(previous?.chunks) && previous.chunkCountX && previous.chunkCountZ;
+      if (adoptPrevious) {
+         applyChunkDescriptor(streaming, { chunkSize, chunkCountX: previous.chunkCountX, chunkCountZ: previous.chunkCountZ, chunks: previous.chunks }, terrain);
+         streaming.ready = true;
+         scheduleTerrainRadiusUiUpdate();
+         const pos = streaming.lastPlayerPosition || previous?.lastPlayerPosition || { x: 0, z: 0 };
+         refreshChunkTargets(streaming, pos, true);
+         processStreamingQueue(streaming, true);
+      } else {
+         const payload = {
+            colsX: Math.max(1, terrain.colsX | 0),
+            colsZ: Math.max(1, terrain.colsZ | 0),
+            chunkSize,
+            cubeSize: terrain.cubeSize,
+            minWorldX: terrain.bounds?.minX ?? -terrain.halfX,
+            minWorldZ: terrain.bounds?.minZ ?? -terrain.halfZ
+         };
+         const integrate = (descriptor) => {
+            applyChunkDescriptor(streaming, descriptor, terrain);
+            streaming.ready = true;
+            streaming.pendingDescriptor = null;
+            scheduleTerrainRadiusUiUpdate();
+            const pos = streaming.lastPlayerPosition || { x: 0, z: 0 };
+            refreshChunkTargets(streaming, pos, true);
+            processStreamingQueue(streaming, true);
+         };
+         const handleFallback = (err) => {
+            if (err) console.warn("[Terrain] Worker chunk job failed", err);
+            const descriptor = buildChunkDescriptors(terrain, chunkSize);
+            integrate(descriptor);
+         };
+         if (workerJobs && typeof workerJobs.requestTerrainChunks === "function") {
+            try {
+               const version = streaming.descriptorVersion;
+               const job = workerJobs.requestTerrainChunks(payload);
+               if (job && typeof job.then === "function") {
+                  streaming.pendingDescriptor = job;
+                  job.then((result) => {
+                     if (streaming.descriptorVersion !== version) return;
+                     try {
+                        integrate(result);
+                     } catch (err) {
+                        handleFallback(err);
+                     }
+                  }).catch(handleFallback);
+               } else {
+                  handleFallback();
+               }
+            } catch (err) {
+               handleFallback(err);
+            }
+         } else {
+            handleFallback();
+         }
+      }
+      if (streaming.ready) {
+         scheduleTerrainRadiusUiUpdate();
+      }
       return streaming;
    }
 
@@ -1707,7 +1840,7 @@
    }
 
    function refreshChunkTargets(streaming, position = { x: 0, z: 0 }, force = false) {
-      if (!streaming?.chunks) return;
+      if (!streaming?.ready || !Array.isArray(streaming.chunks)) return;
       const px = Number.isFinite(position.x) ? position.x : 0;
       const pz = Number.isFinite(position.z) ? position.z : 0;
       const loadSq = streaming.loadedRadius * streaming.loadedRadius;
@@ -1734,7 +1867,10 @@
    }
 
    function processStreamingQueue(streaming, force = false) {
-      if (!streaming?.queue?.length) return;
+      if (!streaming?.ready || !streaming.queue?.length) {
+         if (streaming?.stats) streaming.stats.lastOps = 0;
+         return;
+      }
       const queue = streaming.queue;
       const start = typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
       const msBudget = force ? Infinity : Math.max(0, streaming.budgetMs ?? DEFAULT_STREAM_BUDGET_MS);
@@ -1936,6 +2072,7 @@
       const px = Number.isFinite(target.x) ? target.x : 0;
       const pz = Number.isFinite(target.z) ? target.z : 0;
       streaming.lastPlayerPosition = { x: px, z: pz };
+      if (!streaming.ready) return;
       const shouldRefresh = force || streaming.accumulator >= streaming.interval;
       if (shouldRefresh) {
          streaming.accumulator = 0;
