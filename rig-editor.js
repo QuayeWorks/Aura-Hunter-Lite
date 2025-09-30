@@ -145,6 +145,7 @@ const DEF = {
   let nodes = {};     // TransformNodes keyed by part
   let params = null;  // working params
   let booted = false;
+  let pendingUnlockBoot = null;
 
   // Animation-preview state
   const anim = { playing:false, mode:"walk", speed:1.0, grounded:true, phase:0, attackT:0 };
@@ -823,6 +824,49 @@ const DEF = {
     document.body.appendChild(a); a.click(); URL.revokeObjectURL(a.href); a.remove();
   }
 
+  function guardedBoot(...args) {
+    const hud = window.HUD;
+    if (!hud || typeof hud.isRigEditorUnlocked !== "function") {
+      return boot(...args);
+    }
+    if (hud.isRigEditorUnlocked()) {
+      return boot(...args);
+    }
+
+    const handleUnlock = () => {
+      pendingUnlockBoot = null;
+      try {
+        boot(...args);
+      } catch (err) {
+        console.warn("[RigEditor] Boot after unlock failed", err);
+      }
+    };
+
+    if (typeof hud.onRigEditorUnlock === "function") {
+      if (!pendingUnlockBoot) {
+        pendingUnlockBoot = handleUnlock;
+        try {
+          hud.onRigEditorUnlock(handleUnlock);
+        } catch (err) {
+          console.warn("[RigEditor] Failed to subscribe to unlock", err);
+          pendingUnlockBoot = null;
+          return boot(...args);
+        }
+      }
+      if (typeof hud.openRigUnlockConsole === "function") {
+        hud.openRigUnlockConsole();
+      }
+      return null;
+    }
+
+    if (typeof hud.openRigUnlockConsole === "function") {
+      hud.openRigUnlockConsole({ onUnlock: handleUnlock });
+      return null;
+    }
+
+    return boot(...args);
+  }
+
   // public
-  window.RigEditor = { boot };
+  window.RigEditor = { boot: guardedBoot, unsafeBoot: boot };
 })();
