@@ -5893,6 +5893,174 @@
       }
    };
 
+   const FALLBACK_COSMETIC_CONFIG = {
+      faces: [
+         { id: "neutral", label: "Neutral" },
+         { id: "grin", label: "Brave Grin" },
+         { id: "focused", label: "Focused" }
+      ],
+      hair: [
+         { id: "buzz", label: "Buzz Cut", primaryColor: "#2f2f38", secondaryColor: "#3c3f4f" },
+         { id: "windswept", label: "Windswept", primaryColor: "#1e2f6f", secondaryColor: "#2f478f" },
+         { id: "scout_hat", label: "Explorer Hat", primaryColor: "#6a4d32", secondaryColor: "#8c6a3e" }
+      ],
+      outfits: {
+         top: {
+            hunter: { id: "hunter", label: "Hunter Jacket", body: "#2d3d8f", accent: "#66c1ff", sleeve: "#1f2d64" },
+            stealth: { id: "stealth", label: "Night Coat", body: "#1b1d28", accent: "#4d5978", sleeve: "#282b3c" },
+            festival: { id: "festival", label: "Festival Vest", body: "#c55a5a", accent: "#f5d36a", sleeve: "#a44646" }
+         },
+         bottom: {
+            scout: { id: "scout", label: "Scout Pants", hips: "#243244", thigh: "#1d2736", shin: "#324763" },
+            stealth: { id: "stealth", label: "Night Trousers", hips: "#1a1c26", thigh: "#12141c", shin: "#2a2d3a" },
+            festival: { id: "festival", label: "Festival Wraps", hips: "#7a3131", thigh: "#592424", shin: "#dd8a4a" }
+         },
+         full: {
+            ranger: { id: "ranger", label: "Hunter Ranger", top: "hunter", bottom: "scout" },
+            nocturne: { id: "nocturne", label: "Nocturne Operative", top: "stealth", bottom: "stealth" },
+            parade: { id: "parade", label: "Parade Attire", top: "festival", bottom: "festival" }
+         }
+      },
+      shoes: {
+         standard: { id: "standard", label: "Standard Boots", base: "#2f2f38", accent: "#585d70" },
+         sprint: { id: "sprint", label: "Sprint Sneakers", base: "#26486a", accent: "#69d1ff" },
+         trail: { id: "trail", label: "Trail Runners", base: "#4a3522", accent: "#efb459" }
+      },
+      accessories: {
+         visor: { id: "visor", label: "Nen Visor", color: "#68c9ff", accent: "#2b7fd0" },
+         earrings: { id: "earrings", label: "Twin Studs", color: "#f6f0d6", accent: "#c9c2a5" },
+         scarf: { id: "scarf", label: "Aura Scarf", color: "#d4643f", accent: "#f3ad7a" }
+      }
+   };
+
+   const COSMETIC_CONFIG = deepClone((window.RigDefinitions && window.RigDefinitions.COSMETICS) || FALLBACK_COSMETIC_CONFIG);
+
+   const FACE_SPECS = Array.isArray(COSMETIC_CONFIG.faces) && COSMETIC_CONFIG.faces.length
+      ? COSMETIC_CONFIG.faces.filter(spec => spec && typeof spec.id === "string")
+      : FALLBACK_COSMETIC_CONFIG.faces;
+   const HAIR_SPECS = Array.isArray(COSMETIC_CONFIG.hair) && COSMETIC_CONFIG.hair.length
+      ? COSMETIC_CONFIG.hair.filter(spec => spec && typeof spec.id === "string")
+      : FALLBACK_COSMETIC_CONFIG.hair;
+   const FACE_SPEC_MAP = new Map(FACE_SPECS.map(spec => [spec.id, spec]));
+   const HAIR_SPEC_MAP = new Map(HAIR_SPECS.map(spec => [spec.id, spec]));
+
+   const TOP_SPEC_MAP = new Map(Object.entries((COSMETIC_CONFIG.outfits && COSMETIC_CONFIG.outfits.top) || {}));
+   const BOTTOM_SPEC_MAP = new Map(Object.entries((COSMETIC_CONFIG.outfits && COSMETIC_CONFIG.outfits.bottom) || {}));
+   const FULL_SPEC_MAP = new Map(Object.entries((COSMETIC_CONFIG.outfits && COSMETIC_CONFIG.outfits.full) || {}));
+   const SHOE_SPEC_MAP = new Map(Object.entries(COSMETIC_CONFIG.shoes || {}));
+   const ACCESSORY_SPEC_MAP = new Map(Object.entries(COSMETIC_CONFIG.accessories || {}));
+
+   const DEFAULT_FACE_ID = FACE_SPECS.length ? FACE_SPECS[0].id : "neutral";
+   const DEFAULT_HAIR_ID = HAIR_SPECS.length ? HAIR_SPECS[0].id : "buzz";
+   const DEFAULT_TOP_ID = (() => {
+      for (const [key, spec] of TOP_SPEC_MAP) {
+         return typeof spec?.id === "string" ? spec.id : key;
+      }
+      return "hunter";
+   })();
+   const DEFAULT_BOTTOM_ID = (() => {
+      for (const [key, spec] of BOTTOM_SPEC_MAP) {
+         return typeof spec?.id === "string" ? spec.id : key;
+      }
+      return "scout";
+   })();
+   const DEFAULT_FULL_ID = (() => {
+      for (const [key, spec] of FULL_SPEC_MAP) {
+         return typeof spec?.id === "string" ? spec.id : key;
+      }
+      return null;
+   })();
+   const DEFAULT_SHOE_ID = (() => {
+      for (const [key, spec] of SHOE_SPEC_MAP) {
+         return typeof spec?.id === "string" ? spec.id : key;
+      }
+      return "standard";
+   })();
+
+   const FALLBACK_COSMETIC_SELECTION = {
+      face: DEFAULT_FACE_ID,
+      hair: DEFAULT_HAIR_ID,
+      outfit: {
+         top: DEFAULT_TOP_ID,
+         bottom: DEFAULT_BOTTOM_ID,
+         full: DEFAULT_FULL_ID
+      },
+      shoes: DEFAULT_SHOE_ID,
+      accessories: []
+   };
+
+   function normalizeAccessoryIds(ids) {
+      if (!Array.isArray(ids)) return [];
+      const unique = [];
+      const seen = new Set();
+      for (const raw of ids) {
+         if (typeof raw !== "string") continue;
+         const id = raw.trim();
+         if (!id || seen.has(id) || !ACCESSORY_SPEC_MAP.has(id)) continue;
+         seen.add(id);
+         unique.push(id);
+      }
+      return unique;
+   }
+
+   function normalizeOutfit(next = {}, base = FALLBACK_COSMETIC_SELECTION.outfit) {
+      const current = {
+         top: typeof base?.top === "string" ? base.top : DEFAULT_TOP_ID,
+         bottom: typeof base?.bottom === "string" ? base.bottom : DEFAULT_BOTTOM_ID,
+         full: base?.full != null ? base.full : DEFAULT_FULL_ID
+      };
+      if (!next || typeof next !== "object") return current;
+      if (Object.prototype.hasOwnProperty.call(next, "full")) {
+         if (next.full === null) {
+            current.full = null;
+         } else if (typeof next.full === "string" && FULL_SPEC_MAP.has(next.full)) {
+            current.full = next.full;
+         }
+      }
+      if (Object.prototype.hasOwnProperty.call(next, "top")) {
+         if (typeof next.top === "string" && TOP_SPEC_MAP.has(next.top)) {
+            current.top = next.top;
+         }
+         if (next.full === undefined) current.full = null;
+      }
+      if (Object.prototype.hasOwnProperty.call(next, "bottom")) {
+         if (typeof next.bottom === "string" && BOTTOM_SPEC_MAP.has(next.bottom)) {
+            current.bottom = next.bottom;
+         }
+         if (next.full === undefined) current.full = null;
+      }
+      return current;
+   }
+
+   function normalizeCosmetics(value, baseSelection = FALLBACK_COSMETIC_SELECTION) {
+      const base = deepClone(baseSelection);
+      if (!value || typeof value !== "object") {
+         base.accessories = normalizeAccessoryIds(base.accessories);
+         base.outfit = normalizeOutfit(base.outfit);
+         return base;
+      }
+      if (typeof value.face === "string" && FACE_SPEC_MAP.has(value.face)) {
+         base.face = value.face;
+      }
+      if (typeof value.hair === "string" && HAIR_SPEC_MAP.has(value.hair)) {
+         base.hair = value.hair;
+      }
+      base.outfit = normalizeOutfit(value.outfit, base.outfit);
+      if (typeof value.shoes === "string" && SHOE_SPEC_MAP.has(value.shoes)) {
+         base.shoes = value.shoes;
+      }
+      base.accessories = normalizeAccessoryIds(value.accessories);
+      return base;
+   }
+
+   const DEFAULT_COSMETIC_SELECTION = normalizeCosmetics((window.RigDefinitions && window.RigDefinitions.DEFAULT_COSMETICS) || FALLBACK_COSMETIC_SELECTION, FALLBACK_COSMETIC_SELECTION);
+   let cosmeticSelection = deepClone(DEFAULT_COSMETIC_SELECTION);
+   let playerCosmeticController = null;
+
+   const FACE_MATERIAL_CACHE = new Map();
+   const DEG2RAD = Math.PI / 180;
+
+
    function deepClone(o) {
       return JSON.parse(JSON.stringify(o));
    }
@@ -7422,15 +7590,19 @@
       const baseY = spawnHeight === null ? 3 : spawnHeight + 1.8;
       startPos = new BABYLON.Vector3(0, baseY, 0);
 
-      const p = createHumanoid(state.ch.color || "#00ffcc");
+      const p = createHumanoid(state.ch.color || "#00ffcc", RIG, cosmeticSelection);
       playerRoot = player = p.root; // collider mesh
       playerRoot.position.copyFrom(startPos);
       state.prevPlayerPos = playerRoot.position.clone();
       player.checkCollisions = true;
+      playerCosmeticController = p.cosmetics || null;
       player.metadata = {
          parts: p.parts,
-         animPhase: 0
+         animPhase: 0,
+         footIK: p.root.metadata?.footIK,
+         cosmetics: playerCosmeticController?.getState?.() || getCosmeticSelection()
       };
+      applyCosmeticsToPlayer();
       updateTerrainStreaming(playerRoot.position, 0, true);
       window.RegionManager?.updateSpatialState?.(playerRoot.position, { silent: true });
 
@@ -7517,6 +7689,7 @@
 
    async function startGame(ch, options = {}) {
       await rigReady;
+      playerCosmeticController = null;
       workerMetrics.pending = 0;
 
       const runtimeSnapshot = options && Object.prototype.hasOwnProperty.call(options, "runtime")
@@ -7640,14 +7813,82 @@
    }
 
    // ------------ Humanoid (segmented) ------------
-   function createHumanoid(hex, rig = RIG) {
+   function createHumanoid(hex, rig = RIG, cosmeticPreset = DEFAULT_COSMETIC_SELECTION) {
       const color = BABYLON.Color3.FromHexString(hex);
+      const clothMatCache = new Map();
+      const hairMatCache = new Map();
+      const shoeMatCache = new Map();
+      const accessoryMatCache = new Map();
 
       function mat(c) {
          const m = new BABYLON.StandardMaterial("m" + Math.random(), scene);
          m.diffuseColor = c;
          m.emissiveColor = c.scale(0.16);
+         m.specularColor = new BABYLON.Color3(0.12, 0.12, 0.12);
          return m;
+      }
+
+      function colorFromHex(hex, fallback = "#ffffff") {
+         try {
+            if (typeof hex === "string" && /^#/u.test(hex)) {
+               return BABYLON.Color3.FromHexString(hex);
+            }
+         } catch (err) {}
+         try {
+            if (typeof fallback === "string" && /^#/u.test(fallback)) {
+               return BABYLON.Color3.FromHexString(fallback);
+            }
+         } catch (err) {}
+         return BABYLON.Color3.White();
+      }
+
+      function clothMat(hexColor) {
+         const key = (typeof hexColor === "string" && hexColor.startsWith("#")) ? hexColor : "#2d3d8f";
+         if (clothMatCache.has(key)) return clothMatCache.get(key);
+         const m = new BABYLON.StandardMaterial(`cloth-${key}-${Math.random()}`, scene);
+         const col = colorFromHex(key, "#2d3d8f");
+         m.diffuseColor = col;
+         m.emissiveColor = col.scale(0.12);
+         m.specularColor = new BABYLON.Color3(0.15, 0.15, 0.15);
+         clothMatCache.set(key, m);
+         return m;
+      }
+
+      function hairMat(hexColor) {
+         const key = (typeof hexColor === "string" && hexColor.startsWith("#")) ? hexColor : "#2f2f38";
+         if (hairMatCache.has(key)) return hairMatCache.get(key);
+         const m = new BABYLON.StandardMaterial(`hair-${key}-${Math.random()}`, scene);
+         const col = colorFromHex(key, "#2f2f38");
+         m.diffuseColor = col;
+         m.emissiveColor = col.scale(0.25);
+         m.specularColor = new BABYLON.Color3(0.22, 0.22, 0.22);
+         hairMatCache.set(key, m);
+         return m;
+      }
+
+      function shoeMat(spec) {
+         const id = spec?.id || DEFAULT_SHOE_ID;
+         if (shoeMatCache.has(id)) return shoeMatCache.get(id);
+         const mat = new BABYLON.StandardMaterial(`shoe-${id}-${Math.random()}`, scene);
+         const base = colorFromHex(spec?.base, "#2f2f38");
+         const accent = colorFromHex(spec?.accent, spec?.base || "#2f2f38");
+         mat.diffuseColor = base;
+         mat.emissiveColor = accent.scale(0.2);
+         mat.specularColor = new BABYLON.Color3(0.32, 0.32, 0.32);
+         shoeMatCache.set(id, mat);
+         return mat;
+      }
+
+      function accessoryMat(hexColor) {
+         const key = (typeof hexColor === "string" && hexColor.startsWith("#")) ? hexColor : "#ffffff";
+         if (accessoryMatCache.has(key)) return accessoryMatCache.get(key);
+         const mat = new BABYLON.StandardMaterial(`acc-${key}-${Math.random()}`, scene);
+         const col = colorFromHex(key, "#ffffff");
+         mat.diffuseColor = col;
+         mat.emissiveColor = col.scale(0.25);
+         mat.specularColor = new BABYLON.Color3(0.35, 0.35, 0.35);
+         accessoryMatCache.set(key, mat);
+         return mat;
       }
 
       // collider root
@@ -7724,6 +7965,23 @@
       headM.parent = headPivot;
       headM.position.y = s.head.h * 0.5;
 
+      const facePlane = BABYLON.MeshBuilder.CreatePlane("face", {
+         width: s.head.w * 0.92,
+         height: s.head.h * 0.92
+      }, scene);
+      facePlane.parent = headPivot;
+      facePlane.position.y = s.head.h * 0.1;
+      facePlane.position.z = (s.head.d * 0.5) + 0.01;
+      facePlane.isPickable = false;
+
+      const hairRoot = new BABYLON.TransformNode("hairRoot", scene);
+      hairRoot.parent = headPivot;
+      hairRoot.position.y = s.head.h * 0.45;
+
+      const accessoryRoot = new BABYLON.TransformNode("accessoryRoot", scene);
+      accessoryRoot.parent = headPivot;
+      accessoryRoot.position.y = s.head.h * 0.1;
+
       // shoulders (anchors)
       const shoulderL = new BABYLON.TransformNode("shoulderL", scene);
       shoulderL.parent = torsoUpper.pivot;
@@ -7763,6 +8021,26 @@
       legR.thigh = segY(hipR, "legR_thigh", l.thighW, l.thighLen, l.thighD, color.scale(0.85));
       legR.shin = segY(legR.thigh.pivot, "legR_shin", l.shinW, l.shinLen, l.shinD, color.scale(0.8));
       legR.foot = foot(legR.shin.pivot, "legR_foot", l.footW, l.footH, l.footLen, color.scale(0.75));
+
+      function createShoeOverlay(pivot, name) {
+         const mesh = BABYLON.MeshBuilder.CreateBox(name, {
+            width: l.footW,
+            height: l.footH,
+            depth: l.footLen
+         }, scene);
+         mesh.parent = pivot;
+         mesh.position.y = -l.footH * 0.5;
+         mesh.position.z = l.footLen * 0.5;
+         mesh.scaling = new BABYLON.Vector3(1.08, 1.05, 1.12);
+         mesh.isPickable = false;
+         mesh.material = clothMat("#2f2f38");
+         return mesh;
+      }
+
+      const shoeMeshes = [
+         createShoeOverlay(legL.foot.pivot, "shoeL"),
+         createShoeOverlay(legR.foot.pivot, "shoeR")
+      ];
 
       // apply transforms (absolute, same as editor)
       const T = rig.transforms || {};
@@ -7830,20 +8108,490 @@
          }
       };
 
+      const clothingRefs = {
+         torso: [torsoLower.mesh, torsoUpper.mesh],
+         sleeves: [armL.upper.mesh, armR.upper.mesh],
+         hips: [pelvis.mesh],
+         thighs: [legL.thigh.mesh, legR.thigh.mesh],
+         shins: [legL.shin.mesh, legR.shin.mesh]
+      };
+
+      const activeHair = { id: null, nodes: [] };
+      const activeAccessories = new Map();
+      let cosmeticState = normalizeCosmetics(cosmeticPreset, DEFAULT_COSMETIC_SELECTION);
+
+      function ensureFaceMaterial(faceId) {
+         const id = FACE_SPEC_MAP.has(faceId) ? faceId : DEFAULT_FACE_ID;
+         if (FACE_MATERIAL_CACHE.has(id)) return FACE_MATERIAL_CACHE.get(id).material;
+         const size = 512;
+         const texture = new BABYLON.DynamicTexture(`face-${id}`, { width: size, height: size }, scene, false);
+         const ctx = texture.getContext();
+         ctx.clearRect(0, 0, size, size);
+         ctx.fillStyle = "rgba(0,0,0,0)";
+         ctx.fillRect(0, 0, size, size);
+
+         const eyeColor = "#10121a";
+         const mouthColor = "#1f2230";
+         const accentColor = "#f58a8a";
+         const eyeY = size * 0.42;
+         const eyeSpacing = size * 0.18;
+         const eyeRadius = size * 0.065;
+
+         function drawEye(cx) {
+            ctx.beginPath();
+            ctx.arc(cx, eyeY, eyeRadius, 0, Math.PI * 2);
+            ctx.fillStyle = eyeColor;
+            ctx.fill();
+            ctx.beginPath();
+            ctx.arc(cx, eyeY, eyeRadius * 0.35, 0, Math.PI * 2);
+            ctx.fillStyle = "#ffffff";
+            ctx.fill();
+         }
+
+         drawEye(size * 0.5 - eyeSpacing);
+         drawEye(size * 0.5 + eyeSpacing);
+
+         ctx.lineCap = "round";
+         ctx.lineJoin = "round";
+
+         switch (id) {
+            case "grin": {
+               ctx.strokeStyle = mouthColor;
+               ctx.lineWidth = size * 0.035;
+               ctx.beginPath();
+               ctx.arc(size * 0.5, size * 0.62, size * 0.18, Math.PI * 0.15, Math.PI - Math.PI * 0.15);
+               ctx.stroke();
+               ctx.fillStyle = accentColor;
+               ctx.globalAlpha = 0.18;
+               ctx.beginPath();
+               ctx.arc(size * 0.5, size * 0.65, size * 0.24, 0, Math.PI);
+               ctx.fill();
+               ctx.globalAlpha = 1;
+               break;
+            }
+            case "focused": {
+               ctx.strokeStyle = mouthColor;
+               ctx.lineWidth = size * 0.025;
+               ctx.beginPath();
+               ctx.moveTo(size * 0.44, size * 0.64);
+               ctx.lineTo(size * 0.56, size * 0.64);
+               ctx.stroke();
+               const browWidth = size * 0.24;
+               const browY = size * 0.36;
+               ctx.lineWidth = size * 0.04;
+               ctx.beginPath();
+               ctx.moveTo(size * 0.5 - browWidth * 0.5, browY + size * 0.02);
+               ctx.lineTo(size * 0.5 - browWidth * 0.15, browY - size * 0.02);
+               ctx.stroke();
+               ctx.beginPath();
+               ctx.moveTo(size * 0.5 + browWidth * 0.5, browY + size * 0.02);
+               ctx.lineTo(size * 0.5 + browWidth * 0.15, browY - size * 0.02);
+               ctx.stroke();
+               break;
+            }
+            default: {
+               ctx.strokeStyle = mouthColor;
+               ctx.lineWidth = size * 0.03;
+               ctx.beginPath();
+               ctx.moveTo(size * 0.42, size * 0.63);
+               ctx.lineTo(size * 0.58, size * 0.63);
+               ctx.stroke();
+            }
+         }
+
+         texture.hasAlpha = true;
+         texture.update();
+         const material = new BABYLON.StandardMaterial(`faceMat-${id}`, scene);
+         material.diffuseTexture = texture;
+         material.emissiveColor = new BABYLON.Color3(0, 0, 0);
+         material.specularColor = new BABYLON.Color3(0, 0, 0);
+         material.backFaceCulling = false;
+         FACE_MATERIAL_CACHE.set(id, { material, texture });
+         return material;
+      }
+
+      function disposeNodes(nodes) {
+         if (!Array.isArray(nodes)) return;
+         nodes.forEach(node => {
+            try {
+               node?.dispose?.();
+            } catch (err) {}
+         });
+      }
+
+      function instantiateHair(spec) {
+         const nodes = [];
+         const baseMat = hairMat(spec?.primaryColor);
+         const accentMat = hairMat(spec?.secondaryColor || spec?.primaryColor);
+         switch (spec?.id) {
+            case "windswept": {
+               const crown = BABYLON.MeshBuilder.CreateBox("hair-windswept-crown", {
+                  width: s.head.w * 1.1,
+                  height: s.head.h * 0.42,
+                  depth: s.head.d * 1.08
+               }, scene);
+               crown.parent = hairRoot;
+               crown.position.y = s.head.h * 0.1;
+               crown.material = baseMat;
+               crown.isPickable = false;
+               nodes.push(crown);
+
+               const fringe = BABYLON.MeshBuilder.CreateBox("hair-windswept-fringe", {
+                  width: s.head.w * 1.05,
+                  height: s.head.h * 0.26,
+                  depth: s.head.d * 0.32
+               }, scene);
+               fringe.parent = hairRoot;
+               fringe.position.set(0.04, -s.head.h * 0.05, s.head.d * 0.55);
+               fringe.rotation.y = -5 * DEG2RAD;
+               fringe.material = accentMat;
+               fringe.isPickable = false;
+               nodes.push(fringe);
+               break;
+            }
+            case "scout_hat": {
+               const brim = BABYLON.MeshBuilder.CreateCylinder("hat-brim", {
+                  diameter: s.head.w * 1.5,
+                  height: 0.05
+               }, scene);
+               brim.parent = hairRoot;
+               brim.position.y = s.head.h * 0.2;
+               brim.material = accentMat;
+               brim.isPickable = false;
+               nodes.push(brim);
+
+               const crown = BABYLON.MeshBuilder.CreateCylinder("hat-crown", {
+                  diameter: s.head.w * 0.9,
+                  height: s.head.h * 0.45
+               }, scene);
+               crown.parent = hairRoot;
+               crown.position.y = s.head.h * 0.45;
+               crown.material = baseMat;
+               crown.isPickable = false;
+               nodes.push(crown);
+               break;
+            }
+            default: {
+               const cap = BABYLON.MeshBuilder.CreateBox("hair-buzz", {
+                  width: s.head.w * 1.04,
+                  height: s.head.h * 0.48,
+                  depth: s.head.d * 1.04
+               }, scene);
+               cap.parent = hairRoot;
+               cap.position.y = s.head.h * 0.12;
+               cap.material = baseMat;
+               cap.isPickable = false;
+               nodes.push(cap);
+               break;
+            }
+         }
+         return nodes;
+      }
+
+      function instantiateAccessory(spec) {
+         const nodes = [];
+         if (!spec) return nodes;
+         switch (spec.id) {
+            case "visor": {
+               const visor = BABYLON.MeshBuilder.CreatePlane("acc-visor", {
+                  width: s.head.w * 0.95,
+                  height: s.head.h * 0.28
+               }, scene);
+               visor.parent = accessoryRoot;
+               visor.position.set(0, s.head.h * 0.18, s.head.d * 0.55);
+               visor.material = accessoryMat(spec.color);
+               visor.isPickable = false;
+               visor.billboardMode = BABYLON.Mesh.BILLBOARDMODE_NONE;
+               nodes.push(visor);
+               break;
+            }
+            case "earrings": {
+               const left = BABYLON.MeshBuilder.CreateSphere("acc-earringL", { diameter: 0.1 }, scene);
+               left.parent = accessoryRoot;
+               left.position.set(-s.head.w * 0.55, s.head.h * 0.05, 0);
+               left.material = accessoryMat(spec.color);
+               left.isPickable = false;
+               nodes.push(left);
+
+               const right = BABYLON.MeshBuilder.CreateSphere("acc-earringR", { diameter: 0.1 }, scene);
+               right.parent = accessoryRoot;
+               right.position.set(s.head.w * 0.55, s.head.h * 0.05, 0);
+               right.material = accessoryMat(spec.color);
+               right.isPickable = false;
+               nodes.push(right);
+               break;
+            }
+            case "scarf": {
+               const scarf = BABYLON.MeshBuilder.CreateTorus("acc-scarf", {
+                  diameter: Math.max(s.neck.w * 2.4, 0.45),
+                  thickness: 0.12
+               }, scene);
+               scarf.parent = neck.pivot;
+               scarf.rotation.x = Math.PI / 2;
+               scarf.position.y = -s.neck.h * 0.2;
+               scarf.material = accessoryMat(spec.color);
+               scarf.isPickable = false;
+
+               const tail = BABYLON.MeshBuilder.CreateBox("acc-scarf-tail", {
+                  width: s.neck.w * 0.35,
+                  height: s.head.h * 0.5,
+                  depth: s.neck.d * 0.35
+               }, scene);
+               tail.parent = neck.pivot;
+               tail.position.set(-s.neck.w * 0.25, -s.neck.h * 0.55, s.neck.d * 0.1);
+               tail.rotation.z = 15 * DEG2RAD;
+               tail.material = accessoryMat(spec.accent || spec.color);
+               tail.isPickable = false;
+               nodes.push(scarf, tail);
+               break;
+            }
+            default:
+               break;
+         }
+         return nodes;
+      }
+
+      function applyFace(id) {
+         const spec = FACE_SPEC_MAP.has(id) ? FACE_SPEC_MAP.get(id) : FACE_SPEC_MAP.get(DEFAULT_FACE_ID) || FACE_SPECS[0];
+         if (!spec) return cosmeticState.face;
+         const material = ensureFaceMaterial(spec.id);
+         facePlane.material = material;
+         cosmeticState.face = spec.id;
+         return cosmeticState.face;
+      }
+
+      function applyHair(id) {
+         const spec = HAIR_SPEC_MAP.has(id) ? HAIR_SPEC_MAP.get(id) : HAIR_SPEC_MAP.get(DEFAULT_HAIR_ID) || HAIR_SPECS[0];
+         disposeNodes(activeHair.nodes);
+         activeHair.nodes = instantiateHair(spec);
+         activeHair.id = spec?.id || DEFAULT_HAIR_ID;
+         cosmeticState.hair = activeHair.id;
+         return cosmeticState.hair;
+      }
+
+      function applyTop(id) {
+         const spec = TOP_SPEC_MAP.has(id) ? TOP_SPEC_MAP.get(id) : TOP_SPEC_MAP.get(DEFAULT_TOP_ID);
+         const appliedId = spec?.id || id || DEFAULT_TOP_ID;
+         const bodyMat = clothMat(spec?.body || "#2d3d8f");
+         const accentMat = clothMat(spec?.accent || spec?.body || "#2d3d8f");
+         const sleeveMat = clothMat(spec?.sleeve || spec?.body || "#2d3d8f");
+         clothingRefs.torso[0].material = bodyMat;
+         clothingRefs.torso[1].material = accentMat;
+         clothingRefs.sleeves.forEach(mesh => { mesh.material = sleeveMat; });
+         return appliedId;
+      }
+
+      function applyBottom(id) {
+         const spec = BOTTOM_SPEC_MAP.has(id) ? BOTTOM_SPEC_MAP.get(id) : BOTTOM_SPEC_MAP.get(DEFAULT_BOTTOM_ID);
+         const appliedId = spec?.id || id || DEFAULT_BOTTOM_ID;
+         const hipMat = clothMat(spec?.hips || "#243244");
+         const thighMat = clothMat(spec?.thigh || spec?.hips || "#243244");
+         const shinMat = clothMat(spec?.shin || spec?.thigh || spec?.hips || "#243244");
+         clothingRefs.hips.forEach(mesh => { mesh.material = hipMat; });
+         clothingRefs.thighs.forEach(mesh => { mesh.material = thighMat; });
+         clothingRefs.shins.forEach(mesh => { mesh.material = shinMat; });
+         return appliedId;
+      }
+
+      function applyShoes(id) {
+         const spec = SHOE_SPEC_MAP.has(id) ? SHOE_SPEC_MAP.get(id) : SHOE_SPEC_MAP.get(DEFAULT_SHOE_ID);
+         const appliedId = spec?.id || id || DEFAULT_SHOE_ID;
+         const mat = shoeMat(spec || { id: appliedId });
+         shoeMeshes.forEach(mesh => { mesh.material = mat; mesh.setEnabled(true); });
+         cosmeticState.shoes = appliedId;
+         return cosmeticState.shoes;
+      }
+
+      function applyAccessories(ids) {
+         const desired = normalizeAccessoryIds(ids);
+         for (const [key, nodes] of activeAccessories) {
+            if (!desired.includes(key)) {
+               disposeNodes(nodes);
+               activeAccessories.delete(key);
+            }
+         }
+         const applied = [];
+         for (const id of desired) {
+            if (!ACCESSORY_SPEC_MAP.has(id)) continue;
+            if (!activeAccessories.has(id)) {
+               const nodes = instantiateAccessory(ACCESSORY_SPEC_MAP.get(id));
+               if (nodes.length) {
+                  activeAccessories.set(id, nodes);
+               }
+            }
+            if (activeAccessories.has(id)) applied.push(id);
+         }
+         cosmeticState.accessories = applied.slice();
+         return cosmeticState.accessories.slice();
+      }
+
+      function applyOutfit(selection) {
+         const normalized = normalizeOutfit(selection, cosmeticState.outfit);
+         let fullId = normalized.full;
+         if (fullId && !FULL_SPEC_MAP.has(fullId)) {
+            fullId = null;
+         }
+         if (fullId) {
+            const fullSpec = FULL_SPEC_MAP.get(fullId);
+            if (fullSpec?.top && TOP_SPEC_MAP.has(fullSpec.top)) {
+               normalized.top = fullSpec.top;
+            }
+            if (fullSpec?.bottom && BOTTOM_SPEC_MAP.has(fullSpec.bottom)) {
+               normalized.bottom = fullSpec.bottom;
+            }
+         }
+         const appliedTop = applyTop(normalized.top);
+         const appliedBottom = applyBottom(normalized.bottom);
+         cosmeticState.outfit = {
+            top: appliedTop,
+            bottom: appliedBottom,
+            full: fullId
+         };
+         return deepClone(cosmeticState.outfit);
+      }
+
+      const cosmetics = {
+         applyFace,
+         applyHair,
+         applyOutfit,
+         applyShoes,
+         applyAccessories,
+         applyAll(selection) {
+            const normalized = normalizeCosmetics(selection, cosmeticState);
+            const applied = {
+               face: applyFace(normalized.face),
+               hair: applyHair(normalized.hair),
+               outfit: applyOutfit(normalized.outfit),
+               shoes: applyShoes(normalized.shoes),
+               accessories: applyAccessories(normalized.accessories)
+            };
+            return applied;
+         },
+         getState() {
+            return {
+               face: cosmeticState.face,
+               hair: cosmeticState.hair,
+               outfit: deepClone(cosmeticState.outfit),
+               shoes: cosmeticState.shoes,
+               accessories: cosmeticState.accessories.slice()
+            };
+         }
+      };
+
+      cosmetics.applyAll(cosmeticState);
+
       root.metadata = {
          parts,
          animPhase: 0,
-         footIK
+         footIK,
+         cosmetics: cosmetics.getState()
       };
+
       return {
          root,
-         parts
+         parts,
+         cosmetics
       };
+   }
+
+   function getCosmeticSelection() {
+      return {
+         face: cosmeticSelection.face,
+         hair: cosmeticSelection.hair,
+         outfit: deepClone(cosmeticSelection.outfit),
+         shoes: cosmeticSelection.shoes,
+         accessories: cosmeticSelection.accessories.slice()
+      };
+   }
+
+   function updatePlayerCosmeticState() {
+      if (playerRoot && playerRoot.metadata && typeof playerRoot.metadata === "object") {
+         try {
+            playerRoot.metadata.cosmetics = playerCosmeticController?.getState?.() || getCosmeticSelection();
+         } catch (err) {
+            playerRoot.metadata.cosmetics = getCosmeticSelection();
+         }
+      }
+      window.HUD?.refreshCosmeticTester?.(getCosmeticSelection());
+   }
+
+   function applyCosmeticsToPlayer() {
+      if (!playerCosmeticController) {
+         updatePlayerCosmeticState();
+         return;
+      }
+      const applied = playerCosmeticController.applyAll(getCosmeticSelection());
+      if (applied) {
+         if (typeof applied.face === "string") cosmeticSelection.face = applied.face;
+         if (typeof applied.hair === "string") cosmeticSelection.hair = applied.hair;
+         if (applied.outfit) cosmeticSelection.outfit = deepClone(applied.outfit);
+         if (typeof applied.shoes === "string") cosmeticSelection.shoes = applied.shoes;
+         if (Array.isArray(applied.accessories)) cosmeticSelection.accessories = applied.accessories.slice();
+      }
+      updatePlayerCosmeticState();
+   }
+
+   function setFace(id) {
+      const next = (typeof id === "string" && FACE_SPEC_MAP.has(id)) ? id : cosmeticSelection.face;
+      cosmeticSelection.face = next;
+      if (playerCosmeticController) {
+         const applied = playerCosmeticController.applyFace(next);
+         if (typeof applied === "string") cosmeticSelection.face = applied;
+      }
+      updatePlayerCosmeticState();
+      return cosmeticSelection.face;
+   }
+
+   function setHair(id) {
+      const next = (typeof id === "string" && HAIR_SPEC_MAP.has(id)) ? id : cosmeticSelection.hair;
+      cosmeticSelection.hair = next;
+      if (playerCosmeticController) {
+         const applied = playerCosmeticController.applyHair(next);
+         if (typeof applied === "string") cosmeticSelection.hair = applied;
+      }
+      updatePlayerCosmeticState();
+      return cosmeticSelection.hair;
+   }
+
+   function setOutfit(selection = {}) {
+      const normalized = normalizeOutfit(selection, cosmeticSelection.outfit);
+      cosmeticSelection.outfit = normalized;
+      if (playerCosmeticController) {
+         const applied = playerCosmeticController.applyOutfit(normalized);
+         if (applied) cosmeticSelection.outfit = deepClone(applied);
+      }
+      updatePlayerCosmeticState();
+      return deepClone(cosmeticSelection.outfit);
+   }
+
+   function setShoes(id) {
+      const next = (typeof id === "string" && SHOE_SPEC_MAP.has(id)) ? id : cosmeticSelection.shoes;
+      cosmeticSelection.shoes = next;
+      if (playerCosmeticController) {
+         const applied = playerCosmeticController.applyShoes(next);
+         if (typeof applied === "string") cosmeticSelection.shoes = applied;
+      }
+      updatePlayerCosmeticState();
+      return cosmeticSelection.shoes;
+   }
+
+   function setAccessories(ids) {
+      cosmeticSelection.accessories = normalizeAccessoryIds(ids);
+      if (playerCosmeticController) {
+         const applied = playerCosmeticController.applyAccessories(cosmeticSelection.accessories);
+         if (Array.isArray(applied)) cosmeticSelection.accessories = applied.slice();
+      }
+      updatePlayerCosmeticState();
+      return cosmeticSelection.accessories.slice();
+   }
+
+   function getAvailableCosmetics() {
+      return deepClone(COSMETIC_CONFIG);
    }
 
    // ------------ Enemies ------------
    function createEnemy(pos) {
-      const h = createHumanoid("#f24d7a");
+      const h = createHumanoid("#f24d7a", RIG, DEFAULT_COSMETIC_SELECTION);
       h.root.position.copyFrom(pos);
       const e = {
          root: h.root,
@@ -9165,7 +9913,14 @@
          regularSteps: physics.instrumentation.lastStepCount,
          slowSteps: physics.instrumentation.lastSlowCount,
          skippedSteps: physics.instrumentation.skippedSteps
-      })
+      }),
+      getAvailableCosmetics,
+      getCosmeticSelection,
+      setFace,
+      setHair,
+      setOutfit,
+      setShoes,
+      setAccessories
    };
 // === Added: expose subsystems so auxiliary files can reuse them ===
 try {
@@ -9248,6 +10003,15 @@ try {
     refreshInteriorGroup: (key, options) => interiorOcclusion.refreshGroup(key, options),
     getInteriorGroupState: (key) => interiorOcclusion.getGroupState(key),
     withInteriorGroup: (key, cb) => interiorOcclusion.withGroup(key, cb),
+
+    // cosmetics
+    getAvailableCosmetics,
+    getCosmeticSelection,
+    setFace,
+    setHair,
+    setOutfit,
+    setShoes,
+    setAccessories,
   });
   // share rig definitions for the editor if available
   window.RigDefinitions = {
