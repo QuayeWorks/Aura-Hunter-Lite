@@ -22,6 +22,264 @@
   let controlDockCache = null;
   let performanceTargetValue = 60;
   let cosmeticTesterCache = null;
+  const RIG_UNLOCK_PHRASE = "QuayeWorks";
+  let rigEditorUnlocked = false;
+  let rigUnlockOverlayCache = null;
+  const rigUnlockWaiters = new Set();
+
+  function isRigEditorUnlocked() {
+    return rigEditorUnlocked;
+  }
+
+  function notifyRigUnlockWaiters() {
+    if (!rigUnlockWaiters.size) return;
+    const callbacks = Array.from(rigUnlockWaiters);
+    rigUnlockWaiters.clear();
+    callbacks.forEach((callback) => {
+      try {
+        callback();
+      } catch (err) {
+        console.warn("[HUD] Rig unlock callback failed", err);
+      }
+    });
+  }
+
+  function updateRigEditorMenuVisibility() {
+    const btn = document.getElementById("btn-rig");
+    if (!btn) return;
+    if (rigEditorUnlocked) {
+      btn.hidden = false;
+      btn.style.display = "";
+    } else {
+      btn.hidden = true;
+      btn.style.display = "none";
+    }
+  }
+
+  function setRigEditorUnlocked(next) {
+    const value = !!next;
+    if (rigEditorUnlocked === value) return value;
+    rigEditorUnlocked = value;
+    updateRigEditorMenuVisibility();
+    if (controlDockCache?.rigUnlockButton) {
+      controlDockCache.rigUnlockButton.classList.toggle("hud-rig-unlocked", rigEditorUnlocked);
+      controlDockCache.rigUnlockButton.textContent = rigEditorUnlocked ? "Console ✓" : "Console";
+      controlDockCache.rigUnlockButton.title = rigEditorUnlocked
+        ? "Rig Editor access granted for this session."
+        : "Enter the access phrase.";
+    }
+    if (rigEditorUnlocked) {
+      notifyRigUnlockWaiters();
+    }
+    return rigEditorUnlocked;
+  }
+
+  function closeRigUnlockConsole() {
+    if (!rigUnlockOverlayCache) return;
+    const { root, input, escHandler } = rigUnlockOverlayCache;
+    if (root) {
+      root.style.display = "none";
+    }
+    if (input) {
+      input.value = "";
+    }
+    if (escHandler) {
+      document.removeEventListener("keydown", escHandler);
+    }
+  }
+
+  function ensureRigUnlockOverlay() {
+    if (rigUnlockOverlayCache?.root?.isConnected) return rigUnlockOverlayCache;
+    const root = document.createElement("div");
+    root.id = "hud-rig-unlock";
+    root.style.position = "fixed";
+    root.style.inset = "0";
+    root.style.display = "none";
+    root.style.alignItems = "center";
+    root.style.justifyContent = "center";
+    root.style.background = "rgba(4, 10, 18, 0.68)";
+    root.style.backdropFilter = "blur(3px)";
+    root.style.zIndex = "4000";
+    root.style.pointerEvents = "auto";
+
+    const form = document.createElement("form");
+    form.style.display = "flex";
+    form.style.flexDirection = "column";
+    form.style.gap = "0.65rem";
+    form.style.minWidth = "260px";
+    form.style.maxWidth = "320px";
+    form.style.padding = "1.15rem 1.25rem";
+    form.style.borderRadius = "14px";
+    form.style.border = "1px solid rgba(120, 200, 255, 0.32)";
+    form.style.background = "rgba(10, 20, 32, 0.94)";
+    form.style.boxShadow = "0 18px 36px rgba(0,0,0,0.45)";
+    root.appendChild(form);
+
+    const title = document.createElement("strong");
+    title.textContent = "Access Console";
+    title.style.fontSize = "0.84rem";
+    title.style.letterSpacing = "0.08em";
+    title.style.textTransform = "uppercase";
+    title.style.color = "#e7f6ff";
+    form.appendChild(title);
+
+    const prompt = document.createElement("p");
+    prompt.textContent = "Enter the session phrase to reveal advanced tooling.";
+    prompt.style.margin = "0";
+    prompt.style.fontSize = "0.72rem";
+    prompt.style.lineHeight = "1.35";
+    prompt.style.color = "rgba(211, 233, 255, 0.72)";
+    form.appendChild(prompt);
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.placeholder = "Access phrase";
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    input.style.padding = "0.55rem 0.7rem";
+    input.style.borderRadius = "999px";
+    input.style.border = "1px solid rgba(120, 200, 255, 0.35)";
+    input.style.background = "rgba(6, 16, 26, 0.82)";
+    input.style.color = "#dff1ff";
+    input.style.fontSize = "0.75rem";
+    input.style.letterSpacing = "0.05em";
+    input.style.outline = "none";
+    input.addEventListener("focus", () => {
+      input.style.borderColor = "rgba(160, 220, 255, 0.6)";
+    });
+    input.addEventListener("blur", () => {
+      input.style.borderColor = "rgba(120, 200, 255, 0.35)";
+    });
+    form.appendChild(input);
+
+    const actions = document.createElement("div");
+    actions.style.display = "flex";
+    actions.style.gap = "0.5rem";
+    actions.style.justifyContent = "flex-end";
+    form.appendChild(actions);
+
+    const btnCancel = document.createElement("button");
+    btnCancel.type = "button";
+    btnCancel.textContent = "Close";
+    btnCancel.style.padding = "0.4rem 0.85rem";
+    btnCancel.style.borderRadius = "999px";
+    btnCancel.style.border = "1px solid rgba(120, 200, 255, 0.22)";
+    btnCancel.style.background = "rgba(8, 16, 28, 0.6)";
+    btnCancel.style.color = "rgba(211, 233, 255, 0.85)";
+    btnCancel.style.fontSize = "0.7rem";
+    btnCancel.style.letterSpacing = "0.04em";
+    btnCancel.addEventListener("mouseenter", () => {
+      btnCancel.style.borderColor = "rgba(160, 220, 255, 0.45)";
+      btnCancel.style.color = "#ffffff";
+    });
+    btnCancel.addEventListener("mouseleave", () => {
+      btnCancel.style.borderColor = "rgba(120, 200, 255, 0.22)";
+      btnCancel.style.color = "rgba(211, 233, 255, 0.85)";
+    });
+    btnCancel.addEventListener("click", () => {
+      closeRigUnlockConsole();
+    });
+    actions.appendChild(btnCancel);
+
+    const btnSubmit = document.createElement("button");
+    btnSubmit.type = "submit";
+    btnSubmit.textContent = "Unlock";
+    btnSubmit.style.padding = "0.4rem 1rem";
+    btnSubmit.style.borderRadius = "999px";
+    btnSubmit.style.border = "1px solid rgba(120, 200, 255, 0.35)";
+    btnSubmit.style.background = "rgba(20, 40, 64, 0.92)";
+    btnSubmit.style.color = "#e7f6ff";
+    btnSubmit.style.fontSize = "0.72rem";
+    btnSubmit.style.letterSpacing = "0.08em";
+    btnSubmit.style.textTransform = "uppercase";
+    btnSubmit.style.cursor = "pointer";
+    btnSubmit.addEventListener("mouseenter", () => {
+      btnSubmit.style.background = "rgba(36, 78, 118, 0.95)";
+      btnSubmit.style.borderColor = "rgba(170, 230, 255, 0.55)";
+    });
+    btnSubmit.addEventListener("mouseleave", () => {
+      btnSubmit.style.background = "rgba(20, 40, 64, 0.92)";
+      btnSubmit.style.borderColor = "rgba(120, 200, 255, 0.35)";
+    });
+    actions.appendChild(btnSubmit);
+
+    const overlay = {
+      root,
+      input,
+      open() {
+        if (rigEditorUnlocked) return;
+        if (!root.isConnected) {
+          document.body.appendChild(root);
+        }
+        root.style.display = "flex";
+        requestAnimationFrame(() => {
+          try { input.focus(); input.select(); } catch (err) {}
+        });
+        document.addEventListener("keydown", overlay.escHandler);
+      },
+      close: closeRigUnlockConsole,
+      escHandler(event) {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          closeRigUnlockConsole();
+        }
+      }
+    };
+
+    root.addEventListener("click", (event) => {
+      if (event.target === root) {
+        closeRigUnlockConsole();
+      }
+    });
+
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      if (rigEditorUnlocked) {
+        closeRigUnlockConsole();
+        return;
+      }
+      const value = input.value.trim();
+      if (value === RIG_UNLOCK_PHRASE) {
+        closeRigUnlockConsole();
+        setRigEditorUnlocked(true);
+      } else {
+        requestAnimationFrame(() => {
+          try { input.focus(); input.select(); } catch (err) {}
+        });
+      }
+    });
+
+    rigUnlockOverlayCache = overlay;
+    document.body.appendChild(root);
+    return overlay;
+  }
+
+  function openRigUnlockConsole(options = {}) {
+    const callback = typeof options?.onUnlock === "function" ? options.onUnlock : null;
+    if (callback) {
+      if (rigEditorUnlocked) {
+        try { callback(); } catch (err) { console.warn("[HUD] Rig unlock callback failed", err); }
+        return true;
+      }
+      rigUnlockWaiters.add(callback);
+    }
+    if (rigEditorUnlocked) return true;
+    const overlay = ensureRigUnlockOverlay();
+    overlay.open();
+    return false;
+  }
+
+  function onRigEditorUnlock(callback) {
+    if (typeof callback !== "function") return () => {};
+    if (rigEditorUnlocked) {
+      try { callback(); } catch (err) { console.warn("[HUD] Rig unlock listener failed", err); }
+      return () => {};
+    }
+    rigUnlockWaiters.add(callback);
+    return () => {
+      rigUnlockWaiters.delete(callback);
+    };
+  }
 
   function callHx(method, ...args) {
     try {
@@ -882,6 +1140,13 @@
     btnLog.addEventListener("click", () => openLogOverlay());
     btnWrap.appendChild(btnLog);
 
+    const btnUnlock = makeButton(rigEditorUnlocked ? "Console ✓" : "Console");
+    btnUnlock.title = rigEditorUnlocked
+      ? "Rig Editor access granted for this session."
+      : "Open the access console.";
+    btnUnlock.addEventListener("click", () => openRigUnlockConsole());
+    btnWrap.appendChild(btnUnlock);
+
     dock.appendChild(btnWrap);
 
     const perfCard = document.createElement("div");
@@ -1008,6 +1273,7 @@
       root: dock,
       btnHelp,
       btnLog,
+      rigUnlockButton: btnUnlock,
       perfSlider,
       perfValue,
       dynToggle,
@@ -3494,6 +3760,10 @@
     closeHelp: closeHelpOverlay,
     openLog: openLogOverlay,
     closeLog: closeLogOverlay,
+    openRigUnlockConsole,
+    closeRigUnlockConsole,
+    isRigEditorUnlocked,
+    onRigEditorUnlock,
     configureDevPanel,
     updateDevPanelState,
     setRearViewActive: (active) => {
@@ -3509,6 +3779,11 @@
     setProfilerOverlayVisible
   };
   window.HUD = HUD;
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", updateRigEditorMenuVisibility);
+  } else {
+    updateRigEditorMenuVisibility();
+  }
   ensureControlDock();
   if (typeof H.subscribeAura === "function") {
     try {
