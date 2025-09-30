@@ -487,6 +487,9 @@
       state.promise = null;
       state.error = null;
       markAssetUsed(state);
+      if (state.refCount === 0 && state.warmCount === 0) {
+        scheduleEviction(state);
+      }
       return payload;
     }).catch((err) => {
       state.status = "error";
