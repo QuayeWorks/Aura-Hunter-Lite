@@ -75,7 +75,7 @@
           if (typeof blockData.width === "number" && typeof blockData.height === "number" && typeof blockData.depth === "number") {
             return [blockData.width | 0, blockData.height | 0, blockData.depth | 0];
           }
-          throw new Error("buildChunkMesh requires explicit dimensions when running in a worker");
+          throw new Error("buildChunkGeometry requires explicit dimensions when running in a worker");
         }
 
         function getBlockAccessor(blockData, dims) {
@@ -113,7 +113,7 @@
               };
             }
           }
-          throw new Error("buildChunkMesh worker expects a serializable block source");
+          throw new Error("buildChunkGeometry worker expects a serializable block source");
         }
 
         function isRenderableBlock(block) {
@@ -365,7 +365,7 @@
           }
         }
 
-        function buildChunkMesh(blockData, opts = {}) {
+        function buildChunkGeometry(blockData, opts = {}) {
           const options = {
             faceCulling: true,
             greedy: false,
@@ -628,7 +628,7 @@
           'chunk-mesh': (payload) => {
             const data = payload && payload.blockData ? payload.blockData : payload;
             const opts = payload && payload.options ? payload.options : {};
-            return buildChunkMesh(data || {}, opts || {});
+            return buildChunkGeometry(data || {}, opts || {});
           },
           'terrain-chunks': generateTerrainChunks,
           'path-grid': pathfindGrid
@@ -936,7 +936,7 @@
 
   function resolveDimensions(blockData) {
     if (!blockData || typeof blockData !== "object") {
-      throw new Error("buildChunkMesh requires a blockData object");
+    throw new Error("buildChunkGeometry requires a blockData object");
     }
     if (Array.isArray(blockData.size)) {
       const [x = 0, y = 0, z = 0] = blockData.size;
@@ -957,7 +957,7 @@
     if (typeof blockData.width === "number" && typeof blockData.height === "number" && typeof blockData.depth === "number") {
       return [blockData.width | 0, blockData.height | 0, blockData.depth | 0];
     }
-    throw new Error("buildChunkMesh could not infer chunk dimensions");
+    throw new Error("buildChunkGeometry could not infer chunk dimensions");
   }
 
   function getBlockAccessor(blockData, dims) {
@@ -984,7 +984,7 @@
         };
       }
     }
-    throw new Error("buildChunkMesh requires a getBlock function or blocks array");
+    throw new Error("buildChunkGeometry requires a getBlock function or blocks array");
   }
 
   function isRenderableBlock(block) {
@@ -1240,7 +1240,7 @@
     }
   }
 
-  function buildChunkMesh(blockData, opts = {}) {
+  function buildChunkGeometry(blockData, opts = {}) {
     const options = {
       faceCulling: true,
       greedy: false,
@@ -1322,26 +1322,223 @@
     return result;
   }
 
+  function buildChunkMesh(blocks, opts = {}) {
+    if (typeof BABYLON === "undefined" || !BABYLON.Mesh || !BABYLON.VertexData) {
+      throw new Error("buildChunkMesh requires Babylon.js to be loaded");
+    }
+
+    const options = opts || {};
+    const chunkSize = options.chunkSize || {};
+    const chunkId = options.chunkId || { cx: 0, cy: 0, cz: 0 };
+    const materials = options.materials || {};
+    const layerSelector = typeof options.layerSelector === "function" ? options.layerSelector : null;
+
+    const SX = Number.isFinite(chunkSize.x) ? chunkSize.x | 0 : 0;
+    const SY = Number.isFinite(chunkSize.y) ? chunkSize.y | 0 : 0;
+    const SZ = Number.isFinite(chunkSize.z) ? chunkSize.z | 0 : 0;
+    if (!SX || !SY || !SZ) {
+      throw new Error("buildChunkMesh requires chunkSize {x,y,z}");
+    }
+
+    const total = SX * SY * SZ;
+    if (!blocks || typeof blocks.length !== "number" || blocks.length < total) {
+      throw new Error("buildChunkMesh requires a dense block array matching chunk dimensions");
+    }
+
+    const scene = options.scene
+      || materials.scene
+      || window.scene
+      || (BABYLON.Engine && BABYLON.Engine.LastCreatedScene)
+      || window.HXH?.scene
+      || null;
+    if (!scene) {
+      throw new Error("buildChunkMesh requires a Babylon scene reference");
+    }
+
+    const layers = {
+      solid: { positions: [], normals: [], uvs: [], indices: [] },
+      alpha: { positions: [], normals: [], uvs: [], indices: [] }
+    };
+
+    function pushQuad(layer, positions, normal, uv) {
+      const base = layer.positions.length / 3;
+      for (let i = 0; i < 4; i++) {
+        layer.positions.push(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]);
+        layer.normals.push(normal[0], normal[1], normal[2]);
+        layer.uvs.push(uv[i * 2], uv[i * 2 + 1]);
+      }
+      layer.indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+    }
+
+    const strideX = 1;
+    const strideY = SX;
+    const strideZ = SX * SY;
+    const wx = (chunkId.cx || 0) * SX;
+    const wy = (chunkId.cy || 0) * SY;
+    const wz = (chunkId.cz || 0) * SZ;
+
+    function getBlockIndex(x, y, z) {
+      return x * strideX + y * strideY + z * strideZ;
+    }
+
+    function getBlock(x, y, z) {
+      if (x < 0 || y < 0 || z < 0 || x >= SX || y >= SY || z >= SZ) return 0;
+      const idx = getBlockIndex(x, y, z);
+      const value = blocks[idx];
+      return value == null ? 0 : value | 0;
+    }
+
+    function getLayer(id) {
+      if (!id) return null;
+      const layer = layerSelector ? layerSelector(id) : "solid";
+      return layer === "alpha" ? "alpha" : "solid";
+    }
+
+    for (let z = 0; z < SZ; z++) {
+      for (let y = 0; y < SY; y++) {
+        for (let x = 0; x < SX; x++) {
+          const id = getBlock(x, y, z);
+          if (!id) continue;
+          const layerName = getLayer(id) || "solid";
+          const targetLayer = layers[layerName] || layers.solid;
+
+          const neighbors = {
+            px: { id: getBlock(x + 1, y, z) },
+            nx: { id: getBlock(x - 1, y, z) },
+            py: { id: getBlock(x, y + 1, z) },
+            ny: { id: getBlock(x, y - 1, z) },
+            pz: { id: getBlock(x, y, z + 1) },
+            nz: { id: getBlock(x, y, z - 1) }
+          };
+
+          for (const key of Object.keys(neighbors)) {
+            const entry = neighbors[key];
+            entry.layer = entry.id ? getLayer(entry.id) : null;
+          }
+
+          const X = wx + x;
+          const Y = wy + y;
+          const Z = wz + z;
+
+          if (!neighbors.px.id || neighbors.px.layer !== layerName) {
+            pushQuad(targetLayer,
+              [X + 1, Y, Z, X + 1, Y, Z + 1, X + 1, Y + 1, Z + 1, X + 1, Y + 1, Z],
+              [1, 0, 0],
+              [0, 0, 1, 0, 1, 1, 0, 1]
+            );
+          }
+
+          if (!neighbors.nx.id || neighbors.nx.layer !== layerName) {
+            pushQuad(targetLayer,
+              [X, Y, Z + 1, X, Y, Z, X, Y + 1, Z, X, Y + 1, Z + 1],
+              [-1, 0, 0],
+              [0, 0, 1, 0, 1, 1, 0, 1]
+            );
+          }
+
+          if (!neighbors.py.id || neighbors.py.layer !== layerName) {
+            pushQuad(targetLayer,
+              [X, Y + 1, Z, X + 1, Y + 1, Z, X + 1, Y + 1, Z + 1, X, Y + 1, Z + 1],
+              [0, 1, 0],
+              [0, 0, 1, 0, 1, 1, 0, 1]
+            );
+          }
+
+          if (!neighbors.ny.id || neighbors.ny.layer !== layerName) {
+            pushQuad(targetLayer,
+              [X, Y, Z + 1, X + 1, Y, Z + 1, X + 1, Y, Z, X, Y, Z],
+              [0, -1, 0],
+              [0, 0, 1, 0, 1, 1, 0, 1]
+            );
+          }
+
+          if (!neighbors.pz.id || neighbors.pz.layer !== layerName) {
+            pushQuad(targetLayer,
+              [X + 1, Y, Z + 1, X, Y, Z + 1, X, Y + 1, Z + 1, X + 1, Y + 1, Z + 1],
+              [0, 0, 1],
+              [0, 0, 1, 0, 1, 1, 0, 1]
+            );
+          }
+
+          if (!neighbors.nz.id || neighbors.nz.layer !== layerName) {
+            pushQuad(targetLayer,
+              [X, Y, Z, X + 1, Y, Z, X + 1, Y + 1, Z, X, Y + 1, Z],
+              [0, 0, -1],
+              [0, 0, 1, 0, 1, 1, 0, 1]
+            );
+          }
+        }
+      }
+    }
+
+    const { Mesh, VertexData } = BABYLON;
+    const solidName = `chunk_${chunkId.cx ?? 0}_${chunkId.cy ?? 0}_${chunkId.cz ?? 0}`;
+
+    function makeMeshFromLayer(name, layerData, material) {
+      const mesh = new Mesh(name, scene);
+      const vertexData = new VertexData();
+      vertexData.positions = new Float32Array(layerData.positions);
+      vertexData.indices = new Uint32Array(layerData.indices);
+      vertexData.normals = new Float32Array(layerData.normals);
+      vertexData.uvs = new Float32Array(layerData.uvs);
+      vertexData.applyToMesh(mesh, true);
+      if (material) mesh.material = material;
+      mesh.alwaysSelectAsActiveMesh = false;
+      mesh.refreshBoundingInfo();
+      mesh.metadata = { ...(mesh.metadata || {}), chunkId: { ...chunkId } };
+      return mesh;
+    }
+
+    const hasSolid = layers.solid.indices.length > 0;
+    const hasAlpha = layers.alpha.indices.length > 0;
+
+    let mainMesh = null;
+
+    if (!hasSolid && hasAlpha) {
+      const alphaOnlyMesh = makeMeshFromLayer(solidName, layers.alpha, materials.alpha);
+      if (alphaOnlyMesh.material && Object.prototype.hasOwnProperty.call(alphaOnlyMesh.material, "backFaceCulling")) {
+        alphaOnlyMesh.material.backFaceCulling = true;
+      }
+      return alphaOnlyMesh;
+    }
+
+    mainMesh = makeMeshFromLayer(solidName, layers.solid, materials.solid);
+
+    if (hasAlpha) {
+      const alphaMesh = makeMeshFromLayer(`${solidName}_alpha`, layers.alpha, materials.alpha);
+      if (alphaMesh.material && Object.prototype.hasOwnProperty.call(alphaMesh.material, "backFaceCulling")) {
+        alphaMesh.material.backFaceCulling = true;
+      }
+      alphaMesh.parent = mainMesh;
+      alphaMesh.refreshBoundingInfo();
+    }
+
+    mainMesh.refreshBoundingInfo();
+    return mainMesh;
+  }
+
   function buildChunkMeshAsync(blockData, opts = {}) {
     const jobs = WorkerJobs;
     if (!jobs || typeof jobs.requestChunkMesh !== "function") {
-      return Promise.resolve(buildChunkMesh(blockData, opts));
+      return Promise.resolve(buildChunkGeometry(blockData, opts));
     }
     try {
       const job = jobs.requestChunkMesh(blockData, opts);
       if (!job || typeof job.then !== "function") {
-        return Promise.resolve(buildChunkMesh(blockData, opts));
+        return Promise.resolve(buildChunkGeometry(blockData, opts));
       }
       return job.catch((err) => {
         console.warn("[WorldUtils] Chunk mesh worker failed, falling back", err);
-        return buildChunkMesh(blockData, opts);
+        return buildChunkGeometry(blockData, opts);
       });
     } catch (err) {
       console.warn("[WorldUtils] Unable to queue chunk mesh job", err);
-      return Promise.resolve(buildChunkMesh(blockData, opts));
+      return Promise.resolve(buildChunkGeometry(blockData, opts));
     }
   }
 
+  H.buildChunkGeometry = buildChunkGeometry;
+  H.buildChunkMeshData = buildChunkGeometry;
   H.buildChunkMesh = buildChunkMesh;
 
   const WorldUtils = {
@@ -1367,6 +1564,7 @@
     advanceEnvironment: (...a)=>H.advanceEnvironment?.(...a),
     updateEnvironment: (...a)=>H.updateEnvironment?.(...a),
     applyRegionVisuals,
+    buildChunkGeometry,
     buildChunkMesh,
     buildChunkMeshAsync,
     WorkerJobs,
