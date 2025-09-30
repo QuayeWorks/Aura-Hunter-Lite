@@ -452,6 +452,240 @@
          cooldown: 0
       }
    };
+
+   const PERF_SETTINGS_KEY = "hxh-perf-settings";
+   const defaultPerfSettings = Object.freeze({
+      lodEnabled: true,
+      greedyMeshing: false,
+      workerEnabled: true,
+      optimizerLevel: 0,
+      qualityLabel: "High",
+      chunkRadius: null,
+      dynamic: {
+         enabled: false,
+         minScale: 0.7,
+         currentScale: 1
+      }
+   });
+
+   const qualityLabelForLevel = (level) => {
+      const numeric = Number.isFinite(level) ? level : 0;
+      const clampedLevel = clamp(Math.round(numeric), 0, ADAPTIVE_QUALITY_LEVELS.length - 1);
+      return ADAPTIVE_QUALITY_LEVELS[clampedLevel]?.label || "High";
+   };
+
+   function normalizePerfSettings(raw = {}) {
+      const source = typeof raw === "object" && raw ? raw : {};
+      const optimizerLevel = clamp(
+         Math.round(Number.isFinite(source.optimizerLevel) ? source.optimizerLevel : 0),
+         0,
+         ADAPTIVE_QUALITY_LEVELS.length - 1
+      );
+      const dynamicSource = source.dynamic && typeof source.dynamic === "object" ? source.dynamic : {};
+      const dynamicEnabled = typeof dynamicSource.enabled === "boolean"
+         ? dynamicSource.enabled
+         : !!source.dynamicEnabled;
+      const dynamicMinRaw = Number.isFinite(dynamicSource.minScale)
+         ? dynamicSource.minScale
+         : Number.isFinite(source.dynamicMinScale)
+            ? source.dynamicMinScale
+            : defaultPerfSettings.dynamic.minScale;
+      const dynamicMin = clamp(dynamicMinRaw, 0.5, 1);
+      const dynamicScaleRaw = Number.isFinite(dynamicSource.currentScale)
+         ? dynamicSource.currentScale
+         : Number.isFinite(source.dynamicScale)
+            ? source.dynamicScale
+            : defaultPerfSettings.dynamic.currentScale;
+      const chunkRadius = Number.isFinite(source.chunkRadius) && source.chunkRadius > 0 ? source.chunkRadius : null;
+      const dynamicScale = dynamicEnabled ? clamp(dynamicScaleRaw, dynamicMin, 1) : 1;
+      const label = typeof source.qualityLabel === "string" && source.qualityLabel.trim()
+         ? source.qualityLabel.trim()
+         : qualityLabelForLevel(optimizerLevel);
+
+      return {
+         lodEnabled: source.lodEnabled !== false,
+         greedyMeshing: !!source.greedyMeshing,
+         workerEnabled: source.workerEnabled !== false,
+         optimizerLevel,
+         qualityLabel: label,
+         chunkRadius,
+         dynamic: {
+            enabled: dynamicEnabled,
+            minScale: dynamicMin,
+            currentScale: dynamicScale
+         }
+      };
+   }
+
+   function loadPerfSettings() {
+      if (typeof localStorage === "undefined") {
+         return { ...defaultPerfSettings, dynamic: { ...defaultPerfSettings.dynamic } };
+      }
+      try {
+         const raw = localStorage.getItem(PERF_SETTINGS_KEY);
+         if (!raw) return { ...defaultPerfSettings, dynamic: { ...defaultPerfSettings.dynamic } };
+         const parsed = JSON.parse(raw);
+         return normalizePerfSettings(parsed);
+      } catch (err) {
+         return { ...defaultPerfSettings, dynamic: { ...defaultPerfSettings.dynamic } };
+      }
+   }
+
+   let perfSettings = loadPerfSettings();
+   let chunkWorkerEnabled = perfSettings.workerEnabled !== false;
+
+   function persistPerfSettings() {
+      if (typeof localStorage === "undefined") return;
+      try {
+         localStorage.setItem(PERF_SETTINGS_KEY, JSON.stringify(perfSettings));
+      } catch (err) {}
+   }
+
+   function updatePerfSettings(update = {}) {
+      if (!update || typeof update !== "object") return perfSettings;
+      const next = {
+         ...perfSettings,
+         dynamic: { ...perfSettings.dynamic }
+      };
+      let dirty = false;
+
+      if (Object.prototype.hasOwnProperty.call(update, "lodEnabled")) {
+         const value = update.lodEnabled !== false;
+         if (next.lodEnabled !== value) {
+            next.lodEnabled = value;
+            dirty = true;
+         }
+      }
+
+      if (Object.prototype.hasOwnProperty.call(update, "greedyMeshing")) {
+         const value = !!update.greedyMeshing;
+         if (next.greedyMeshing !== value) {
+            next.greedyMeshing = value;
+            dirty = true;
+         }
+      }
+
+      if (Object.prototype.hasOwnProperty.call(update, "workerEnabled")) {
+         const value = update.workerEnabled !== false;
+         if (next.workerEnabled !== value) {
+            next.workerEnabled = value;
+            dirty = true;
+         }
+      }
+
+      if (Object.prototype.hasOwnProperty.call(update, "optimizerLevel")) {
+         const numeric = Number(update.optimizerLevel);
+         if (Number.isFinite(numeric)) {
+            const clampedLevel = clamp(Math.round(numeric), 0, ADAPTIVE_QUALITY_LEVELS.length - 1);
+            if (next.optimizerLevel !== clampedLevel) {
+               next.optimizerLevel = clampedLevel;
+               dirty = true;
+            }
+            const desiredLabel = typeof update.qualityLabel === "string" && update.qualityLabel.trim()
+               ? update.qualityLabel.trim()
+               : qualityLabelForLevel(clampedLevel);
+            if (next.qualityLabel !== desiredLabel) {
+               next.qualityLabel = desiredLabel;
+               dirty = true;
+            }
+         }
+      } else if (Object.prototype.hasOwnProperty.call(update, "qualityLabel")) {
+         const desiredLabel = typeof update.qualityLabel === "string" && update.qualityLabel.trim()
+            ? update.qualityLabel.trim()
+            : qualityLabelForLevel(next.optimizerLevel);
+         if (next.qualityLabel !== desiredLabel) {
+            next.qualityLabel = desiredLabel;
+            dirty = true;
+         }
+      }
+
+      if (Object.prototype.hasOwnProperty.call(update, "chunkRadius")) {
+         const raw = Number(update.chunkRadius);
+         const value = Number.isFinite(raw) && raw > 0 ? raw : null;
+         if ((next.chunkRadius ?? null) !== (value ?? null)) {
+            next.chunkRadius = value;
+            dirty = true;
+         }
+      }
+
+      if (update.dynamic && typeof update.dynamic === "object") {
+         const dynUpdate = update.dynamic;
+         if (Object.prototype.hasOwnProperty.call(dynUpdate, "enabled")) {
+            const value = !!dynUpdate.enabled;
+            if (next.dynamic.enabled !== value) {
+               next.dynamic.enabled = value;
+               dirty = true;
+            }
+         }
+         if (Object.prototype.hasOwnProperty.call(dynUpdate, "minScale")) {
+            const raw = Number(dynUpdate.minScale);
+            if (Number.isFinite(raw)) {
+               const value = clamp(raw, 0.5, 1);
+               if (next.dynamic.minScale !== value) {
+                  next.dynamic.minScale = value;
+                  dirty = true;
+               }
+            }
+         }
+         if (Object.prototype.hasOwnProperty.call(dynUpdate, "currentScale")) {
+            const raw = Number(dynUpdate.currentScale);
+            if (Number.isFinite(raw)) {
+               const lower = next.dynamic.enabled ? next.dynamic.minScale : 1;
+               const value = clamp(raw, lower, 1);
+               if (next.dynamic.currentScale !== value) {
+                  next.dynamic.currentScale = value;
+                  dirty = true;
+               }
+            }
+         }
+         if (!next.dynamic.enabled && next.dynamic.currentScale !== 1) {
+            next.dynamic.currentScale = 1;
+            dirty = true;
+         } else if (next.dynamic.enabled && next.dynamic.currentScale < next.dynamic.minScale) {
+            next.dynamic.currentScale = next.dynamic.minScale;
+            dirty = true;
+         }
+      } else {
+         const dynKeys = ["dynamicEnabled", "dynamicMinScale", "dynamicScale"];
+         if (dynKeys.some(key => Object.prototype.hasOwnProperty.call(update, key))) {
+            const dynUpdate = {
+               enabled: Object.prototype.hasOwnProperty.call(update, "dynamicEnabled") ? update.dynamicEnabled : undefined,
+               minScale: update.dynamicMinScale,
+               currentScale: update.dynamicScale
+            };
+            return updatePerfSettings({ dynamic: dynUpdate });
+         }
+      }
+
+      if (dirty) {
+         perfSettings = next;
+         persistPerfSettings();
+      }
+      return perfSettings;
+   }
+
+   function syncDynamicPerfSettings() {
+      updatePerfSettings({
+         dynamic: {
+            enabled: adaptiveQuality.dynamic.enabled,
+            minScale: adaptiveQuality.dynamic.minScale,
+            currentScale: adaptiveQuality.dynamic.scale
+         }
+      });
+   }
+
+   adaptiveQuality.currentLevel = perfSettings.optimizerLevel;
+   adaptiveQuality.dynamic.enabled = !!perfSettings.dynamic.enabled;
+   adaptiveQuality.dynamic.minScale = perfSettings.dynamic.minScale;
+   adaptiveQuality.dynamic.scale = adaptiveQuality.dynamic.enabled
+      ? perfSettings.dynamic.currentScale
+      : 1;
+   adaptiveQuality.dynamic.cooldown = 0;
+   syncDynamicPerfSettings();
+   updatePerfSettings({
+      optimizerLevel: adaptiveQuality.currentLevel,
+      qualityLabel: perfSettings.qualityLabel
+   });
    const workerMetrics = { pending: 0 };
    let engineInstrumentation = null;
    let sceneInstrumentation = null;
@@ -1167,6 +1401,9 @@
       updateInterval: 1 / 24
    };
 
+   environment.lodEnabled = perfSettings.lodEnabled !== false;
+   if (environment.terrainSettings) environment.terrainSettings.greedyMeshing = !!perfSettings.greedyMeshing;
+
    const interiorOcclusion = (() => {
       const groups = new Map();
 
@@ -1614,9 +1851,14 @@
    function resetAdaptiveQualityState() {
       adaptiveQuality.lowTimer = 0;
       adaptiveQuality.highTimer = 0;
-      adaptiveQuality.currentLevel = 0;
-      adaptiveQuality.dynamic.scale = 1;
+      adaptiveQuality.currentLevel = clamp(perfSettings.optimizerLevel, 0, ADAPTIVE_QUALITY_LEVELS.length - 1);
+      adaptiveQuality.dynamic.enabled = !!perfSettings.dynamic.enabled;
+      adaptiveQuality.dynamic.minScale = perfSettings.dynamic.minScale;
+      adaptiveQuality.dynamic.scale = adaptiveQuality.dynamic.enabled
+         ? perfSettings.dynamic.currentScale
+         : 1;
       adaptiveQuality.dynamic.cooldown = 0;
+      syncDynamicPerfSettings();
    }
 
    function applyQualityPreset(level) {
@@ -1661,6 +1903,10 @@
       }
       adaptiveQuality.highTimer = 0;
       updateHudAdaptiveQuality();
+      updatePerfSettings({
+         optimizerLevel: adaptiveQuality.currentLevel,
+         qualityLabel: ADAPTIVE_QUALITY_LEVELS[adaptiveQuality.currentLevel]?.label || "High"
+      });
    }
 
    function updateHudAdaptiveQuality() {
@@ -1689,20 +1935,22 @@
 
    function applyDynamicResolutionState({ immediate = false } = {}) {
       const engineRef = adaptiveQuality.engine;
-      if (!engineRef) return;
       const dyn = adaptiveQuality.dynamic;
       if (!dyn.enabled) {
          dyn.scale = 1;
       } else {
          dyn.scale = clamp(dyn.scale, dyn.minScale, 1);
       }
-      try {
-         engineRef.setHardwareScalingLevel(dyn.scale > 0 ? 1 / dyn.scale : 1);
-      } catch (err) {
-         console.warn("[HXH] Failed to apply dynamic resolution", err);
+      if (engineRef) {
+         try {
+            engineRef.setHardwareScalingLevel(dyn.scale > 0 ? 1 / dyn.scale : 1);
+         } catch (err) {
+            console.warn("[HXH] Failed to apply dynamic resolution", err);
+         }
       }
       if (immediate) dyn.cooldown = 0;
       updateHudAdaptiveQuality();
+      syncDynamicPerfSettings();
    }
 
    function handleHudDynamicResolution(state = {}) {
@@ -3311,9 +3559,25 @@
    }
 
    function getWorkerJobs() {
+      if (!chunkWorkerEnabled) return null;
       const utils = window.WorldUtils;
       if (!utils || !utils.WorkerJobs) return null;
       return instrumentWorkerJobs(utils.WorkerJobs);
+   }
+
+   function setChunkWorkerEnabled(enabled) {
+      const value = enabled !== false;
+      if (chunkWorkerEnabled === value) {
+         updatePerfSettings({ workerEnabled: chunkWorkerEnabled });
+         return chunkWorkerEnabled;
+      }
+      chunkWorkerEnabled = value;
+      updatePerfSettings({ workerEnabled: chunkWorkerEnabled });
+      return chunkWorkerEnabled;
+   }
+
+   function isChunkWorkerEnabled() {
+      return chunkWorkerEnabled;
    }
 
    function toUint32Array(source) {
@@ -3483,11 +3747,27 @@
       }
    }
 
+   function applyStoredChunkRadius(streaming = environment.terrain?.streaming) {
+      if (!streaming || !streaming.ready) return;
+      const desired = Number.isFinite(perfSettings.chunkRadius) ? perfSettings.chunkRadius : null;
+      const currentOverride = Number.isFinite(streaming.radiusOverride) ? streaming.radiusOverride : null;
+      if (desired == null) {
+         if (currentOverride != null) {
+            setTerrainStreamingRadius(null, { mode: "manual", forceImmediate: true });
+         }
+         return;
+      }
+      if (currentOverride != null && Math.abs(currentOverride - desired) < 0.5) return;
+      setTerrainStreamingRadius(desired, { mode: "manual", forceImmediate: true });
+   }
+
    function initializeTerrainStreaming(terrain, settings = {}, opts = {}) {
       if (!terrain) return null;
       const previous = terrain.streaming || null;
       const preserveOverride = opts.preserveOverride !== false;
+      const storedOverride = Number.isFinite(perfSettings.chunkRadius) ? perfSettings.chunkRadius : null;
       const prevOverride = preserveOverride ? previous?.radiusOverride ?? null : null;
+      const initialOverride = storedOverride != null ? storedOverride : prevOverride;
       const prevLastPos = previous?.lastPlayerPosition || null;
       const desiredChunk = Math.max(1, Math.round(settings?.chunkSize ?? terrain.settings?.chunkSize ?? DEFAULT_CHUNK_SIZE));
       const chunkSize = Math.max(1, Math.min(desiredChunk, Math.max(terrain.colsX, terrain.colsZ)));
@@ -3513,7 +3793,7 @@
          maxRadius: 0,
          defaultBaseRadius: Number.isFinite(settings?.activeRadius) ? settings.activeRadius : defaultTerrainSettings.activeRadius,
          baseRadius: Number.isFinite(settings?.activeRadius) ? settings.activeRadius : defaultTerrainSettings.activeRadius,
-         radiusOverride: prevOverride,
+         radiusOverride: initialOverride,
          lastPlayerPosition: prevLastPos,
          stats: { lastOps: 0 },
          ready: false,
@@ -3547,6 +3827,7 @@
          const pos = streaming.lastPlayerPosition || previous?.lastPlayerPosition || { x: 0, z: 0 };
          refreshChunkTargets(streaming, pos, true);
          processStreamingQueue(streaming, true);
+         applyStoredChunkRadius(streaming);
       } else {
          const payload = {
             colsX: Math.max(1, terrain.colsX | 0),
@@ -3564,6 +3845,7 @@
             const pos = streaming.lastPlayerPosition || { x: 0, z: 0 };
             refreshChunkTargets(streaming, pos, true);
             processStreamingQueue(streaming, true);
+            applyStoredChunkRadius(streaming);
          };
          const handleFallback = (err) => {
             if (err) console.warn("[Terrain] Worker chunk job failed", err);
@@ -3871,7 +4153,11 @@
 
    function setTerrainStreamingRadius(radius, opts = {}) {
       const streaming = environment.terrain?.streaming;
-      if (!streaming) return null;
+      if (!streaming) {
+         const stored = Number.isFinite(radius) ? radius : null;
+         updatePerfSettings({ chunkRadius: stored });
+         return null;
+      }
       const mode = opts.mode === "base" ? "base" : "manual";
       if (mode === "base") {
          const base = Number.isFinite(radius) ? clampStreamingRadius(streaming, radius) : streaming.defaultBaseRadius;
@@ -3888,6 +4174,9 @@
       processStreamingQueue(streaming, opts.forceImmediate === true);
       scheduleTerrainRadiusUiUpdate();
       scheduleProfilerHudSync();
+      updatePerfSettings({
+         chunkRadius: Number.isFinite(streaming.radiusOverride) ? streaming.radiusOverride : null
+      });
       return streaming.loadedRadius;
    }
 
@@ -3916,6 +4205,7 @@
          utilsSettings.greedyMeshing = value;
       }
       scheduleProfilerHudSync();
+      updatePerfSettings({ greedyMeshing: value });
       return value;
    }
 
@@ -4514,6 +4804,7 @@
       environment.lodEnabled = value;
       refreshAllTreeLods();
       scheduleProfilerHudSync();
+      updatePerfSettings({ lodEnabled: environment.lodEnabled });
       return environment.lodEnabled;
    }
 
@@ -8688,6 +8979,10 @@
       });
    }
 
+   setEnvironmentLodEnabled(perfSettings.lodEnabled);
+   setGreedyMeshingEnabled(perfSettings.greedyMeshing);
+   updatePerfSettings({ workerEnabled: chunkWorkerEnabled });
+
    // Public API
    window.GameSettings = GameSettings;
    const previousHXH = typeof window.HXH === "object" && window.HXH ? window.HXH : {};
@@ -8711,6 +9006,8 @@
       applyPhysicsImpulse,
       configurePhysics,
       spawnPhysicsProp,
+      setChunkWorkerEnabled,
+      isChunkWorkerEnabled,
       getPhysicsStats: () => ({
          bodies: physics.bodies.size,
          sleeping: physics.sleepingBodies.size,
@@ -8736,6 +9033,7 @@ try {
     // terrain & environment
     createTerrain, disposeTerrain, getTerrainHeight, updateTerrainStreaming, removeTerrainCubeAtPoint,
     getTerrainStreamingRadius, setTerrainStreamingRadius, setTerrainStreamingBudget, getTerrainStreamingStats,
+    setChunkWorkerEnabled, isChunkWorkerEnabled,
     scatterVegetation, clearTrees, createCloudLayer, advanceEnvironment, updateEnvironment,
     getFallbackTreeMaterials, createFallbackTree,
     applyTreeLOD, refreshAllTreeLods, setEnvironmentLodProfile, setEnvironmentLodEnabled,
