@@ -417,6 +417,33 @@
    const nowMs = () => (typeof performance === "object" && typeof performance.now === "function")
       ? performance.now()
       : Date.now();
+   const ADAPTIVE_QUALITY_LEVELS = [
+      { label: "High" },
+      { label: "FX Reduced" },
+      { label: "Minimal" }
+   ];
+   const adaptiveQuality = {
+      targetFps: 60,
+      degradeDelay: 2.5,
+      recoverDelay: 4,
+      lowTimer: 0,
+      highTimer: 0,
+      scene: null,
+      engine: null,
+      camera: null,
+      pipeline: null,
+      optimizer: null,
+      optimizerRunning: false,
+      currentLevel: 0,
+      dynamic: {
+         enabled: false,
+         minScale: 0.7,
+         scale: 1,
+         cooldown: 0
+      }
+   };
+   let hudPerformanceUnsub = null;
+   let hudDynamicUnsub = null;
    const COOLDOWNS = {
       meleehit: 0.25,
       nenblast: 2.0,
@@ -769,6 +796,297 @@
       updateAccumulator: 0,
       updateInterval: 1 / 24
    };
+
+   function resetAdaptiveQualityState() {
+      adaptiveQuality.lowTimer = 0;
+      adaptiveQuality.highTimer = 0;
+      adaptiveQuality.currentLevel = 0;
+      adaptiveQuality.dynamic.scale = 1;
+      adaptiveQuality.dynamic.cooldown = 0;
+   }
+
+   function applyQualityPreset(level) {
+      const pipeline = adaptiveQuality.pipeline;
+      if (pipeline) {
+         const fxEnabled = level === 0;
+         pipeline.fxaaEnabled = fxEnabled;
+         pipeline.samples = fxEnabled ? 2 : 1;
+         pipeline.sharpenEnabled = fxEnabled;
+      }
+      const sceneRef = adaptiveQuality.scene;
+      if (sceneRef) {
+         sceneRef.shadowsEnabled = level <= 1;
+         const imageConfig = sceneRef.imageProcessingConfiguration;
+         if (imageConfig) {
+            imageConfig.toneMappingEnabled = level === 0;
+            imageConfig.contrast = level === 0 ? 1.05 : 1.0;
+            imageConfig.exposure = level === 0 ? 1.0 : 0.95;
+         }
+      }
+      setCloudVisibility(level <= 1);
+   }
+
+   function setCloudVisibility(visible) {
+      if (environment?.clouds) {
+         for (const cloud of environment.clouds) {
+            const mesh = cloud?.mesh;
+            if (mesh) mesh.isVisible = visible;
+         }
+      }
+      environment.cloudsVisible = visible;
+   }
+
+   function setQualityLevel(level, { force = false, fromOptimizer = false } = {}) {
+      const maxLevel = ADAPTIVE_QUALITY_LEVELS.length - 1;
+      const clamped = clamp(level, 0, maxLevel);
+      if (!force && adaptiveQuality.currentLevel === clamped) return;
+      adaptiveQuality.currentLevel = clamped;
+      applyQualityPreset(clamped);
+      if (!fromOptimizer) {
+         adaptiveQuality.lowTimer = 0;
+      }
+      adaptiveQuality.highTimer = 0;
+      updateHudAdaptiveQuality();
+   }
+
+   function updateHudAdaptiveQuality() {
+      const hudApi = window.HUD;
+      if (!hudApi?.setAdaptiveQualityStatus) return;
+      const label = ADAPTIVE_QUALITY_LEVELS[adaptiveQuality.currentLevel]?.label || "High";
+      hudApi.setAdaptiveQualityStatus({
+         qualityLabel: label,
+         dynamicScale: adaptiveQuality.dynamic.scale,
+         dynamicEnabled: adaptiveQuality.dynamic.enabled,
+         minScale: adaptiveQuality.dynamic.minScale
+      });
+   }
+
+   function setPerformanceTargetFps(value) {
+      if (!Number.isFinite(value)) return;
+      const clamped = clamp(Math.round(value), 30, 120);
+      adaptiveQuality.targetFps = clamped;
+      if (adaptiveQuality.optimizer) {
+         adaptiveQuality.optimizer.targetFrameRate = clamped;
+      }
+      adaptiveQuality.lowTimer = 0;
+      adaptiveQuality.highTimer = 0;
+   }
+
+   function applyDynamicResolutionState({ immediate = false } = {}) {
+      const engineRef = adaptiveQuality.engine;
+      if (!engineRef) return;
+      const dyn = adaptiveQuality.dynamic;
+      if (!dyn.enabled) {
+         dyn.scale = 1;
+      } else {
+         dyn.scale = clamp(dyn.scale, dyn.minScale, 1);
+      }
+      try {
+         engineRef.setHardwareScalingLevel(dyn.scale > 0 ? 1 / dyn.scale : 1);
+      } catch (err) {
+         console.warn("[HXH] Failed to apply dynamic resolution", err);
+      }
+      if (immediate) dyn.cooldown = 0;
+      updateHudAdaptiveQuality();
+   }
+
+   function handleHudDynamicResolution(state = {}) {
+      if (!state || typeof state !== "object") return;
+      const dyn = adaptiveQuality.dynamic;
+      if (typeof state.enabled === "boolean") dyn.enabled = state.enabled;
+      if (Number.isFinite(state.minScale)) dyn.minScale = clamp(state.minScale, 0.5, 1);
+      if (!dyn.enabled) {
+         dyn.scale = 1;
+      } else {
+         dyn.scale = clamp(Math.max(dyn.minScale, dyn.scale), dyn.minScale, 1);
+      }
+      dyn.cooldown = 0;
+      applyDynamicResolutionState({ immediate: true });
+   }
+
+   function initializeAdaptiveQuality(sceneRef, engineRef, cameraRef) {
+      adaptiveQuality.scene = sceneRef;
+      adaptiveQuality.engine = engineRef;
+      adaptiveQuality.camera = cameraRef;
+
+      if (adaptiveQuality.pipeline) {
+         try { adaptiveQuality.pipeline.dispose(); } catch (err) {}
+         adaptiveQuality.pipeline = null;
+      }
+      if (BABYLON.DefaultRenderingPipeline) {
+         try {
+            adaptiveQuality.pipeline = new BABYLON.DefaultRenderingPipeline("adaptivePipeline", true, sceneRef, [cameraRef]);
+            adaptiveQuality.pipeline.fxaaEnabled = true;
+            adaptiveQuality.pipeline.samples = 1;
+            adaptiveQuality.pipeline.bloomEnabled = false;
+            adaptiveQuality.pipeline.sharpenEnabled = false;
+         } catch (err) {
+            console.warn("[HXH] Failed to create rendering pipeline", err);
+            adaptiveQuality.pipeline = null;
+         }
+      }
+
+      if (adaptiveQuality.optimizer) {
+         try { adaptiveQuality.optimizer.stop(); } catch (err) {}
+         adaptiveQuality.optimizer = null;
+      }
+
+      if (BABYLON.SceneOptimizerOptions) {
+         try {
+            const options = new BABYLON.SceneOptimizerOptions(adaptiveQuality.targetFps, 2000);
+            if (BABYLON.SceneOptimization) {
+               const custom = new BABYLON.SceneOptimization(0);
+               custom.apply = () => {
+                  if (adaptiveQuality.currentLevel < ADAPTIVE_QUALITY_LEVELS.length - 1) {
+                     setQualityLevel(adaptiveQuality.currentLevel + 1, { fromOptimizer: true });
+                  }
+                  if (adaptiveQuality.optimizer) {
+                     try { adaptiveQuality.optimizer.stop(); } catch (err) {}
+                  }
+                  adaptiveQuality.optimizerRunning = false;
+                  return true;
+               };
+               custom.getDescription = () => "Adaptive quality step";
+               options.addOptimization(custom);
+            }
+            if (BABYLON.PostProcessesOptimization) options.addOptimization(new BABYLON.PostProcessesOptimization(1));
+            if (BABYLON.TextureOptimization) options.addOptimization(new BABYLON.TextureOptimization(2, 512));
+            if (BABYLON.ShadowsOptimization) options.addOptimization(new BABYLON.ShadowsOptimization(3));
+            adaptiveQuality.optimizer = new BABYLON.SceneOptimizer(sceneRef, options);
+            adaptiveQuality.optimizer.onSuccessObservable?.add(() => { adaptiveQuality.optimizerRunning = false; });
+            adaptiveQuality.optimizer.onFailureObservable?.add(() => { adaptiveQuality.optimizerRunning = false; });
+         } catch (err) {
+            console.warn("[HXH] Failed to initialise SceneOptimizer", err);
+            adaptiveQuality.optimizer = null;
+         }
+      }
+
+      applyDynamicResolutionState({ immediate: true });
+      setQualityLevel(adaptiveQuality.currentLevel, { force: true });
+   }
+
+   function setupHudAdaptiveControls(hudApi) {
+      if (!hudApi) return;
+      if (typeof hudPerformanceUnsub === "function") {
+         try { hudPerformanceUnsub(); } catch (err) {}
+         hudPerformanceUnsub = null;
+      }
+      if (typeof hudDynamicUnsub === "function") {
+         try { hudDynamicUnsub(); } catch (err) {}
+         hudDynamicUnsub = null;
+      }
+      hudApi.setPerformanceTarget?.(adaptiveQuality.targetFps);
+      hudApi.setDynamicResolutionOptions?.({
+         enabled: adaptiveQuality.dynamic.enabled,
+         minScale: adaptiveQuality.dynamic.minScale,
+         currentScale: adaptiveQuality.dynamic.scale
+      });
+      hudApi.setAdaptiveQualityStatus?.({
+         qualityLabel: ADAPTIVE_QUALITY_LEVELS[adaptiveQuality.currentLevel]?.label || "High",
+         dynamicScale: adaptiveQuality.dynamic.scale,
+         dynamicEnabled: adaptiveQuality.dynamic.enabled,
+         minScale: adaptiveQuality.dynamic.minScale
+      });
+      if (typeof hudApi.onPerformanceTargetChange === "function") {
+         hudPerformanceUnsub = hudApi.onPerformanceTargetChange((value) => setPerformanceTargetFps(value));
+      }
+      if (typeof hudApi.onDynamicResolutionChange === "function") {
+         hudDynamicUnsub = hudApi.onDynamicResolutionChange((state) => handleHudDynamicResolution(state));
+      }
+   }
+
+   function stepDynamicResolutionDown() {
+      const dyn = adaptiveQuality.dynamic;
+      if (!dyn.enabled) return;
+      const next = clamp(dyn.scale - 0.1, dyn.minScale, 1);
+      if (next < dyn.scale - 0.001) {
+         dyn.scale = Math.max(dyn.minScale, Math.round(next * 100) / 100);
+         dyn.cooldown = 1.5;
+         adaptiveQuality.highTimer = 0;
+         applyDynamicResolutionState({ immediate: true });
+      }
+   }
+
+   function stepDynamicResolutionUp() {
+      const dyn = adaptiveQuality.dynamic;
+      if (!dyn.enabled) return;
+      const next = clamp(dyn.scale + 0.05, dyn.minScale, 1);
+      if (next > dyn.scale + 0.001) {
+         dyn.scale = Math.min(1, Math.round(next * 100) / 100);
+         applyDynamicResolutionState({ immediate: true });
+         adaptiveQuality.lowTimer = 0;
+      }
+   }
+
+   function triggerQualityDrop() {
+      adaptiveQuality.lowTimer = 0;
+      adaptiveQuality.highTimer = 0;
+      if (adaptiveQuality.currentLevel >= ADAPTIVE_QUALITY_LEVELS.length - 1) return;
+      if (adaptiveQuality.optimizer) {
+         if (adaptiveQuality.optimizerRunning) return;
+         adaptiveQuality.optimizerRunning = true;
+         try {
+            adaptiveQuality.optimizer.targetFrameRate = adaptiveQuality.targetFps;
+            adaptiveQuality.optimizer.reset();
+            adaptiveQuality.optimizer.start();
+         } catch (err) {
+            adaptiveQuality.optimizerRunning = false;
+            console.warn("[HXH] SceneOptimizer start failed", err);
+            setQualityLevel(adaptiveQuality.currentLevel + 1);
+         }
+      } else {
+         setQualityLevel(adaptiveQuality.currentLevel + 1);
+      }
+   }
+
+   function updateAdaptiveQuality(dt) {
+      if (!adaptiveQuality.engine || !adaptiveQuality.scene) return;
+      if (!Number.isFinite(dt) || dt <= 0) return;
+      const delta = Math.min(dt, 0.5);
+      if (delta <= 0) return;
+      const dyn = adaptiveQuality.dynamic;
+      if (dyn.cooldown > 0) dyn.cooldown = Math.max(0, dyn.cooldown - delta);
+
+      let fps = 0;
+      if (typeof adaptiveQuality.engine.getFps === "function") {
+         fps = adaptiveQuality.engine.getFps();
+      }
+      if (!Number.isFinite(fps) || fps <= 1) {
+         fps = 1 / delta;
+      }
+      if (!Number.isFinite(fps) || fps <= 1) return;
+
+      const target = adaptiveQuality.targetFps;
+      const lowThreshold = target * 0.9;
+      const highThreshold = target * 1.05;
+
+      if (fps < lowThreshold) {
+         adaptiveQuality.lowTimer += delta;
+         adaptiveQuality.highTimer = Math.max(0, adaptiveQuality.highTimer - delta * 0.5);
+         if (adaptiveQuality.lowTimer >= adaptiveQuality.degradeDelay) {
+            adaptiveQuality.lowTimer = 0;
+            if (dyn.enabled && dyn.scale > dyn.minScale + 0.001) {
+               stepDynamicResolutionDown();
+            } else {
+               triggerQualityDrop();
+            }
+         }
+      } else if (fps > highThreshold) {
+         adaptiveQuality.highTimer += delta;
+         adaptiveQuality.lowTimer = Math.max(0, adaptiveQuality.lowTimer - delta * 0.5);
+         if (adaptiveQuality.highTimer >= adaptiveQuality.recoverDelay) {
+            adaptiveQuality.highTimer = 0;
+            if (adaptiveQuality.currentLevel > 0) {
+               setQualityLevel(adaptiveQuality.currentLevel - 1);
+            } else if (dyn.enabled && dyn.scale < 0.999 && dyn.cooldown <= 0) {
+               stepDynamicResolutionUp();
+            }
+         }
+      } else {
+         adaptiveQuality.lowTimer = Math.max(0, adaptiveQuality.lowTimer - delta * 0.5);
+         adaptiveQuality.highTimer = Math.max(0, adaptiveQuality.highTimer - delta * 0.5);
+      }
+   }
 
    let terrainRadiusControl = null;
    let terrainRadiusUiScheduled = false;
@@ -3168,6 +3486,8 @@
       await scatterVegetation(scene);
       createCloudLayer(scene);
       updateEnvironment(240);
+      applyQualityPreset(adaptiveQuality.currentLevel);
+      updateHudAdaptiveQuality();
    }
 
    function advanceEnvironment(dt) {
@@ -5360,6 +5680,7 @@
       engine = new BABYLON.Engine(canvas, true, {
          stencil: true
       });
+      resetAdaptiveQualityState();
       scene = new BABYLON.Scene(engine);
       scene.collisionsEnabled = true;
       scene.clearColor = new BABYLON.Color4(0.04, 0.06, 0.10, 1.0);
@@ -5378,6 +5699,7 @@
       }
       camera.panningSensibility = 0;
       window.addEventListener("contextmenu", e => e.preventDefault());
+      initializeAdaptiveQuality(scene, engine, camera);
       await setupEnvironment(scene);
 
       const spawnHeight = getTerrainHeight(0, 0);
@@ -5462,6 +5784,7 @@
          const dt = lastTime ? (now - lastTime) / 1000 : 0;
          lastTime = now;
          if (!paused) tick(dt);
+         updateAdaptiveQuality(dt);
          scene.render();
          inputOnce = {};
          inputUp = {};
@@ -5514,6 +5837,7 @@
 
       const hudApi = window.HUD;
       hudApi?.ensureControlDock?.();
+      setupHudAdaptiveControls(hudApi);
       if (hudApi?.configureDevPanel) {
          hudApi.configureDevPanel({
             toggleAura: (key, value) => setAuraState(key, value),

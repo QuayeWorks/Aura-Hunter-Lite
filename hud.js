@@ -20,6 +20,12 @@
   let grudgeWidgetCache = null;
   let grudgeStyleInjected = false;
   let controlDockCache = null;
+  let performanceTargetValue = 60;
+  const performanceTargetListeners = new Set();
+  let dynamicResolutionState = { enabled: false, minScale: 0.7, currentScale: 1 };
+  const dynamicResolutionListeners = new Set();
+  let adaptiveQualityLabel = "High";
+  const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
   let helpOverlayCache = null;
   let logOverlayCache = null;
   let devPanelCache = null;
@@ -529,7 +535,7 @@
     dock.style.flexWrap = "wrap";
     dock.style.marginTop = "0.45rem";
     dock.style.pointerEvents = "auto";
-    dock.style.alignItems = "center";
+    dock.style.alignItems = "stretch";
 
     const makeButton = (label) => {
       const btn = document.createElement("button");
@@ -555,18 +561,281 @@
       return btn;
     };
 
+    const cardStyle = (el) => {
+      el.style.display = "flex";
+      el.style.flexDirection = "column";
+      el.style.gap = "0.35rem";
+      el.style.padding = "0.45rem 0.65rem";
+      el.style.background = "rgba(12, 22, 34, 0.78)";
+      el.style.borderRadius = "12px";
+      el.style.border = "1px solid rgba(110, 190, 255, 0.18)";
+      el.style.backdropFilter = "blur(6px)";
+      el.style.minWidth = "180px";
+    };
+
+    const btnWrap = document.createElement("div");
+    btnWrap.style.display = "flex";
+    btnWrap.style.flexWrap = "wrap";
+    btnWrap.style.gap = "0.35rem";
+    btnWrap.style.alignItems = "center";
+
     const btnHelp = makeButton("Help");
     btnHelp.title = "Open the hunter field manual.";
     btnHelp.addEventListener("click", () => openHelpOverlay());
-    dock.appendChild(btnHelp);
+    btnWrap.appendChild(btnHelp);
 
     const btnLog = makeButton("Log");
     btnLog.title = "View the latest feature log and mechanics summary.";
     btnLog.addEventListener("click", () => openLogOverlay());
-    dock.appendChild(btnLog);
+    btnWrap.appendChild(btnLog);
 
-    controlDockCache = { root: dock, btnHelp, btnLog };
+    dock.appendChild(btnWrap);
+
+    const perfCard = document.createElement("div");
+    cardStyle(perfCard);
+    const perfHeader = document.createElement("div");
+    perfHeader.style.display = "flex";
+    perfHeader.style.alignItems = "center";
+    perfHeader.style.justifyContent = "space-between";
+
+    const perfLabel = document.createElement("span");
+    perfLabel.textContent = "Performance Target";
+    perfLabel.style.fontSize = "0.68rem";
+    perfLabel.style.textTransform = "uppercase";
+    perfLabel.style.letterSpacing = "0.08em";
+    perfLabel.style.opacity = "0.78";
+
+    const perfValue = document.createElement("span");
+    perfValue.style.fontSize = "0.72rem";
+    perfValue.style.fontWeight = "600";
+
+    perfHeader.appendChild(perfLabel);
+    perfHeader.appendChild(perfValue);
+
+    const perfSlider = document.createElement("input");
+    perfSlider.type = "range";
+    perfSlider.min = "30";
+    perfSlider.max = "120";
+    perfSlider.step = "5";
+    perfSlider.value = String(performanceTargetValue);
+    perfSlider.style.width = "160px";
+    perfSlider.style.cursor = "pointer";
+    perfSlider.addEventListener("input", () => {
+      const value = setPerformanceTarget(perfSlider.value, { emit: true });
+      perfValue.textContent = `${value} FPS`;
+    });
+
+    perfCard.appendChild(perfHeader);
+    perfCard.appendChild(perfSlider);
+    dock.appendChild(perfCard);
+
+    const dynCard = document.createElement("div");
+    cardStyle(dynCard);
+    const dynHeader = document.createElement("div");
+    dynHeader.style.display = "flex";
+    dynHeader.style.alignItems = "center";
+    dynHeader.style.justifyContent = "space-between";
+
+    const dynToggleLabel = document.createElement("label");
+    dynToggleLabel.style.display = "flex";
+    dynToggleLabel.style.alignItems = "center";
+    dynToggleLabel.style.gap = "0.4rem";
+    dynToggleLabel.style.fontSize = "0.68rem";
+    dynToggleLabel.style.textTransform = "uppercase";
+    dynToggleLabel.style.letterSpacing = "0.08em";
+    dynToggleLabel.style.opacity = "0.8";
+
+    const dynToggle = document.createElement("input");
+    dynToggle.type = "checkbox";
+    dynToggle.checked = !!dynamicResolutionState.enabled;
+    dynToggle.style.width = "16px";
+    dynToggle.style.height = "16px";
+    dynToggle.style.cursor = "pointer";
+    dynToggle.addEventListener("change", () => {
+      setDynamicResolutionUI({ enabled: dynToggle.checked }, { emit: true });
+    });
+
+    const dynLabelText = document.createElement("span");
+    dynLabelText.textContent = "Dynamic Resolution";
+
+    dynToggleLabel.appendChild(dynToggle);
+    dynToggleLabel.appendChild(dynLabelText);
+
+    const dynCurrent = document.createElement("span");
+    dynCurrent.style.fontSize = "0.7rem";
+    dynCurrent.style.opacity = "0.82";
+
+    dynHeader.appendChild(dynToggleLabel);
+    dynHeader.appendChild(dynCurrent);
+
+    const dynSliderRow = document.createElement("div");
+    dynSliderRow.style.display = "flex";
+    dynSliderRow.style.alignItems = "center";
+    dynSliderRow.style.gap = "0.4rem";
+
+    const dynSlider = document.createElement("input");
+    dynSlider.type = "range";
+    dynSlider.min = "0.5";
+    dynSlider.max = "1";
+    dynSlider.step = "0.05";
+    dynSlider.value = dynamicResolutionState.minScale.toFixed(2);
+    dynSlider.disabled = !dynamicResolutionState.enabled;
+    dynSlider.style.width = "140px";
+    dynSlider.style.cursor = "pointer";
+    dynSlider.addEventListener("input", () => {
+      setDynamicResolutionUI({ minScale: Number(dynSlider.value) }, { emit: true });
+    });
+
+    const dynValue = document.createElement("span");
+    dynValue.style.fontSize = "0.68rem";
+    dynValue.style.opacity = "0.8";
+
+    dynSliderRow.appendChild(dynSlider);
+    dynSliderRow.appendChild(dynValue);
+
+    dynCard.appendChild(dynHeader);
+    dynCard.appendChild(dynSliderRow);
+    dock.appendChild(dynCard);
+
+    const qualityBadge = document.createElement("span");
+    qualityBadge.style.padding = "0.35rem 0.7rem";
+    qualityBadge.style.borderRadius = "999px";
+    qualityBadge.style.border = "1px solid rgba(120, 200, 255, 0.32)";
+    qualityBadge.style.background = "rgba(16, 28, 44, 0.8)";
+    qualityBadge.style.color = "#e0f3ff";
+    qualityBadge.style.fontSize = "0.68rem";
+    qualityBadge.style.letterSpacing = "0.06em";
+    qualityBadge.style.textTransform = "uppercase";
+    qualityBadge.textContent = `Quality: ${adaptiveQualityLabel}`;
+    dock.appendChild(qualityBadge);
+
+    controlDockCache = {
+      root: dock,
+      btnHelp,
+      btnLog,
+      perfSlider,
+      perfValue,
+      dynToggle,
+      dynSlider,
+      dynValue,
+      dynCurrent,
+      qualityBadge
+    };
+
+    setPerformanceTarget(performanceTargetValue);
+    setDynamicResolutionUI({
+      enabled: dynamicResolutionState.enabled,
+      minScale: dynamicResolutionState.minScale,
+      currentScale: dynamicResolutionState.currentScale
+    });
+    setAdaptiveQualityStatus({
+      qualityLabel: adaptiveQualityLabel,
+      dynamicScale: dynamicResolutionState.currentScale,
+      dynamicEnabled: dynamicResolutionState.enabled,
+      minScale: dynamicResolutionState.minScale
+    });
     return controlDockCache;
+  }
+
+  function notifyPerformanceTargetChange(value) {
+    performanceTargetListeners.forEach((listener) => {
+      try {
+        listener(value);
+      } catch (err) {
+        console.warn("[HUD] Performance target listener failed", err);
+      }
+    });
+  }
+
+  function setPerformanceTarget(value, { emit = false } = {}) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return performanceTargetValue;
+    const clamped = clamp(Math.round(numeric), 30, 120);
+    performanceTargetValue = clamped;
+    if (controlDockCache?.perfSlider) controlDockCache.perfSlider.value = String(clamped);
+    if (controlDockCache?.perfValue) controlDockCache.perfValue.textContent = `${clamped} FPS`;
+    if (emit) notifyPerformanceTargetChange(clamped);
+    return clamped;
+  }
+
+  function onPerformanceTargetChange(callback) {
+    if (typeof callback !== "function") return () => {};
+    performanceTargetListeners.add(callback);
+    return () => performanceTargetListeners.delete(callback);
+  }
+
+  function offPerformanceTargetChange(callback) {
+    if (typeof callback !== "function") return;
+    performanceTargetListeners.delete(callback);
+  }
+
+  function notifyDynamicResolutionChange(state) {
+    dynamicResolutionListeners.forEach((listener) => {
+      try {
+        listener({ ...state });
+      } catch (err) {
+        console.warn("[HUD] Dynamic resolution listener failed", err);
+      }
+    });
+  }
+
+  function setDynamicResolutionUI(next = {}, { emit = false } = {}) {
+    const state = { ...dynamicResolutionState };
+    if (typeof next.enabled === "boolean") state.enabled = next.enabled;
+    if (Number.isFinite(next.minScale)) state.minScale = clamp(next.minScale, 0.5, 1);
+    if (Number.isFinite(next.currentScale)) state.currentScale = clamp(next.currentScale, 0.3, 1);
+    if (state.enabled && state.currentScale < state.minScale) {
+      state.currentScale = state.minScale;
+    }
+    dynamicResolutionState = state;
+    if (controlDockCache?.dynToggle) controlDockCache.dynToggle.checked = state.enabled;
+    if (controlDockCache?.dynSlider) {
+      controlDockCache.dynSlider.disabled = !state.enabled;
+      controlDockCache.dynSlider.value = state.minScale.toFixed(2);
+    }
+    if (controlDockCache?.dynValue) controlDockCache.dynValue.textContent = `Min ${Math.round(state.minScale * 100)}%`;
+    if (controlDockCache?.dynCurrent) controlDockCache.dynCurrent.textContent = `Current: ${Math.round(state.currentScale * 100)}%`;
+    if (emit) notifyDynamicResolutionChange(state);
+    return state;
+  }
+
+  function onDynamicResolutionChange(callback) {
+    if (typeof callback !== "function") return () => {};
+    dynamicResolutionListeners.add(callback);
+    return () => dynamicResolutionListeners.delete(callback);
+  }
+
+  function offDynamicResolutionChange(callback) {
+    if (typeof callback !== "function") return;
+    dynamicResolutionListeners.delete(callback);
+  }
+
+  function setAdaptiveQualityStatus(status = {}) {
+    if (status && typeof status === "object") {
+      if (typeof status.qualityLabel === "string") {
+        adaptiveQualityLabel = status.qualityLabel.trim() || "High";
+        if (controlDockCache?.qualityBadge) {
+          controlDockCache.qualityBadge.textContent = `Quality: ${adaptiveQualityLabel}`;
+        }
+      }
+      const dyn = {};
+      let hasDyn = false;
+      if (typeof status.dynamicEnabled === "boolean") {
+        dyn.enabled = status.dynamicEnabled;
+        hasDyn = true;
+      }
+      if (Number.isFinite(status.minScale)) {
+        dyn.minScale = status.minScale;
+        hasDyn = true;
+      }
+      if (Number.isFinite(status.dynamicScale)) {
+        dyn.currentScale = status.dynamicScale;
+        hasDyn = true;
+      }
+      if (hasDyn) {
+        setDynamicResolutionUI(dyn, { emit: false });
+      }
+    }
   }
 
   function createOverlayModal(id, titleText) {
@@ -2578,6 +2847,15 @@
     closeTrainingMenu,
     bindTrainingButton,
     ensureControlDock,
+    getPerformanceTarget: () => performanceTargetValue,
+    setPerformanceTarget: (value) => setPerformanceTarget(value, { emit: false }),
+    onPerformanceTargetChange,
+    offPerformanceTargetChange,
+    setDynamicResolutionOptions: (state) => setDynamicResolutionUI(state, { emit: false }),
+    updateDynamicResolutionState: (state) => setDynamicResolutionUI(state, { emit: false }),
+    onDynamicResolutionChange,
+    offDynamicResolutionChange,
+    setAdaptiveQualityStatus,
     openHelp: openHelpOverlay,
     closeHelp: closeHelpOverlay,
     openLog: openLogOverlay,
