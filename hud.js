@@ -400,17 +400,17 @@
   function ensureHotbar() {
     const root = ensureHudRoot();
     if (!root) return null;
-    const bottom = document.getElementById("hud-bottom");
-    if (!bottom) return null;
-    if (hotbarCache && hotbarCache.root && bottom.contains(hotbarCache.root)) {
+    const center = document.getElementById("hud-bottom-center");
+    if (!center) return null;
+    if (hotbarCache && hotbarCache.root && center.contains(hotbarCache.root)) {
       return hotbarCache;
     }
 
-    let container = bottom.querySelector("#hud-hotbar");
+    let container = center.querySelector("#hud-hotbar");
     if (!container) {
       container = document.createElement("div");
       container.id = "hud-hotbar";
-      bottom.appendChild(container);
+      center.appendChild(container);
     } else {
       container.innerHTML = "";
     }
@@ -419,7 +419,7 @@
     container.style.display = "grid";
     container.style.gridTemplateColumns = "repeat(9, minmax(0, 1fr))";
     container.style.gap = "0.35rem";
-    container.style.marginTop = "0.75rem";
+    container.style.marginTop = "0";
     container.style.pointerEvents = "auto";
     container.style.userSelect = "none";
 
@@ -511,28 +511,29 @@
       #hud .hud-status-tray {
         display: flex;
         flex-direction: column;
-        gap: 0.55rem;
-        margin-top: 0.6rem;
+        gap: 0.45rem;
+        margin-top: 0.4rem;
         pointer-events: auto;
+        width: 100%;
       }
       #hud .hud-grudge-widget {
         display: flex;
         flex-direction: column;
-        gap: 0.4rem;
-        background: rgba(12, 22, 36, 0.7);
-        border: 1px solid rgba(120, 220, 255, 0.18);
-        border-radius: 10px;
+        gap: 0.35rem;
+        background: rgba(16, 24, 40, 0.78);
+        border: 1px solid rgba(152, 120, 255, 0.35);
+        border-radius: 12px;
         padding: 0.55rem 0.65rem;
         box-shadow: 0 4px 18px rgba(6, 12, 20, 0.28);
-        min-width: 200px;
+        width: 100%;
       }
       #hud .hud-grudge-widget.full {
-        border-color: rgba(255, 148, 92, 0.65);
-        box-shadow: 0 6px 22px rgba(255, 92, 54, 0.25);
+        border-color: rgba(210, 140, 255, 0.65);
+        box-shadow: 0 6px 24px rgba(165, 92, 255, 0.25);
       }
       #hud .hud-grudge-widget.cursed {
-        border-color: rgba(255, 96, 160, 0.55);
-        box-shadow: 0 6px 24px rgba(255, 70, 160, 0.28);
+        border-color: rgba(255, 112, 192, 0.6);
+        box-shadow: 0 6px 24px rgba(255, 92, 184, 0.28);
       }
       #hud .hud-grudge-header {
         display: flex;
@@ -551,8 +552,8 @@
       #hud .hud-grudge-bar {
         position: relative;
         width: 100%;
-        height: 10px;
-        border-radius: 6px;
+        height: 12px;
+        border-radius: 999px;
         background: rgba(255,255,255,0.12);
         overflow: hidden;
       }
@@ -560,14 +561,15 @@
         position: absolute;
         inset: 0;
         width: 0%;
-        background: linear-gradient(90deg, rgba(110, 210, 255, 0.85), rgba(252, 108, 152, 0.85));
+        background: linear-gradient(90deg, #8f6bff, #d35aff);
         transition: width 140ms ease;
       }
       #hud .hud-grudge-footer {
         display: flex;
+        flex-wrap: wrap;
         align-items: center;
         justify-content: space-between;
-        gap: 0.5rem;
+        gap: 0.4rem;
         font-size: 0.76rem;
       }
       #hud .hud-grudge-curse {
@@ -576,13 +578,13 @@
         gap: 0.3rem;
         padding: 0.1rem 0.35rem;
         border-radius: 999px;
-        background: rgba(255, 108, 168, 0.18);
-        border: 1px solid rgba(255, 108, 168, 0.4);
+        background: rgba(255, 132, 210, 0.22);
+        border: 1px solid rgba(255, 132, 210, 0.45);
       }
       #hud .hud-grudge-quest {
         display: none;
         font-size: 0.7rem;
-        opacity: 0.8;
+        opacity: 0.82;
       }
       #hud .hud-grudge-widget.cursed .hud-grudge-curse {
         display: inline-flex;
@@ -593,9 +595,9 @@
       #hud .hud-grudge-action {
         padding: 0.25rem 0.6rem;
         border-radius: 6px;
-        border: 1px solid rgba(120, 220, 255, 0.4);
-        background: rgba(18, 40, 62, 0.6);
-        color: #d8f5ff;
+        border: 1px solid rgba(164, 132, 255, 0.55);
+        background: rgba(28, 32, 60, 0.7);
+        color: #e6d9ff;
         font-size: 0.72rem;
         letter-spacing: 0.04em;
         text-transform: uppercase;
@@ -616,7 +618,7 @@
   }
 
   function ensureStatusTray() {
-    const root = document.getElementById("hud-nen") || ensureHudRoot();
+    const root = document.querySelector?.("#hud .hud-right") || ensureHudRoot();
     if (!root) return null;
     ensureStatusStyles();
     if (statusTrayCache && statusTrayCache.isConnected && root.contains(statusTrayCache)) {
@@ -808,23 +810,23 @@
   }
 
   function ensureControlDock() {
-    const bottom = document.getElementById("hud-bottom");
-    if (!bottom) return null;
-    if (controlDockCache?.root?.isConnected && bottom.contains(controlDockCache.root)) {
+    const left = document.getElementById("hud-bottom-left");
+    if (!left) return null;
+    if (controlDockCache?.root?.isConnected && left.contains(controlDockCache.root)) {
       return controlDockCache;
     }
-    let dock = bottom.querySelector?.("#hud-control-dock") || null;
+    let dock = left.querySelector?.("#hud-control-dock") || null;
     if (!dock) {
       dock = document.createElement("div");
       dock.id = "hud-control-dock";
-      bottom.appendChild(dock);
+      left.appendChild(dock);
     } else {
       dock.innerHTML = "";
     }
     dock.style.display = "flex";
     dock.style.gap = "0.4rem";
     dock.style.flexWrap = "wrap";
-    dock.style.marginTop = "0.45rem";
+    dock.style.justifyContent = "flex-end";
     dock.style.pointerEvents = "auto";
     dock.style.alignItems = "stretch";
 
