@@ -72,9 +72,112 @@ const DEF = {
     outlinedMesh.outlineColor = BABYLON.Color3.FromHexString("#ff4d6d"); // red
   }
 
-  // Animation store
-  const K = { length: 2.0, fps: 30, tracks: {} }; // tracks[part][channel] = [{t,v:{x,y,z},ease}]
-  function trackOf(part,ch){ if(!K.tracks[part]) K.tracks[part]={}; if(!K.tracks[part][ch]) K.tracks[part][ch]=[]; return K.tracks[part][ch]; }
+  // Animation store (shared via RigDefinitions.AnimationStore)
+  const AnimationStore = window.RigDefinitions && window.RigDefinitions.AnimationStore;
+  if (!AnimationStore) {
+    throw new Error("RigDefinitions.AnimationStore is required for the rig editor");
+  }
+
+  if (AnimationStore.listAnimations().length === 0) {
+    AnimationStore.createAnimation("Base", 30, [0, 30]);
+  }
+  if (typeof AnimationStore.getActive === "function" && !AnimationStore.getActive()) {
+    const first = AnimationStore.listAnimations()[0];
+    if (first && typeof AnimationStore.setActive === "function") {
+      AnimationStore.setActive(first);
+    }
+  }
+
+  const CHANNEL_ALIAS = {
+    pos: "position",
+    position: "position",
+    rot: "rotation",
+    rotation: "rotation",
+    scl: "scale",
+    scale: "scale"
+  };
+
+  function normalizeChannel(channel) {
+    const key = CHANNEL_ALIAS[channel];
+    if (!key) throw new Error(`Unknown channel '${channel}'`);
+    return key;
+  }
+
+  function currentAnimation() {
+    if (typeof AnimationStore.getActive === "function") {
+      const active = AnimationStore.getActive();
+      if (active) return active;
+    }
+    const activeName = typeof AnimationStore.getActiveName === "function" ? AnimationStore.getActiveName() : null;
+    if (activeName) return AnimationStore.getAnimation(activeName);
+    const first = AnimationStore.listAnimations()[0];
+    return first ? AnimationStore.getAnimation(first) : null;
+  }
+
+  function ensureAnimation() {
+    let anim = currentAnimation();
+    if (!anim) {
+      anim = AnimationStore.createAnimation("Base", 30, [0, 30]);
+      if (typeof AnimationStore.setActive === "function") {
+        AnimationStore.setActive(anim.name || "Base");
+      }
+    }
+    anim.joints = anim.joints || {};
+    anim.range = anim.range || { start: 0, end: anim.fps || 30 };
+    return anim;
+  }
+
+  function currentRange() {
+    const anim = ensureAnimation();
+    if (typeof anim.range.start !== "number") anim.range.start = Number(anim.range.start) || 0;
+    if (typeof anim.range.end !== "number") anim.range.end = Number(anim.range.end) || (anim.range.start + (anim.fps || 30));
+    if (anim.range.end <= anim.range.start) {
+      anim.range.end = anim.range.start + (anim.fps || 30);
+    }
+    return anim.range;
+  }
+
+  function currentFps() {
+    const anim = ensureAnimation();
+    const fps = Number(anim.fps);
+    anim.fps = (!Number.isFinite(fps) || fps <= 0) ? 30 : Math.max(1, Math.min(480, fps));
+    return anim.fps;
+  }
+
+  function totalFrames() {
+    const range = currentRange();
+    return Math.max(1, range.end - range.start);
+  }
+
+  function secondsToFrame(seconds) {
+    const range = currentRange();
+    return range.start + seconds * currentFps();
+  }
+
+  function frameToSeconds(frame) {
+    const range = currentRange();
+    return (frame - range.start) / currentFps();
+  }
+
+  function currentLengthSeconds() {
+    return totalFrames() / currentFps();
+  }
+
+  function trackOf(part, ch) {
+    const anim = ensureAnimation();
+    const channel = normalizeChannel(ch);
+    if (!anim.joints[part]) {
+      anim.joints[part] = {
+        position: [],
+        rotation: [],
+        scale: []
+      };
+    }
+    if (!Array.isArray(anim.joints[part][channel])) {
+      anim.joints[part][channel] = [];
+    }
+    return anim.joints[part][channel];
+  }
 
 
   // Prefer shared rig part keys if provided by the game
@@ -172,12 +275,31 @@ const DEF = {
       partSel.appendChild(opt);
     });
 
-    function syncLen(){ tSlider.max=String(K.length); lenEl.value=String(K.length); }
-    lenEl.oninput = ()=>{ K.length = Math.max(0.25, Math.min(20, Number(lenEl.value)||2)); syncLen(); drawTimeline(); };
-    fpsEl.oninput = ()=>{ K.fps = Math.max(6, Math.min(120, Number(fpsEl.value)||30)); };
+    function syncLen(){
+      const len = currentLengthSeconds();
+      tSlider.max = String(len);
+      lenEl.value = String(len);
+      fpsEl.value = String(currentFps());
+    }
+    lenEl.oninput = ()=>{
+      const fps = currentFps();
+      const seconds = Math.max(0.25, Math.min(60, Number(lenEl.value) || 2));
+      const range = currentRange();
+      range.end = range.start + Math.max(1, seconds * fps);
+      syncLen();
+      drawTimeline();
+    };
+    fpsEl.oninput = ()=>{
+      const anim = ensureAnimation();
+      const fps = Math.max(6, Math.min(120, Number(fpsEl.value) || 30));
+      anim.fps = fps;
+      syncLen();
+      drawTimeline();
+    };
 
     function setTime(t){
-      t = Math.max(0, Math.min(K.length, t));
+      const len = currentLengthSeconds();
+      t = Math.max(0, Math.min(len, t));
       tSlider.value = String(t);
       tOut.textContent = `${Number(t).toFixed(3)}s`;
       applyAtTime(t);
@@ -191,20 +313,18 @@ const DEF = {
       const part = partSel.value, ch = chSel.value;
       const t = Number(tSlider.value)||0;
       const cur = currentTRSAt(part,ch);
-      const keys = trackOf(part,ch);
-      const i = keys.findIndex(k=> Math.abs(k.t - t) < (1/Math.max(24,K.fps)));
-      if (i>=0) keys.splice(i,1);
-      keys.push({ t, v: cur, ease: easeSel.value||"linear" });
-      keys.sort((a,b)=>a.t-b.t);
+      const frame = secondsToFrame(t);
+      AnimationStore.addKey(part, ch, frame, cur, { ease: easeSel.value || "linear", tolerance: 0.5 });
       drawTimeline();
     };
 
     delBtn.onclick = ()=>{
       const part = partSel.value, ch = chSel.value;
       const t = Number(tSlider.value)||0;
-      const keys = trackOf(part,ch);
-      const i = keys.findIndex(k=> Math.abs(k.t - t) < (1/Math.max(24,K.fps)));
-      if (i>=0){ keys.splice(i,1); drawTimeline(); }
+      const frame = secondsToFrame(t);
+      if (AnimationStore.removeKey(part, ch, frame, { tolerance: 0.5 })){
+        drawTimeline();
+      }
     };
 
     function drawTimeline(){
@@ -214,20 +334,30 @@ const DEF = {
       keys.forEach((k, idx)=>{
         const el=document.createElement("div");
         el.className="kf";
-        el.style.left = `${(k.t/K.length)*100}%`;
-        el.title=`${k.t.toFixed(3)}s`;
+        let frames = totalFrames();
+        let range = currentRange();
+        const pct = frames > 0 ? ((k.frame - range.start) / frames) * 100 : 0;
+        el.style.left = `${Math.max(0, Math.min(100, pct))}%`;
+        el.title=`Frame ${k.frame.toFixed(2)} (${frameToSeconds(k.frame).toFixed(3)}s)`;
         el.dataset.idx=String(idx);
         let dragging=false;
+        let startFrame = k.frame;
         el.onpointerdown=(e)=>{ dragging=true; el.setPointerCapture(e.pointerId); el.classList.add("active"); };
         el.onpointermove=(e)=>{
           if (!dragging) return;
           const rect=tl.getBoundingClientRect();
-          const t = Math.max(0, Math.min(K.length, ((e.clientX-rect.left)/rect.width)*K.length));
-          k.t = t; setTime(t);
-          el.style.left = `${(k.t/K.length)*100}%`;
+          const len = currentLengthSeconds();
+          const t = Math.max(0, Math.min(len, ((e.clientX-rect.left)/rect.width)*len));
+          const newFrame = secondsToFrame(t);
+          AnimationStore.moveKey(partSel.value, chSel.value, startFrame, newFrame, { tolerance: 0.5 });
+          startFrame = newFrame;
+          frames = totalFrames();
+          range = currentRange();
+          el.style.left = `${Math.max(0, Math.min(100, ((newFrame - range.start)/frames)*100))}%`;
+          setTime(t);
         };
-        el.onpointerup=(e)=>{ dragging=false; el.releasePointerCapture(e.pointerId); el.classList.remove("active"); keys.sort((a,b)=>a.t-b.t); };
-        el.onclick=()=> setTime(k.t);
+        el.onpointerup=(e)=>{ dragging=false; el.releasePointerCapture(e.pointerId); el.classList.remove("active"); drawTimeline(); };
+        el.onclick=()=> setTime(frameToSeconds(k.frame));
         row.appendChild(el);
       });
     }
@@ -246,14 +376,15 @@ const DEF = {
     function sampleChannel(part,ch,t){
       const keys=trackOf(part,ch);
       if(!keys.length) return null;
-      if(t<=keys[0].t) return keys[0].v;
-      if(t>=keys[keys.length-1].t) return keys[keys.length-1].v;
+      const frame = secondsToFrame(t);
+      if(frame<=keys[0].frame) return keys[0].value;
+      if(frame>=keys[keys.length-1].frame) return keys[keys.length-1].value;
       let a=0,b=1;
-      for(let i=1;i<keys.length;i++){ if(t<=keys[i].t){ b=i; a=i-1; break; } }
+      for(let i=1;i<keys.length;i++){ if(frame<=keys[i].frame){ b=i; a=i-1; break; } }
       const ka=keys[a], kb=keys[b];
-      const u=(t-ka.t)/Math.max(1e-6,(kb.t-ka.t));
+      const u=(frame-ka.frame)/Math.max(1e-6,(kb.frame-ka.frame));
       const w=ease(u,kb.ease||"linear");
-      return { x:lerp(ka.v.x,kb.v.x,w), y:lerp(ka.v.y,kb.v.y,w), z:lerp(ka.v.z,kb.v.z,w) };
+      return { x:lerp(ka.value.x,kb.value.x,w), y:lerp(ka.value.y,kb.value.y,w), z:lerp(ka.value.z,kb.value.z,w) };
     }
 
     function applyAtTime(t){
@@ -272,7 +403,10 @@ const DEF = {
       if(!anim.playing) return;
       const dt = engine.getDeltaTime()/1000;
       let t = Number(tSlider.value)||0;
-      t += dt; if(t>K.length) t=0; setTime(t);
+      t += dt;
+      const len = currentLengthSeconds();
+      if(t>len) t=0;
+      setTime(t);
     });
 
     syncLen(); setTime(0); drawTimeline();
