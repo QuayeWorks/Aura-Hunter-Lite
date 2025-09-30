@@ -8513,6 +8513,7 @@
          }
       }
       window.HUD?.refreshCosmeticTester?.(getCosmeticSelection());
+      window.CharacterCreator?.refresh?.();
    }
 
    function applyCosmeticsToPlayer() {
@@ -10099,6 +10100,7 @@ try {
          menu?.classList.add("visible");
          window.MenuBG?.start();
       }
+      window.CharacterCreator?.close?.();
    }
 
    form.addEventListener("submit", (e) => {
@@ -10170,10 +10172,11 @@ try {
 		alert('Could not find the character creation screen (screen--creator).');
 		return;
 	  }
-	  create.classList.add("visible");
+          create.classList.add("visible");
 
-	  // wire the creator UI
-	  window.CharacterUI?.boot?.();
+          // initialize the 3D creator preview + UI
+          window.CharacterCreator?.open?.();
+          window.CharacterUI?.boot?.();
 	});
 
 

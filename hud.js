@@ -3522,3 +3522,1279 @@
     }
   }
 })();
+// === Character creator preview & selectors ===
+(() => {
+  const SCREEN_ID = "screen--creator";
+  const CANVAS_ID = "creator-preview-canvas";
+  const DEG2RAD = Math.PI / 180;
+  const FALLBACK_PART_KEYS = [
+    "pelvis","torsoLower","torsoUpper","neck","head",
+    "shoulderL","armL_upper","armL_fore","armL_hand",
+    "shoulderR","armR_upper","armR_fore","armR_hand",
+    "hipL","legL_thigh","legL_shin","legL_foot",
+    "hipR","legR_thigh","legR_shin","legR_foot"
+  ];
+
+  function t0() {
+    return { pos: { x: 0, y: 0, z: 0 }, rot: { x: 0, y: 0, z: 0 } };
+  }
+
+  const FALLBACK_RIG = {
+    color: "#804a00",
+    pelvis: { w: 0.850, h: 0.350, d: 0.520 },
+    torsoLower: { w: 0.900, h: 0.450, d: 0.550 },
+    torsoUpper: { w: 0.950, h: 0.710, d: 0.550 },
+    neck: { w: 0.250, h: 0.250, d: 0.250 },
+    head: { w: 0.450, h: 0.500, d: 0.450 },
+    arm: {
+      upperW: 0.340, upperD: 0.340, upperLen: 0.750,
+      foreW: 0.300, foreD: 0.270, foreLen: 0.700,
+      handLen: 0.250
+    },
+    leg: {
+      thighW: 0.450, thighD: 0.500, thighLen: 1.050,
+      shinW: 0.330, shinD: 0.430, shinLen: 0.880,
+      footW: 0.320, footH: 0.210, footLen: 0.750
+    },
+    transforms: {
+      pelvis: { ...t0(), pos: { x: 0.000, y: 1.190, z: 0.000 } },
+      torsoLower: { ...t0(), pos: { x: 0.000, y: 0.450, z: 0.000 } },
+      torsoUpper: { ...t0(), pos: { x: 0.000, y: 0.710, z: 0.000 } },
+      neck: { ...t0(), pos: { x: 0.000, y: 0.250, z: 0.000 } },
+      head: t0(),
+      shoulderL: { ...t0(), pos: { x: -0.650, y: 0.000, z: 0.000 }, rot: { x: 0, y: 180, z: 0 } },
+      armL_upper: t0(),
+      armL_fore: { ...t0(), pos: { x: 0.000, y: -0.750, z: 0.000 } },
+      armL_hand: { ...t0(), pos: { x: 0.000, y: -0.710, z: 0.000 } },
+      shoulderR: { ...t0(), pos: { x: 0.650, y: 0.000, z: 0.000 }, rot: { x: 0, y: 180, z: 0 } },
+      armR_upper: t0(),
+      armR_fore: { ...t0(), pos: { x: 0.000, y: -0.750, z: 0.000 } },
+      armR_hand: { ...t0(), pos: { x: 0.000, y: -0.710, z: 0.000 } },
+      hipL: { ...t0(), pos: { x: -0.250, y: -0.350, z: 0.000 } },
+      legL_thigh: t0(),
+      legL_shin: { ...t0(), pos: { x: 0.000, y: -1.050, z: 0.000 } },
+      legL_foot: { ...t0(), pos: { x: 0.000, y: -0.880, z: -0.210 } },
+      hipR: { ...t0(), pos: { x: 0.250, y: -0.350, z: 0.000 } },
+      legR_thigh: t0(),
+      legR_shin: { ...t0(), pos: { x: 0.000, y: -1.050, z: 0.000 } },
+      legR_foot: { ...t0(), pos: { x: 0.000, y: -0.880, z: -0.210 } }
+    }
+  };
+
+  const state = {
+    dom: null,
+    engine: null,
+    scene: null,
+    camera: null,
+    renderFn: null,
+    running: false,
+    resizeObserver: null,
+    resizeHandler: null,
+    configKey: null,
+    config: null,
+    specMaps: null,
+    baseSelection: null,
+    selection: null,
+    preview: null,
+    observer: null,
+    listenersBound: false,
+    accessoryInputs: []
+  };
+
+  function deepClone(value) {
+    if (value == null || typeof value !== "object") return value;
+    if (typeof structuredClone === "function") {
+      try { return structuredClone(value); } catch (err) {}
+    }
+    try { return JSON.parse(JSON.stringify(value)); } catch (err) {}
+    if (Array.isArray(value)) return value.slice();
+    return { ...value };
+  }
+
+  function colorFromHex(hex, fallback = "#ffffff") {
+    try {
+      if (typeof hex === "string" && /^#/u.test(hex)) {
+        return BABYLON.Color3.FromHexString(hex);
+      }
+    } catch (err) {}
+    try { return BABYLON.Color3.FromHexString(fallback); } catch (err) {}
+    return BABYLON.Color3.White();
+  }
+
+  function mergeSelection(base, override) {
+    const result = deepClone(base);
+    if (!override || typeof override !== "object") return result;
+    if (typeof override.face === "string") result.face = override.face;
+    if (typeof override.hair === "string") result.hair = override.hair;
+    if (override.outfit && typeof override.outfit === "object") {
+      result.outfit = { ...result.outfit };
+      if (Object.prototype.hasOwnProperty.call(override.outfit, "top")) {
+        result.outfit.top = override.outfit.top;
+      }
+      if (Object.prototype.hasOwnProperty.call(override.outfit, "bottom")) {
+        result.outfit.bottom = override.outfit.bottom;
+      }
+      if (Object.prototype.hasOwnProperty.call(override.outfit, "full")) {
+        result.outfit.full = override.outfit.full;
+      }
+    }
+    if (typeof override.shoes === "string") result.shoes = override.shoes;
+    if (Array.isArray(override.accessories)) result.accessories = override.accessories.slice();
+    return result;
+  }
+
+  function getCosmeticConfig() {
+    const hx = window.HXH;
+    if (hx && typeof hx.getAvailableCosmetics === "function") {
+      try {
+        const cfg = hx.getAvailableCosmetics();
+        if (cfg && typeof cfg === "object") return deepClone(cfg);
+      } catch (err) {}
+    }
+    const defs = window.RigDefinitions;
+    if (defs && defs.COSMETICS) return deepClone(defs.COSMETICS);
+    return {
+      faces: [],
+      hair: [],
+      outfits: { top: {}, bottom: {}, full: {} },
+      shoes: {},
+      accessories: {}
+    };
+  }
+
+  function buildSpecMaps(config) {
+    const faces = Array.isArray(config.faces)
+      ? config.faces.filter(spec => spec && typeof spec.id === "string")
+      : [];
+    const hair = Array.isArray(config.hair)
+      ? config.hair.filter(spec => spec && typeof spec.id === "string")
+      : [];
+
+    const topEntries = Object.entries(config?.outfits?.top || {});
+    const bottomEntries = Object.entries(config?.outfits?.bottom || {});
+    const fullEntries = Object.entries(config?.outfits?.full || {});
+
+    const topSpecs = topEntries.map(([key, spec]) => ({ ...(spec || {}), id: spec?.id || key }));
+    const bottomSpecs = bottomEntries.map(([key, spec]) => ({ ...(spec || {}), id: spec?.id || key }));
+    const fullSpecs = fullEntries.map(([key, spec]) => ({ ...(spec || {}), id: spec?.id || key }));
+
+    const shoeEntries = Object.entries(config?.shoes || {});
+    const shoeSpecs = shoeEntries.map(([key, spec]) => ({ ...(spec || {}), id: spec?.id || key }));
+
+    const accessoryEntries = Object.entries(config?.accessories || {});
+    const accessorySpecs = accessoryEntries.map(([key, spec]) => ({ ...(spec || {}), id: spec?.id || key }));
+
+    const faceMap = new Map(faces.map(spec => [spec.id, spec]));
+    const hairMap = new Map(hair.map(spec => [spec.id, spec]));
+
+    const topMap = new Map(topSpecs.map(spec => [spec.id, spec]));
+    const bottomMap = new Map(bottomSpecs.map(spec => [spec.id, spec]));
+    const fullMap = new Map(fullSpecs.map(spec => [spec.id, spec]));
+    const shoeMap = new Map(shoeSpecs.map(spec => [spec.id, spec]));
+    const accessoryMap = new Map(accessorySpecs.map(spec => [spec.id, spec]));
+
+    const defaults = {
+      face: faces[0]?.id || "",
+      hair: hair[0]?.id || "",
+      top: topSpecs[0]?.id || "",
+      bottom: bottomSpecs[0]?.id || "",
+      full: fullSpecs[0]?.id ?? null,
+      shoes: shoeSpecs[0]?.id || ""
+    };
+
+    return {
+      faces,
+      hair,
+      topSpecs,
+      bottomSpecs,
+      fullSpecs,
+      shoeSpecs,
+      accessorySpecs,
+      faceMap,
+      hairMap,
+      topMap,
+      bottomMap,
+      fullMap,
+      shoeMap,
+      accessoryMap,
+      defaults
+    };
+  }
+
+  function normalizeOutfit(next, base, specMaps) {
+    const current = {
+      top: typeof base?.top === "string" && base.top ? base.top : specMaps.defaults.top,
+      bottom: typeof base?.bottom === "string" && base.bottom ? base.bottom : specMaps.defaults.bottom,
+      full: base?.full != null ? base.full : specMaps.defaults.full
+    };
+    if (!next || typeof next !== "object") return current;
+    if (Object.prototype.hasOwnProperty.call(next, "full")) {
+      if (next.full === null) {
+        current.full = null;
+      } else if (typeof next.full === "string" && specMaps.fullMap.has(next.full)) {
+        current.full = next.full;
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(next, "top")) {
+      if (typeof next.top === "string" && specMaps.topMap.has(next.top)) {
+        current.top = next.top;
+      }
+      if (next.full === undefined) current.full = null;
+    }
+    if (Object.prototype.hasOwnProperty.call(next, "bottom")) {
+      if (typeof next.bottom === "string" && specMaps.bottomMap.has(next.bottom)) {
+        current.bottom = next.bottom;
+      }
+      if (next.full === undefined) current.full = null;
+    }
+    return current;
+  }
+
+  function normalizeAccessories(ids, specMaps) {
+    if (!Array.isArray(ids) || !ids.length) return [];
+    const unique = [];
+    const seen = new Set();
+    for (const raw of ids) {
+      if (typeof raw !== "string") continue;
+      const id = raw.trim();
+      if (!id || seen.has(id) || !specMaps.accessoryMap.has(id)) continue;
+      seen.add(id);
+      unique.push(id);
+    }
+    unique.sort();
+    return unique;
+  }
+
+  function normalizeSelection(value, baseSelection, specMaps) {
+    const base = deepClone(baseSelection);
+    if (!value || typeof value !== "object") {
+      base.accessories = normalizeAccessories(base.accessories, specMaps);
+      base.outfit = normalizeOutfit(base.outfit, base.outfit, specMaps);
+      return base;
+    }
+    if (typeof value.face === "string" && specMaps.faceMap.has(value.face)) {
+      base.face = value.face;
+    }
+    if (typeof value.hair === "string" && specMaps.hairMap.has(value.hair)) {
+      base.hair = value.hair;
+    }
+    base.outfit = normalizeOutfit(value.outfit, base.outfit, specMaps);
+    if (typeof value.shoes === "string" && specMaps.shoeMap.has(value.shoes)) {
+      base.shoes = value.shoes;
+    }
+    base.accessories = normalizeAccessories(value.accessories, specMaps);
+    return base;
+  }
+
+  function buildDefaultSelection(specMaps) {
+    const fallback = {
+      face: specMaps.defaults.face,
+      hair: specMaps.defaults.hair,
+      outfit: {
+        top: specMaps.defaults.top,
+        bottom: specMaps.defaults.bottom,
+        full: specMaps.defaults.full
+      },
+      shoes: specMaps.defaults.shoes,
+      accessories: []
+    };
+    const defs = window.RigDefinitions;
+    if (defs && defs.DEFAULT_COSMETICS) {
+      return normalizeSelection(defs.DEFAULT_COSMETICS, fallback, specMaps);
+    }
+    return fallback;
+  }
+
+  function ensureDom() {
+    if (state.dom) return state.dom;
+    const screen = document.getElementById(SCREEN_ID);
+    const canvas = document.getElementById(CANVAS_ID);
+    if (!screen || !canvas) return null;
+    const selectors = {
+      face: document.getElementById("creator-face"),
+      hair: document.getElementById("creator-hair"),
+      outfitSet: document.getElementById("creator-outfit-set"),
+      top: document.getElementById("creator-outfit-top"),
+      bottom: document.getElementById("creator-outfit-bottom"),
+      shoes: document.getElementById("creator-shoes")
+    };
+    const accessories = document.getElementById("creator-accessories");
+    state.dom = { screen, canvas, selectors, accessories };
+
+    if (!state.observer && typeof MutationObserver !== "undefined") {
+      const observer = new MutationObserver(() => {
+        if (!screen.classList.contains("visible")) {
+          close();
+        }
+      });
+      observer.observe(screen, { attributes: true, attributeFilter: ["class"] });
+      state.observer = observer;
+    }
+
+    const form = document.getElementById("creator-form");
+    form?.addEventListener("submit", () => {
+      setTimeout(close, 0);
+    });
+    const cancel = document.getElementById("btn-cancel");
+    cancel?.addEventListener("click", () => {
+      setTimeout(close, 0);
+    });
+
+    return state.dom;
+  }
+
+  function ensureConfig() {
+    const dom = ensureDom();
+    if (!dom) return;
+    const config = getCosmeticConfig();
+    const key = JSON.stringify(config);
+    if (state.configKey === key && state.specMaps) return;
+    state.configKey = key;
+    state.config = config;
+    state.specMaps = buildSpecMaps(config);
+    state.baseSelection = buildDefaultSelection(state.specMaps);
+    state.selection = null;
+    if (state.preview) {
+      try { state.preview.dispose?.(); } catch (err) {}
+      state.preview = null;
+    }
+    populateSelectors();
+  }
+
+  function populateSelectors() {
+    const dom = state.dom;
+    if (!dom || !state.specMaps) return;
+    const { selectors, accessories } = dom;
+    const maps = state.specMaps;
+
+    function fillSelect(select, specs, { allowEmpty = false, emptyLabel = "None" } = {}) {
+      if (!select) return;
+      select.innerHTML = "";
+      if (!specs.length) {
+        if (allowEmpty) {
+          const opt = document.createElement("option");
+          opt.value = "";
+          opt.textContent = emptyLabel;
+          select.appendChild(opt);
+        }
+        select.disabled = true;
+        return;
+      }
+      specs.forEach(spec => {
+        const opt = document.createElement("option");
+        opt.value = spec.id;
+        opt.textContent = spec.label || spec.id;
+        select.appendChild(opt);
+      });
+      select.disabled = false;
+    }
+
+    fillSelect(selectors.face, maps.faces, { allowEmpty: true, emptyLabel: "Default" });
+    fillSelect(selectors.hair, maps.hair, { allowEmpty: true, emptyLabel: "Default" });
+    fillSelect(selectors.top, maps.topSpecs, { allowEmpty: true, emptyLabel: maps.topSpecs.length ? "Select" : "" });
+    fillSelect(selectors.bottom, maps.bottomSpecs, { allowEmpty: true, emptyLabel: maps.bottomSpecs.length ? "Select" : "" });
+    fillSelect(selectors.shoes, maps.shoeSpecs, { allowEmpty: true, emptyLabel: "Default" });
+
+    if (selectors.outfitSet) {
+      selectors.outfitSet.innerHTML = "";
+      const custom = document.createElement("option");
+      custom.value = "custom";
+      custom.textContent = maps.fullSpecs.length ? "Custom Mix" : "Custom";
+      selectors.outfitSet.appendChild(custom);
+      maps.fullSpecs.forEach(spec => {
+        const opt = document.createElement("option");
+        opt.value = spec.id;
+        opt.textContent = spec.label || spec.id;
+        selectors.outfitSet.appendChild(opt);
+      });
+      selectors.outfitSet.disabled = maps.fullSpecs.length === 0;
+    }
+
+    if (accessories) {
+      accessories.innerHTML = "";
+      state.accessoryInputs = [];
+      if (!maps.accessorySpecs.length) {
+        const msg = document.createElement("span");
+        msg.className = "small";
+        msg.textContent = "No accessories available.";
+        accessories.appendChild(msg);
+      } else {
+        maps.accessorySpecs.forEach(spec => {
+          const label = document.createElement("label");
+          const input = document.createElement("input");
+          input.type = "checkbox";
+          input.value = spec.id;
+          const span = document.createElement("span");
+          span.textContent = spec.label || spec.id;
+          label.appendChild(input);
+          label.appendChild(span);
+          accessories.appendChild(label);
+          state.accessoryInputs.push({ input, label, spec });
+        });
+      }
+    }
+
+    state.listenersBound = false;
+    bindSelectorEvents();
+  }
+
+  function setTopBottomDisabled(disabled) {
+    const { selectors } = state.dom || {};
+    if (!selectors) return;
+    if (selectors.top) selectors.top.disabled = disabled || !selectors.top.options.length;
+    if (selectors.bottom) selectors.bottom.disabled = disabled || !selectors.bottom.options.length;
+  }
+
+  function gatherAccessories() {
+    if (!Array.isArray(state.accessoryInputs)) return [];
+    const active = [];
+    state.accessoryInputs.forEach(({ input }) => {
+      if (input.checked) active.push(input.value);
+    });
+    active.sort();
+    return active;
+  }
+
+  function updateAccessoryUi(ids) {
+    const set = new Set(ids || []);
+    if (!Array.isArray(state.accessoryInputs)) return;
+    state.accessoryInputs.forEach(({ input, label }) => {
+      const active = set.has(input.value);
+      input.checked = active;
+      if (active) {
+        label.classList.add("selected");
+      } else {
+        label.classList.remove("selected");
+      }
+    });
+  }
+
+  function updateSelectors(selection) {
+    const { selectors } = state.dom || {};
+    if (!selectors) return;
+    if (selectors.face) selectors.face.value = selection.face || "";
+    if (selectors.hair) selectors.hair.value = selection.hair || "";
+    const outfit = selection.outfit || {};
+    if (selectors.outfitSet) {
+      selectors.outfitSet.value = outfit.full || "custom";
+      if (!outfit.full) selectors.outfitSet.value = "custom";
+    }
+    setTopBottomDisabled(Boolean(outfit.full));
+    if (selectors.top) selectors.top.value = outfit.top || "";
+    if (selectors.bottom) selectors.bottom.value = outfit.bottom || "";
+    if (selectors.shoes) selectors.shoes.value = selection.shoes || "";
+    updateAccessoryUi(selection.accessories);
+  }
+
+  function bindSelectorEvents() {
+    const dom = state.dom;
+    if (!dom) return;
+    const { selectors } = dom;
+
+    if (!state.listenersBound) {
+      selectors.face?.addEventListener("change", () => {
+        const id = selectors.face.value;
+        let fallback = { face: id };
+        try {
+          const applied = window.HXH?.setFace?.(id);
+          if (typeof applied === "string") fallback.face = applied;
+        } catch (err) {}
+        refreshFromGame({ fallback });
+      });
+
+      selectors.hair?.addEventListener("change", () => {
+        const id = selectors.hair.value;
+        let fallback = { hair: id };
+        try {
+          const applied = window.HXH?.setHair?.(id);
+          if (typeof applied === "string") fallback.hair = applied;
+        } catch (err) {}
+        refreshFromGame({ fallback });
+      });
+
+      selectors.outfitSet?.addEventListener("change", () => {
+        const value = selectors.outfitSet.value;
+        if (value && value !== "custom") {
+          let fallback = { outfit: { full: value } };
+          try {
+            const applied = window.HXH?.setOutfit?.({ full: value });
+            if (applied && typeof applied === "object") fallback = { outfit: applied };
+          } catch (err) {}
+          refreshFromGame({ fallback });
+          setTopBottomDisabled(true);
+        } else {
+          setTopBottomDisabled(false);
+          const topId = selectors.top?.value || "";
+          const bottomId = selectors.bottom?.value || "";
+          let fallback = { outfit: { top: topId, bottom: bottomId, full: null } };
+          try {
+            const applied = window.HXH?.setOutfit?.({ top: topId, bottom: bottomId, full: null });
+            if (applied && typeof applied === "object") fallback = { outfit: applied };
+          } catch (err) {}
+          refreshFromGame({ fallback });
+        }
+      });
+
+      selectors.top?.addEventListener("change", () => {
+        if (selectors.top.disabled) return;
+        const topId = selectors.top.value;
+        const bottomId = selectors.bottom?.value || "";
+        let fallback = { outfit: { top: topId, bottom: bottomId, full: null } };
+        try {
+          const applied = window.HXH?.setOutfit?.({ top: topId, bottom: bottomId, full: null });
+          if (applied && typeof applied === "object") fallback = { outfit: applied };
+        } catch (err) {}
+        refreshFromGame({ fallback });
+      });
+
+      selectors.bottom?.addEventListener("change", () => {
+        if (selectors.bottom.disabled) return;
+        const topId = selectors.top?.value || "";
+        const bottomId = selectors.bottom.value;
+        let fallback = { outfit: { top: topId, bottom: bottomId, full: null } };
+        try {
+          const applied = window.HXH?.setOutfit?.({ top: topId, bottom: bottomId, full: null });
+          if (applied && typeof applied === "object") fallback = { outfit: applied };
+        } catch (err) {}
+        refreshFromGame({ fallback });
+      });
+
+      selectors.shoes?.addEventListener("change", () => {
+        const id = selectors.shoes.value;
+        let fallback = { shoes: id };
+        try {
+          const applied = window.HXH?.setShoes?.(id);
+          if (typeof applied === "string") fallback.shoes = applied;
+        } catch (err) {}
+        refreshFromGame({ fallback });
+      });
+
+      state.listenersBound = true;
+    }
+
+    if (Array.isArray(state.accessoryInputs)) {
+      state.accessoryInputs.forEach(({ input }) => {
+        input.addEventListener("change", handleAccessoryChange);
+      });
+    }
+  }
+
+  function handleAccessoryChange() {
+    const values = gatherAccessories();
+    let fallback = { accessories: values };
+    try {
+      const applied = window.HXH?.setAccessories?.(values);
+      if (Array.isArray(applied)) fallback.accessories = applied.slice();
+    } catch (err) {}
+    refreshFromGame({ fallback });
+  }
+  function getRigSpec() {
+    const hx = window.HXH;
+    try {
+      const rig = hx?.getRig?.();
+      if (rig) return deepClone(rig);
+    } catch (err) {}
+    const defs = window.RigDefinitions;
+    if (defs?.DEFAULT_RIG) {
+      if (typeof defs.deepClone === "function") {
+        try { return defs.deepClone(defs.DEFAULT_RIG); } catch (err) {}
+      }
+      return deepClone(defs.DEFAULT_RIG);
+    }
+    return deepClone(FALLBACK_RIG);
+  }
+
+  const FACE_MATERIAL_CACHE = new Map();
+
+  function createPreviewRig(scene, rig, specMaps, baseSelection, selection) {
+    const root = new BABYLON.TransformNode("creator-root", scene);
+
+    const skinMaterial = new BABYLON.StandardMaterial("creator-skin", scene);
+    skinMaterial.diffuseColor = BABYLON.Color3.FromHexString("#f3c8a8");
+    skinMaterial.specularColor = new BABYLON.Color3(0.1, 0.1, 0.1);
+    skinMaterial.emissiveColor = skinMaterial.diffuseColor.scale(0.18);
+
+    const torso = BABYLON.MeshBuilder.CreateBox("creator-torso", {
+      width: 0.72,
+      height: 1.0,
+      depth: 0.38
+    }, scene);
+    torso.parent = root;
+    torso.position.y = 1.35;
+    torso.isPickable = false;
+
+    const torsoAccent = BABYLON.MeshBuilder.CreateBox("creator-torso-accent", {
+      width: 0.74,
+      height: 0.16,
+      depth: 0.40
+    }, scene);
+    torsoAccent.parent = torso;
+    torsoAccent.position.y = -0.35;
+    torsoAccent.isPickable = false;
+
+    const armL = BABYLON.MeshBuilder.CreateBox("creator-armL", {
+      width: 0.20,
+      height: 0.90,
+      depth: 0.26
+    }, scene);
+    armL.parent = root;
+    armL.position.set(-0.55, 1.35, 0);
+    armL.isPickable = false;
+
+    const armR = armL.clone("creator-armR");
+    armR.parent = root;
+    armR.position.x = 0.55;
+
+    const hipBand = BABYLON.MeshBuilder.CreateBox("creator-hips", {
+      width: 0.78,
+      height: 0.26,
+      depth: 0.36
+    }, scene);
+    hipBand.parent = root;
+    hipBand.position.y = 0.92;
+    hipBand.isPickable = false;
+
+    const thighL = BABYLON.MeshBuilder.CreateBox("creator-thighL", {
+      width: 0.28,
+      height: 0.55,
+      depth: 0.30
+    }, scene);
+    thighL.parent = root;
+    thighL.position.set(-0.2, 0.58, 0);
+    thighL.isPickable = false;
+
+    const thighR = thighL.clone("creator-thighR");
+    thighR.parent = root;
+    thighR.position.x = 0.2;
+
+    const shinL = BABYLON.MeshBuilder.CreateBox("creator-shinL", {
+      width: 0.24,
+      height: 0.52,
+      depth: 0.28
+    }, scene);
+    shinL.parent = root;
+    shinL.position.set(-0.2, 0.18, 0);
+    shinL.isPickable = false;
+
+    const shinR = shinL.clone("creator-shinR");
+    shinR.parent = root;
+    shinR.position.x = 0.2;
+
+    const shoeL = BABYLON.MeshBuilder.CreateBox("creator-shoeL", {
+      width: 0.30,
+      height: 0.20,
+      depth: 0.45
+    }, scene);
+    shoeL.parent = root;
+    shoeL.position.set(-0.2, -0.18, 0.10);
+    shoeL.isPickable = false;
+
+    const shoeR = shoeL.clone("creator-shoeR");
+    shoeR.parent = root;
+    shoeR.position.x = 0.2;
+
+    const neck = BABYLON.MeshBuilder.CreateCylinder("creator-neck", {
+      height: 0.22,
+      diameter: 0.18
+    }, scene);
+    neck.parent = root;
+    neck.position.y = 1.88;
+    neck.isPickable = false;
+    neck.material = skinMaterial;
+
+    const head = BABYLON.MeshBuilder.CreateBox("creator-head", {
+      width: 0.55,
+      height: 0.55,
+      depth: 0.55
+    }, scene);
+    head.parent = root;
+    head.position.y = 2.15;
+    head.isPickable = false;
+    head.material = skinMaterial;
+
+    const facePlane = BABYLON.MeshBuilder.CreatePlane("creator-face", {
+      width: 0.5,
+      height: 0.5
+    }, scene);
+    facePlane.parent = head;
+    facePlane.position.z = 0.29;
+    facePlane.isPickable = false;
+
+    const hairRoot = new BABYLON.TransformNode("creator-hair-root", scene);
+    hairRoot.parent = head;
+    hairRoot.position.y = 0.32;
+
+    const accessoryRoot = new BABYLON.TransformNode("creator-accessory-root", scene);
+    accessoryRoot.parent = head;
+    accessoryRoot.position.y = 0.10;
+
+    const clothingRefs = {
+      torso: [torso, armL, armR],
+      torsoAccent,
+      hips: [hipBand],
+      thighs: [thighL, thighR],
+      shins: [shinL, shinR],
+      shoes: [shoeL, shoeR]
+    };
+
+    const clothMatCache = new Map();
+    const hairMatCache = new Map();
+    const shoeMatCache = new Map();
+    const accessoryMatCache = new Map();
+
+    function clothMat(hex) {
+      const key = hex || "#2d3d8f";
+      if (clothMatCache.has(key)) return clothMatCache.get(key);
+      const color = colorFromHex(key, "#2d3d8f");
+      const mat = new BABYLON.StandardMaterial(`creator-cloth-${key}`, scene);
+      mat.diffuseColor = color;
+      mat.emissiveColor = color.scale(0.22);
+      mat.specularColor = new BABYLON.Color3(0.08, 0.08, 0.08);
+      clothMatCache.set(key, mat);
+      return mat;
+    }
+
+    function hairMat(hex) {
+      const key = hex || "#2f2f38";
+      if (hairMatCache.has(key)) return hairMatCache.get(key);
+      const color = colorFromHex(hex || "#2f2f38", "#2f2f38");
+      const mat = new BABYLON.StandardMaterial(`creator-hair-${key}`, scene);
+      mat.diffuseColor = color;
+      mat.emissiveColor = color.scale(0.25);
+      mat.specularColor = new BABYLON.Color3(0.1, 0.1, 0.1);
+      hairMatCache.set(key, mat);
+      return mat;
+    }
+
+    function shoeMat(spec) {
+      const key = spec?.id || "default";
+      if (shoeMatCache.has(key)) return shoeMatCache.get(key);
+      const base = colorFromHex(spec?.base || "#2f2f38", "#2f2f38");
+      const accent = colorFromHex(spec?.accent || spec?.base || "#585d70", "#585d70");
+      const mat = new BABYLON.StandardMaterial(`creator-shoe-${key}`, scene);
+      mat.diffuseColor = base;
+      mat.emissiveColor = accent.scale(0.25);
+      mat.specularColor = new BABYLON.Color3(0.15, 0.15, 0.15);
+      shoeMatCache.set(key, mat);
+      return mat;
+    }
+
+    function accessoryMat(hex) {
+      const key = hex || "#68c9ff";
+      if (accessoryMatCache.has(key)) return accessoryMatCache.get(key);
+      const color = colorFromHex(hex || "#68c9ff", "#68c9ff");
+      const mat = new BABYLON.StandardMaterial(`creator-acc-${key}`, scene);
+      mat.diffuseColor = color;
+      mat.emissiveColor = color.scale(0.35);
+      mat.specularColor = new BABYLON.Color3(0.2, 0.2, 0.2);
+      accessoryMatCache.set(key, mat);
+      return mat;
+    }
+
+    function ensureFaceMaterial(faceId) {
+      const id = FACE_SPEC_MAP.has(faceId) ? faceId : DEFAULT_FACE_ID;
+      if (FACE_MATERIAL_CACHE.has(id)) return FACE_MATERIAL_CACHE.get(id);
+      const size = 512;
+      const texture = new BABYLON.DynamicTexture(`creator-face-${id}`, { width: size, height: size }, scene, false);
+      const ctx = texture.getContext();
+      ctx.clearRect(0, 0, size, size);
+      ctx.fillStyle = "rgba(0,0,0,0)";
+      ctx.fillRect(0, 0, size, size);
+
+      const eyeColor = "#10121a";
+      const mouthColor = "#1f2230";
+      const accentColor = "#f58a8a";
+      const eyeY = size * 0.42;
+      const eyeSpacing = size * 0.18;
+      const eyeRadius = size * 0.065;
+
+      function drawEye(cx) {
+        ctx.beginPath();
+        ctx.arc(cx, eyeY, eyeRadius, 0, Math.PI * 2);
+        ctx.fillStyle = eyeColor;
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(cx, eyeY, eyeRadius * 0.35, 0, Math.PI * 2);
+        ctx.fillStyle = "#ffffff";
+        ctx.fill();
+      }
+
+      drawEye(size * 0.5 - eyeSpacing);
+      drawEye(size * 0.5 + eyeSpacing);
+
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+
+      switch (id) {
+        case "grin": {
+          ctx.strokeStyle = mouthColor;
+          ctx.lineWidth = size * 0.035;
+          ctx.beginPath();
+          ctx.arc(size * 0.5, size * 0.62, size * 0.18, Math.PI * 0.15, Math.PI - Math.PI * 0.15);
+          ctx.stroke();
+          ctx.fillStyle = accentColor;
+          ctx.globalAlpha = 0.18;
+          ctx.beginPath();
+          ctx.arc(size * 0.5, size * 0.65, size * 0.24, 0, Math.PI);
+          ctx.fill();
+          ctx.globalAlpha = 1;
+          break;
+        }
+        case "focused": {
+          ctx.strokeStyle = mouthColor;
+          ctx.lineWidth = size * 0.025;
+          ctx.beginPath();
+          ctx.moveTo(size * 0.44, size * 0.64);
+          ctx.lineTo(size * 0.56, size * 0.64);
+          ctx.stroke();
+          const browWidth = size * 0.24;
+          const browY = size * 0.36;
+          ctx.lineWidth = size * 0.04;
+          ctx.beginPath();
+          ctx.moveTo(size * 0.5 - browWidth * 0.5, browY + size * 0.02);
+          ctx.lineTo(size * 0.5 - browWidth * 0.15, browY - size * 0.02);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(size * 0.5 + browWidth * 0.5, browY + size * 0.02);
+          ctx.lineTo(size * 0.5 + browWidth * 0.15, browY - size * 0.02);
+          ctx.stroke();
+          break;
+        }
+        default: {
+          ctx.strokeStyle = mouthColor;
+          ctx.lineWidth = size * 0.03;
+          ctx.beginPath();
+          ctx.moveTo(size * 0.42, size * 0.63);
+          ctx.lineTo(size * 0.58, size * 0.63);
+          ctx.stroke();
+        }
+      }
+
+      texture.hasAlpha = true;
+      texture.update();
+
+      const material = new BABYLON.StandardMaterial(`creator-face-mat-${id}`, scene);
+      material.diffuseTexture = texture;
+      material.specularColor = new BABYLON.Color3(0, 0, 0);
+      material.emissiveColor = new BABYLON.Color3(0.08, 0.08, 0.08);
+      FACE_MATERIAL_CACHE.set(id, material);
+      return material;
+    }
+
+    function instantiateHair(spec) {
+      const nodes = [];
+      if (!spec) return nodes;
+      const baseMat = hairMat(spec.primaryColor);
+      const accentMat = hairMat(spec.secondaryColor || spec.primaryColor);
+      switch (spec.id) {
+        case "windswept": {
+          const crown = BABYLON.MeshBuilder.CreateBox("creator-hair-crown", {
+            width: 0.65,
+            height: 0.28,
+            depth: 0.60
+          }, scene);
+          crown.parent = hairRoot;
+          crown.position.y = 0.10;
+          crown.material = baseMat;
+          crown.isPickable = false;
+          nodes.push(crown);
+
+          const fringe = BABYLON.MeshBuilder.CreateBox("creator-hair-fringe", {
+            width: 0.60,
+            height: 0.22,
+            depth: 0.24
+          }, scene);
+          fringe.parent = hairRoot;
+          fringe.position.set(0.05, -0.08, 0.32);
+          fringe.rotation.y = -5 * DEG2RAD;
+          fringe.material = accentMat;
+          fringe.isPickable = false;
+          nodes.push(fringe);
+          break;
+        }
+        case "scout_hat": {
+          const brim = BABYLON.MeshBuilder.CreateCylinder("creator-hat-brim", {
+            diameter: 0.85,
+            height: 0.04
+          }, scene);
+          brim.parent = hairRoot;
+          brim.position.y = 0.05;
+          brim.material = accentMat;
+          brim.isPickable = false;
+          nodes.push(brim);
+
+          const crown = BABYLON.MeshBuilder.CreateCylinder("creator-hat-crown", {
+            diameter: 0.52,
+            height: 0.34
+          }, scene);
+          crown.parent = hairRoot;
+          crown.position.y = 0.30;
+          crown.material = baseMat;
+          crown.isPickable = false;
+          nodes.push(crown);
+          break;
+        }
+        default: {
+          const cap = BABYLON.MeshBuilder.CreateBox("creator-hair-cap", {
+            width: 0.62,
+            height: 0.26,
+            depth: 0.60
+          }, scene);
+          cap.parent = hairRoot;
+          cap.position.y = 0.12;
+          cap.material = baseMat;
+          cap.isPickable = false;
+          nodes.push(cap);
+        }
+      }
+      return nodes;
+    }
+
+    function instantiateAccessory(spec) {
+      const nodes = [];
+      if (!spec) return nodes;
+      switch (spec.id) {
+        case "visor": {
+          const visor = BABYLON.MeshBuilder.CreatePlane("creator-acc-visor", {
+            width: 0.6,
+            height: 0.18
+          }, scene);
+          visor.parent = accessoryRoot;
+          visor.position.set(0, 0.12, 0.38);
+          visor.material = accessoryMat(spec.color);
+          visor.isPickable = false;
+          nodes.push(visor);
+          break;
+        }
+        case "earrings": {
+          const left = BABYLON.MeshBuilder.CreateSphere("creator-acc-earL", { diameter: 0.09 }, scene);
+          left.parent = accessoryRoot;
+          left.position.set(-0.32, -0.02, 0);
+          left.material = accessoryMat(spec.color);
+          left.isPickable = false;
+          nodes.push(left);
+
+          const right = left.clone("creator-acc-earR");
+          right.parent = accessoryRoot;
+          right.position.x = 0.32;
+          nodes.push(right);
+          break;
+        }
+        case "scarf": {
+          const scarf = BABYLON.MeshBuilder.CreateTorus("creator-acc-scarf", {
+            diameter: 0.68,
+            thickness: 0.10
+          }, scene);
+          scarf.parent = neck;
+          scarf.rotation.x = Math.PI / 2;
+          scarf.position.y = -0.08;
+          scarf.material = accessoryMat(spec.color);
+          scarf.isPickable = false;
+          nodes.push(scarf);
+
+          const tail = BABYLON.MeshBuilder.CreateBox("creator-acc-scarf-tail", {
+            width: 0.18,
+            height: 0.40,
+            depth: 0.14
+          }, scene);
+          tail.parent = neck;
+          tail.position.set(-0.18, -0.28, 0.12);
+          tail.rotation.z = 18 * DEG2RAD;
+          tail.material = accessoryMat(spec.accent || spec.color);
+          tail.isPickable = false;
+          nodes.push(tail);
+          break;
+        }
+        default:
+          break;
+      }
+      return nodes;
+    }
+
+    const FACE_SPEC_MAP = new Map(specMaps.faces.map(spec => [spec.id, spec]));
+    const HAIR_SPEC_MAP = new Map(specMaps.hair.map(spec => [spec.id, spec]));
+    const TOP_SPEC_MAP = new Map(specMaps.topSpecs.map(spec => [spec.id, spec]));
+    const BOTTOM_SPEC_MAP = new Map(specMaps.bottomSpecs.map(spec => [spec.id, spec]));
+    const FULL_SPEC_MAP = new Map(specMaps.fullSpecs.map(spec => [spec.id, spec]));
+    const SHOE_SPEC_MAP = new Map(specMaps.shoeSpecs.map(spec => [spec.id, spec]));
+    const ACCESSORY_SPEC_MAP = new Map(specMaps.accessorySpecs.map(spec => [spec.id, spec]));
+
+    const DEFAULT_FACE_ID = specMaps.defaults.face || specMaps.faces[0]?.id || "";
+    const DEFAULT_HAIR_ID = specMaps.defaults.hair || specMaps.hair[0]?.id || "";
+    const DEFAULT_TOP_ID = specMaps.defaults.top || specMaps.topSpecs[0]?.id || "";
+    const DEFAULT_BOTTOM_ID = specMaps.defaults.bottom || specMaps.bottomSpecs[0]?.id || "";
+    const DEFAULT_FULL_ID = specMaps.defaults.full;
+    const DEFAULT_SHOE_ID = specMaps.defaults.shoes || specMaps.shoeSpecs[0]?.id || "";
+
+    const cosmeticState = normalizeSelection(selection, baseSelection, specMaps);
+
+    const hairState = { id: null, nodes: [] };
+    const accessoryState = new Map();
+
+    function applyFace(id) {
+      const target = FACE_SPEC_MAP.has(id) ? id : DEFAULT_FACE_ID;
+      facePlane.material = ensureFaceMaterial(target);
+      cosmeticState.face = target;
+      return cosmeticState.face;
+    }
+
+    function applyHair(id) {
+      const target = HAIR_SPEC_MAP.has(id) ? id : DEFAULT_HAIR_ID;
+      hairState.nodes.forEach(node => { try { node.dispose(); } catch (err) {}; });
+      hairState.nodes = instantiateHair(HAIR_SPEC_MAP.get(target));
+      hairState.id = target;
+      cosmeticState.hair = target;
+      return cosmeticState.hair;
+    }
+
+    function applyTop(id) {
+      const spec = TOP_SPEC_MAP.has(id) ? TOP_SPEC_MAP.get(id) : TOP_SPEC_MAP.get(DEFAULT_TOP_ID);
+      const applied = spec?.id || id || DEFAULT_TOP_ID;
+      const torsoMat = clothMat(spec?.body || "#2d3d8f");
+      const sleeveMat = clothMat(spec?.sleeve || spec?.body || "#2d3d8f");
+      const accentMat = clothMat(spec?.accent || spec?.body || "#2d3d8f");
+      clothingRefs.torso.forEach(mesh => { mesh.material = torsoMat; });
+      clothingRefs.torsoAccent.material = accentMat;
+      armL.material = sleeveMat;
+      armR.material = sleeveMat;
+      return applied;
+    }
+
+    function applyBottom(id) {
+      const spec = BOTTOM_SPEC_MAP.has(id) ? BOTTOM_SPEC_MAP.get(id) : BOTTOM_SPEC_MAP.get(DEFAULT_BOTTOM_ID);
+      const applied = spec?.id || id || DEFAULT_BOTTOM_ID;
+      clothingRefs.hips.forEach(mesh => { mesh.material = clothMat(spec?.hips || "#243244"); });
+      clothingRefs.thighs.forEach(mesh => { mesh.material = clothMat(spec?.thigh || spec?.hips || "#243244"); });
+      clothingRefs.shins.forEach(mesh => { mesh.material = clothMat(spec?.shin || spec?.thigh || spec?.hips || "#243244"); });
+      return applied;
+    }
+
+    function applyShoes(id) {
+      const spec = SHOE_SPEC_MAP.has(id) ? SHOE_SPEC_MAP.get(id) : SHOE_SPEC_MAP.get(DEFAULT_SHOE_ID);
+      const applied = spec?.id || id || DEFAULT_SHOE_ID;
+      const mat = shoeMat(spec || { id: applied });
+      clothingRefs.shoes.forEach(mesh => { mesh.material = mat; });
+      cosmeticState.shoes = applied;
+      return cosmeticState.shoes;
+    }
+
+    function applyAccessories(ids) {
+      const desired = Array.isArray(ids) ? ids.filter(id => ACCESSORY_SPEC_MAP.has(id)) : [];
+      for (const [key, nodes] of accessoryState) {
+        if (!desired.includes(key)) {
+          nodes.forEach(node => { try { node.dispose(); } catch (err) {}; });
+          accessoryState.delete(key);
+        }
+      }
+      const applied = [];
+      desired.forEach(id => {
+        if (!accessoryState.has(id)) {
+          accessoryState.set(id, instantiateAccessory(ACCESSORY_SPEC_MAP.get(id)));
+        }
+        if (accessoryState.has(id)) applied.push(id);
+      });
+      cosmeticState.accessories = applied.slice();
+      return cosmeticState.accessories.slice();
+    }
+
+    function applyOutfit(next) {
+      const normalized = normalizeOutfit(next, cosmeticState.outfit, specMaps);
+      let fullId = normalized.full;
+      if (fullId && !FULL_SPEC_MAP.has(fullId)) {
+        fullId = null;
+      }
+      if (fullId) {
+        const preset = FULL_SPEC_MAP.get(fullId);
+        if (preset?.top && TOP_SPEC_MAP.has(preset.top)) normalized.top = preset.top;
+        if (preset?.bottom && BOTTOM_SPEC_MAP.has(preset.bottom)) normalized.bottom = preset.bottom;
+      }
+      const appliedTop = applyTop(normalized.top);
+      const appliedBottom = applyBottom(normalized.bottom);
+      cosmeticState.outfit = { top: appliedTop, bottom: appliedBottom, full: fullId };
+      return deepClone(cosmeticState.outfit);
+    }
+
+    function applyAll(sel) {
+      const normalized = normalizeSelection(sel, baseSelection, specMaps);
+      applyFace(normalized.face);
+      applyHair(normalized.hair);
+      const outfit = applyOutfit(normalized.outfit);
+      const shoes = applyShoes(normalized.shoes);
+      const accessories = applyAccessories(normalized.accessories);
+      cosmeticState.face = normalized.face;
+      cosmeticState.hair = normalized.hair;
+      cosmeticState.outfit = deepClone(outfit);
+      cosmeticState.shoes = shoes;
+      cosmeticState.accessories = accessories;
+      return {
+        face: cosmeticState.face,
+        hair: cosmeticState.hair,
+        outfit: deepClone(cosmeticState.outfit),
+        shoes: cosmeticState.shoes,
+        accessories: cosmeticState.accessories.slice()
+      };
+    }
+
+    applyAll(selection);
+
+    return {
+      root,
+      cosmetics: {
+        applyAll,
+        applyFace,
+        applyHair,
+        applyOutfit,
+        applyShoes,
+        applyAccessories,
+        getState() {
+          return {
+            face: cosmeticState.face,
+            hair: cosmeticState.hair,
+            outfit: deepClone(cosmeticState.outfit),
+            shoes: cosmeticState.shoes,
+            accessories: cosmeticState.accessories.slice()
+          };
+        }
+      },
+      dispose() {
+        try { root.dispose(); } catch (err) {}
+      }
+    };
+  }
+  function ensureEngine() {
+    const dom = ensureDom();
+    if (!dom || typeof BABYLON === "undefined") return null;
+    if (state.engine) return state.engine;
+    const engine = new BABYLON.Engine(dom.canvas, true, { preserveDrawingBuffer: true, stencil: true });
+    const scene = new BABYLON.Scene(engine);
+    scene.clearColor = new BABYLON.Color4(0.05, 0.08, 0.14, 1);
+    const camera = new BABYLON.ArcRotateCamera("creator-camera", Math.PI / 1.6, 1.2, 6, new BABYLON.Vector3(0, 1.35, 0), scene);
+    camera.attachControl(dom.canvas, true);
+    camera.useNaturalPinchZoom = true;
+    camera.lowerRadiusLimit = 2.2;
+    camera.upperRadiusLimit = 8;
+    camera.lowerBetaLimit = 0.2;
+    camera.upperBetaLimit = Math.PI / 1.45;
+    camera.panningAxis = new BABYLON.Vector3(1, 1, 0);
+    camera.panningSensibility = 1200;
+    camera.wheelPrecision = 50;
+    camera.inputs.attached.pointers.buttons = [0, 1, 2];
+    camera.target = new BABYLON.Vector3(0, 1.35, 0);
+    state.camera = camera;
+    state.scene = scene;
+    state.engine = engine;
+
+    const hemi = new BABYLON.HemisphericLight("creator-hemi", new BABYLON.Vector3(0.2, 1, -0.4), scene);
+    hemi.intensity = 0.9;
+    const dir = new BABYLON.DirectionalLight("creator-dir", new BABYLON.Vector3(-0.4, -1, 0.3), scene);
+    dir.position = new BABYLON.Vector3(2.5, 5, -3.5);
+    dir.intensity = 0.8;
+
+    const ground = BABYLON.MeshBuilder.CreateGround("creator-ground", { width: 18, height: 18 }, scene);
+    ground.position.y = -0.25;
+    ground.isPickable = false;
+    const groundMat = new BABYLON.StandardMaterial("creator-ground-mat", scene);
+    groundMat.diffuseColor = new BABYLON.Color3(0.05, 0.09, 0.18);
+    groundMat.specularColor = new BABYLON.Color3(0, 0, 0);
+    ground.material = groundMat;
+
+    if (!state.resizeHandler) {
+      state.resizeHandler = () => {
+        try { state.engine?.resize(); } catch (err) {}
+      };
+      window.addEventListener("resize", state.resizeHandler);
+    }
+    if (!state.resizeObserver && typeof ResizeObserver !== "undefined") {
+      state.resizeObserver = new ResizeObserver(() => {
+        try { state.engine?.resize(); } catch (err) {}
+      });
+      state.resizeObserver.observe(dom.canvas);
+    }
+
+    return engine;
+  }
+
+  function ensurePreview(selection) {
+    if (!state.scene || !state.specMaps) return null;
+    if (!state.preview) {
+      const rig = getRigSpec();
+      state.preview = createPreviewRig(state.scene, rig, state.specMaps, state.baseSelection, selection || state.baseSelection);
+    }
+    return state.preview;
+  }
+
+  function startRenderLoop() {
+    if (!state.engine || !state.scene || state.running) return;
+    state.renderFn = () => {
+      try { state.scene.render(); } catch (err) {}
+    };
+    state.engine.runRenderLoop(state.renderFn);
+    state.running = true;
+  }
+
+  function stopRenderLoop() {
+    if (!state.engine || !state.running) return;
+    try { state.engine.stopRenderLoop(state.renderFn); } catch (err) { state.engine.stopRenderLoop(); }
+    state.running = false;
+  }
+
+  function applySelectionToPreview(selection) {
+    const preview = ensurePreview(selection);
+    if (!preview) return;
+    try { preview.cosmetics.applyAll(selection); } catch (err) {}
+  }
+
+  function refreshFromGame({ fallback = null } = {}) {
+    ensureConfig();
+    if (!state.specMaps) return;
+    const base = state.baseSelection || buildDefaultSelection(state.specMaps);
+    let source = null;
+    const hx = window.HXH;
+    if (hx?.getCosmeticSelection) {
+      try { source = hx.getCosmeticSelection(); } catch (err) {}
+    }
+    if (!source) {
+      source = mergeSelection(state.selection || base, fallback || null);
+    } else if (fallback) {
+      source = mergeSelection(source, fallback);
+    }
+    const normalized = normalizeSelection(source, base, state.specMaps);
+    state.selection = normalized;
+    updateSelectors(normalized);
+    applySelectionToPreview(normalized);
+  }
+
+  function open() {
+    ensureDom();
+    ensureConfig();
+    ensureEngine();
+    ensurePreview(state.selection || state.baseSelection);
+    refreshFromGame();
+    startRenderLoop();
+    try { state.engine?.resize(); } catch (err) {}
+    const ready = window.HXH?.rigReady;
+    if (ready?.then) {
+      ready.then(() => {
+        refreshFromGame();
+      }).catch(() => {});
+    }
+  }
+
+  function close() {
+    stopRenderLoop();
+  }
+
+  function refresh() {
+    refreshFromGame();
+  }
+
+  document.addEventListener("DOMContentLoaded", () => {
+    ensureDom();
+  });
+
+  window.CharacterCreator = {
+    open,
+    close,
+    refresh
+  };
+})();
