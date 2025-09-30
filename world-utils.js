@@ -1519,21 +1519,28 @@
 
   function buildChunkMeshAsync(blockData, opts = {}) {
     const jobs = WorkerJobs;
+    const resolveGeometry = () => {
+      const geometry = buildChunkGeometry(blockData, opts);
+      if (geometry && typeof geometry === "object" && "result" in geometry) {
+        return geometry.result;
+      }
+      return geometry;
+    };
     if (!jobs || typeof jobs.requestChunkMesh !== "function") {
-      return Promise.resolve(buildChunkGeometry(blockData, opts));
+      return Promise.resolve(resolveGeometry());
     }
     try {
       const job = jobs.requestChunkMesh(blockData, opts);
       if (!job || typeof job.then !== "function") {
-        return Promise.resolve(buildChunkGeometry(blockData, opts));
+        return Promise.resolve(resolveGeometry());
       }
       return job.catch((err) => {
         console.warn("[WorldUtils] Chunk mesh worker failed, falling back", err);
-        return buildChunkGeometry(blockData, opts);
+        return resolveGeometry();
       });
     } catch (err) {
       console.warn("[WorldUtils] Unable to queue chunk mesh job", err);
-      return Promise.resolve(buildChunkGeometry(blockData, opts));
+      return Promise.resolve(resolveGeometry());
     }
   }
 
