@@ -61,7 +61,8 @@
     toggleAura: () => {},
     setEnRadius: () => {},
     spawnDummy: () => {},
-    refill: () => {}
+    refill: () => {},
+    toggleRearView: () => {}
   };
 
   const DEV_BUILD = (() => {
@@ -1235,6 +1236,12 @@
     actions.style.gridTemplateColumns = "repeat(2, minmax(0, 1fr))";
     actions.style.gap = "0.35rem";
 
+    const actionButtonBg = "rgba(20, 34, 50, 0.86)";
+    const actionButtonBorder = "1px solid rgba(120, 200, 255, 0.28)";
+    const actionButtonActiveBg = "rgba(42, 74, 112, 0.95)";
+    const actionButtonActiveBorder = "1px solid rgba(160, 220, 255, 0.62)";
+    const actionButtonActiveShadow = "0 0 0 1px rgba(120,200,255,0.45) inset";
+
     const makeActionButton = (label, handler) => {
       const btn = document.createElement("button");
       btn.type = "button";
@@ -1242,13 +1249,47 @@
       btn.style.padding = "0.35rem 0.4rem";
       btn.style.fontSize = "0.72rem";
       btn.style.borderRadius = "8px";
-      btn.style.border = "1px solid rgba(120, 200, 255, 0.28)";
-      btn.style.background = "rgba(20, 34, 50, 0.86)";
+      btn.style.border = actionButtonBorder;
+      btn.style.background = actionButtonBg;
       btn.style.color = "#e4f4ff";
       btn.style.cursor = "pointer";
       btn.addEventListener("click", handler);
       return btn;
     };
+
+    let rearViewActive = false;
+    const rearToggle = makeActionButton("Rear View", () => {});
+    rearToggle.dataset.active = "0";
+    rearToggle.style.gridColumn = "1 / span 2";
+    rearToggle.style.justifyContent = "center";
+    rearToggle.style.fontWeight = "600";
+    rearToggle.title = "Toggle rear debug camera";
+    rearToggle.setAttribute("aria-label", "Toggle rear debug camera");
+    rearToggle.setAttribute("aria-pressed", "false");
+
+    const setRearViewButtonState = (active) => {
+      rearViewActive = !!active;
+      rearToggle.dataset.active = rearViewActive ? "1" : "0";
+      rearToggle.setAttribute("aria-pressed", rearViewActive ? "true" : "false");
+      rearToggle.style.background = rearViewActive ? actionButtonActiveBg : actionButtonBg;
+      rearToggle.style.border = rearViewActive ? actionButtonActiveBorder : actionButtonBorder;
+      rearToggle.style.boxShadow = rearViewActive ? actionButtonActiveShadow : "none";
+      rearToggle.style.color = rearViewActive ? "#f0fbff" : "#e4f4ff";
+      if (devPanelCache) {
+        devPanelCache.rearViewActive = rearViewActive;
+      }
+    };
+
+    rearToggle.addEventListener("click", () => {
+      const next = rearToggle.dataset.active !== "1";
+      setRearViewButtonState(next);
+      const result = devPanelHandlers.toggleRearView?.(next);
+      if (result === false) {
+        setRearViewButtonState(!next);
+      }
+    });
+
+    actions.appendChild(rearToggle);
 
     actions.appendChild(makeActionButton("Refill HP+Nen", () => devPanelHandlers.refill?.("both")));
     actions.appendChild(makeActionButton("Refill Nen", () => devPanelHandlers.refill?.("nen")));
@@ -1257,7 +1298,8 @@
     panel.appendChild(actions);
 
     root.appendChild(panel);
-    devPanelCache = { root: panel, toggles: toggleInputs, enSlider, enValue, btnHide };
+    devPanelCache = { root: panel, toggles: toggleInputs, enSlider, enValue, btnHide, setRearViewButtonState, rearViewButton: rearToggle, rearViewActive };
+    setRearViewButtonState(false);
     return devPanelCache;
   }
 
@@ -3206,6 +3248,10 @@
     closeLog: closeLogOverlay,
     configureDevPanel,
     updateDevPanelState,
+    setRearViewActive: (active) => {
+      const cache = devPanelCache || ensureDevPanel();
+      cache?.setRearViewButtonState?.(!!active);
+    },
     toggleDevPanel,
     setDevPanelVisible,
     configureProfilerOverlay,
