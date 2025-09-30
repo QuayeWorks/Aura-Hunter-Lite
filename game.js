@@ -4310,7 +4310,7 @@
             canopyMax.z = Math.max(canopyMax.z, box.maximumWorld.z);
          }
          if (Number.isFinite(canopyMin.x) && Number.isFinite(canopyMax.x)) {
-            const size = BABYLON.Vector3.Subtract(canopyMax, canopyMin);
+            const size = canopyMax.subtract(canopyMin);
             const width = Math.max(0.6, size.x * 1.02);
             const depth = Math.max(0.6, size.z * 1.02);
             const height = Math.max(0.5, size.y * 0.85);
