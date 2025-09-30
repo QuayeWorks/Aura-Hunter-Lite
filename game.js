@@ -818,6 +818,412 @@
       updateInterval: 1 / 24
    };
 
+   const interiorOcclusion = (() => {
+      const groups = new Map();
+
+      const normalizeKey = (key) => {
+         if (typeof key === "string") return key.trim();
+         if (key && typeof key.key === "string") return key.key.trim();
+         if (key != null) return String(key).trim();
+         return "";
+      };
+
+      const getActiveScene = (explicitScene) => {
+         if (explicitScene && typeof explicitScene.isDisposed === "function" && explicitScene.isDisposed()) {
+            return null;
+         }
+         if (explicitScene) return explicitScene;
+         if (scene && typeof scene.isDisposed === "function" ? !scene.isDisposed() : !!scene) return scene;
+         const rmScene = window.RegionManager?.getScene?.();
+         if (rmScene && typeof rmScene.isDisposed === "function" && rmScene.isDisposed()) return null;
+         return rmScene || scene || null;
+      };
+
+      const wildcardToRegExp = (pattern) => {
+         const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+         return new RegExp(`^${escaped.replace(/\\\*/g, ".*").replace(/\\\?/g, ".")}$`, "i");
+      };
+
+      const applyNodeState = (node, enabled) => {
+         if (!node) return;
+         if (typeof node.isDisposed === "function" && node.isDisposed()) return;
+         try {
+            if (typeof node.setEnabled === "function") {
+               node.setEnabled(enabled);
+            } else {
+               if ("isEnabled" in node) node.isEnabled = enabled;
+               if ("isVisible" in node) node.isVisible = enabled;
+            }
+         } catch (err) {
+            console.warn("[InteriorOcclusion] node toggle failed", err);
+         }
+      };
+
+      const applyLightState = (light, enabled) => {
+         if (!light) return;
+         try {
+            if (typeof light.setEnabled === "function") {
+               light.setEnabled(enabled);
+            } else if ("isEnabled" in light) {
+               light.isEnabled = enabled;
+            }
+         } catch (err) {
+            console.warn("[InteriorOcclusion] light toggle failed", err);
+         }
+      };
+
+      const applyParticleState = (group, system, enabled) => {
+         if (!system) return;
+         const status = group.particleStatus;
+         const previous = status.get(system);
+         if (previous === enabled) return;
+         status.set(system, enabled);
+         try {
+            if (enabled) {
+               if (typeof system.start === "function") system.start();
+               if (system.emitter && typeof system.emitter.setEnabled === "function") system.emitter.setEnabled(true);
+            } else {
+               if (typeof system.stop === "function") system.stop();
+               if (typeof system.reset === "function") system.reset();
+               if (system.emitter && typeof system.emitter.setEnabled === "function") system.emitter.setEnabled(false);
+            }
+         } catch (err) {
+            console.warn("[InteriorOcclusion] particle toggle failed", err);
+         }
+      };
+
+      const applyAnimationState = (group, animation, enabled) => {
+         if (!animation) return;
+         const status = group.animationStatus;
+         const previous = status.get(animation);
+         if (previous === enabled) return;
+         status.set(animation, enabled);
+         try {
+            if (enabled) {
+               if (typeof animation.play === "function") animation.play(animation.loopAnimation ?? true);
+            } else {
+               if (typeof animation.pause === "function") animation.pause();
+               if (typeof animation.reset === "function") animation.reset();
+            }
+         } catch (err) {
+            console.warn("[InteriorOcclusion] animation toggle failed", err);
+         }
+      };
+
+      const addNodeAndDescendants = (group, node, includeDescendants = true) => {
+         if (!node) return false;
+         if (typeof node.isDisposed === "function" && node.isDisposed()) return false;
+         let added = false;
+         if (!group.nodes.has(node)) {
+            group.nodes.add(node);
+            applyNodeState(node, group.desiredState);
+            added = true;
+         }
+         if (includeDescendants && typeof node.getDescendants === "function") {
+            const descendants = node.getDescendants(true);
+            if (Array.isArray(descendants)) {
+               for (const child of descendants) {
+                  if (!(child instanceof BABYLON.TransformNode) && !(child instanceof BABYLON.AbstractMesh)) continue;
+                  if (!group.nodes.has(child)) {
+                     group.nodes.add(child);
+                     applyNodeState(child, group.desiredState);
+                     added = true;
+                  }
+               }
+            }
+         }
+         return added;
+      };
+
+      const ensureGroup = (key) => {
+         const id = normalizeKey(key);
+         if (!id) return null;
+         if (!groups.has(id)) {
+            groups.set(id, {
+               key: id,
+               label: null,
+               nodes: new Set(),
+               particleSystems: new Set(),
+               particleStatus: new Map(),
+               lights: new Set(),
+               animationGroups: new Set(),
+               animationStatus: new Map(),
+               callbacks: new Set(),
+               resolvers: [],
+               metadata: {},
+               desiredState: false,
+               enabled: false,
+               resolved: false,
+               scene: null
+            });
+         }
+         return groups.get(id) || null;
+      };
+
+      const ingestPayload = (group, payload, options = {}) => {
+         if (!group || !payload) return false;
+         let added = false;
+         const list = Array.isArray(payload) ? payload : [payload];
+         for (const entry of list) {
+            if (!entry) continue;
+            if (entry instanceof BABYLON.AbstractMesh || entry instanceof BABYLON.TransformNode) {
+               if (addNodeAndDescendants(group, entry, options.includeDescendants !== false)) added = true;
+               continue;
+            }
+            if (entry instanceof BABYLON.ParticleSystem) {
+               if (!group.particleSystems.has(entry)) {
+                  group.particleSystems.add(entry);
+                  applyParticleState(group, entry, group.desiredState);
+                  added = true;
+               }
+               continue;
+            }
+            if (entry instanceof BABYLON.Light) {
+               if (!group.lights.has(entry)) {
+                  group.lights.add(entry);
+                  applyLightState(entry, group.desiredState);
+                  added = true;
+               }
+               continue;
+            }
+            if (entry instanceof BABYLON.AnimationGroup) {
+               if (!group.animationGroups.has(entry)) {
+                  group.animationGroups.add(entry);
+                  applyAnimationState(group, entry, group.desiredState);
+                  added = true;
+               }
+               continue;
+            }
+            if (typeof entry === "function") {
+               group.resolvers.push(entry);
+               continue;
+            }
+            if (typeof entry === "string") {
+               const pattern = entry;
+               group.resolvers.push(({ scene: sceneOverride }) => {
+                  const sceneRef = getActiveScene(sceneOverride || group.scene);
+                  if (!sceneRef) return null;
+                  const matches = [];
+                  const exact = sceneRef.getNodeByName?.(pattern) || sceneRef.getTransformNodeByName?.(pattern) || sceneRef.getMeshByName?.(pattern);
+                  if (exact) matches.push(exact);
+                  if (pattern.includes("*") || pattern.includes("?")) {
+                     const regex = wildcardToRegExp(pattern);
+                     if (Array.isArray(sceneRef.transformNodes)) {
+                        for (const node of sceneRef.transformNodes) {
+                           if (regex.test(node?.name || node?.id || "")) matches.push(node);
+                        }
+                     }
+                     if (Array.isArray(sceneRef.meshes)) {
+                        for (const mesh of sceneRef.meshes) {
+                           if (regex.test(mesh?.name || mesh?.id || "")) matches.push(mesh);
+                        }
+                     }
+                  }
+                  return matches.length ? { nodes: matches } : null;
+               });
+               continue;
+            }
+            if (Array.isArray(entry)) {
+               if (ingestPayload(group, entry, options)) added = true;
+               continue;
+            }
+            if (entry && typeof entry === "object") {
+               if (entry.label && !group.label) group.label = entry.label;
+               if (entry.metadata) group.metadata = { ...group.metadata, ...entry.metadata };
+               if (entry.scene && !group.scene) group.scene = entry.scene;
+               if (typeof entry.onToggle === "function") group.callbacks.add(entry.onToggle);
+               if (Array.isArray(entry.onToggle)) {
+                  entry.onToggle.forEach(cb => { if (typeof cb === "function") group.callbacks.add(cb); });
+               }
+               if (typeof entry.resolver === "function") group.resolvers.push(entry.resolver);
+               if (Array.isArray(entry.resolvers)) {
+                  entry.resolvers.forEach(fn => { if (typeof fn === "function") group.resolvers.push(fn); });
+               }
+               if (entry.nodes || entry.meshes || entry.node || entry.mesh || entry.transform) {
+                  const nodes = entry.nodes || entry.meshes || entry.node || entry.mesh || entry.transform;
+                  if (ingestPayload(group, nodes, { ...options, includeDescendants: entry.includeDescendants ?? options.includeDescendants })) added = true;
+               }
+               if (entry.particles || entry.particleSystems) {
+                  if (ingestPayload(group, entry.particles || entry.particleSystems, options)) added = true;
+               }
+               if (entry.lights) {
+                  if (ingestPayload(group, entry.lights, options)) added = true;
+               }
+               if (entry.animations || entry.animationGroups) {
+                  if (ingestPayload(group, entry.animations || entry.animationGroups, options)) added = true;
+               }
+            }
+         }
+         return added;
+      };
+
+      const applyGroupStateInternal = (group, enabled, options = {}) => {
+         if (!group) return false;
+         const value = !!enabled;
+         if (!options.force && group.enabled === value) return value;
+         group.enabled = value;
+         group.nodes.forEach(node => applyNodeState(node, value));
+         group.lights.forEach(light => applyLightState(light, value));
+         group.particleSystems.forEach(ps => applyParticleState(group, ps, value));
+         group.animationGroups.forEach(anim => applyAnimationState(group, anim, value));
+         if (!options.silent && group.callbacks.size) {
+            const payload = { group, key: group.key, enabled: value, options };
+            group.callbacks.forEach(cb => {
+               try { cb(value, payload); } catch (err) { console.warn("[InteriorOcclusion] callback failed", err); }
+            });
+         }
+         return value;
+      };
+
+      const resolveGroup = (group, options = {}) => {
+         if (!group) return null;
+         const sceneRef = getActiveScene(options.scene || group.scene);
+         if (sceneRef) group.scene = sceneRef;
+         let added = false;
+         if (group.resolvers.length) {
+            const resolvers = [...group.resolvers];
+            for (const resolver of resolvers) {
+               if (typeof resolver !== "function") continue;
+               let result = null;
+               try {
+                  result = resolver({ group, scene: group.scene || getActiveScene(), options }) || null;
+               } catch (err) {
+                  console.warn("[InteriorOcclusion] resolver failed", err);
+               }
+               if (!result) continue;
+               if (ingestPayload(group, result, options)) added = true;
+            }
+         }
+         if ((added || group.nodes.size || group.particleSystems.size || group.lights.size || group.animationGroups.size) && !group.resolved) {
+            group.resolved = true;
+            applyGroupStateInternal(group, group.desiredState, { force: true, silent: true });
+         }
+         return group;
+      };
+
+      const setGroupState = (key, enabled, options = {}) => {
+         const group = ensureGroup(key);
+         if (!group) return false;
+         const value = !!enabled;
+         group.desiredState = value;
+         if (options.label && !group.label) group.label = options.label;
+         if (options.metadata) group.metadata = { ...group.metadata, ...options.metadata };
+         if (options.scene && !group.scene) group.scene = options.scene;
+         if (!group.resolved) resolveGroup(group, options);
+         if (!group.resolved) return value;
+         return applyGroupStateInternal(group, value, options);
+      };
+
+      const registerGroup = (key, spec = {}) => {
+         const group = ensureGroup(key);
+         if (!group) return null;
+         if (spec.label) group.label = spec.label;
+         if (spec.metadata) group.metadata = { ...group.metadata, ...spec.metadata };
+         if (spec.scene && !group.scene) group.scene = spec.scene;
+         if (typeof spec.onToggle === "function") group.callbacks.add(spec.onToggle);
+         if (Array.isArray(spec.onToggle)) spec.onToggle.forEach(cb => { if (typeof cb === "function") group.callbacks.add(cb); });
+         if (typeof spec.resolver === "function") group.resolvers.push(spec.resolver);
+         if (Array.isArray(spec.resolvers)) spec.resolvers.forEach(fn => { if (typeof fn === "function") group.resolvers.push(fn); });
+         ingestPayload(group, spec.nodes, spec);
+         ingestPayload(group, spec.meshes, spec);
+         ingestPayload(group, spec.particleSystems || spec.particles, spec);
+         ingestPayload(group, spec.lights, spec);
+         ingestPayload(group, spec.animations || spec.animationGroups, spec);
+         if (typeof spec.enabled === "boolean") {
+            group.desiredState = spec.enabled;
+         }
+         if (spec.autoResolve) {
+            resolveGroup(group, spec);
+         } else if (group.nodes.size || group.particleSystems.size || group.lights.size || group.animationGroups.size) {
+            group.resolved = true;
+            applyGroupStateInternal(group, group.desiredState, { force: true, silent: true });
+         }
+         if (typeof spec.enabled === "boolean" && group.resolved) {
+            applyGroupStateInternal(group, spec.enabled, { force: true, silent: true });
+         }
+         return group;
+      };
+
+      const addToGroup = (key, payload, options = {}) => {
+         const group = ensureGroup(key);
+         if (!group) return null;
+         if (options.label && !group.label) group.label = options.label;
+         if (options.metadata) group.metadata = { ...group.metadata, ...options.metadata };
+         if (options.scene && !group.scene) group.scene = options.scene;
+         if (typeof options.onToggle === "function") group.callbacks.add(options.onToggle);
+         const added = ingestPayload(group, payload, options);
+         if (added) {
+            group.resolved = true;
+            applyGroupStateInternal(group, group.desiredState, { force: true, silent: true });
+         }
+         return group;
+      };
+
+      const refreshGroup = (key, options = {}) => {
+         const group = ensureGroup(key);
+         if (!group) return null;
+         if (options.clear === true) {
+            group.nodes.clear();
+            group.particleSystems.clear();
+            group.particleStatus.clear();
+            group.lights.clear();
+            group.animationGroups.clear();
+            group.animationStatus.clear();
+         }
+         group.resolved = false;
+         return resolveGroup(group, options);
+      };
+
+      const getGroupState = (key) => {
+         const id = normalizeKey(key);
+         if (!id) return null;
+         const group = groups.get(id);
+         if (!group) return null;
+         return {
+            key: group.key,
+            label: group.label || null,
+            enabled: group.enabled,
+            desired: group.desiredState,
+            resolved: group.resolved,
+            counts: {
+               nodes: group.nodes.size,
+               particles: group.particleSystems.size,
+               lights: group.lights.size,
+               animations: group.animationGroups.size
+            }
+         };
+      };
+
+      const getGroup = (key) => {
+         const id = normalizeKey(key);
+         return id ? groups.get(id) || null : null;
+      };
+
+      const getGroups = () => Array.from(groups.values());
+
+      const withGroup = (key, cb) => {
+         const group = ensureGroup(key);
+         if (!group) return null;
+         if (typeof cb === "function") {
+            try { cb(group); } catch (err) { console.warn("[InteriorOcclusion] withGroup callback failed", err); }
+         }
+         return group;
+      };
+
+      return {
+         ensureGroup,
+         registerGroup,
+         addToGroup,
+         setGroupState,
+         refreshGroup,
+         resolveGroup,
+         getGroupState,
+         getGroup,
+         getGroups,
+         withGroup
+      };
+   })();
+
    function resetAdaptiveQualityState() {
       adaptiveQuality.lowTimer = 0;
       adaptiveQuality.highTimer = 0;
@@ -7776,6 +8182,20 @@ try {
     refreshEnemySimulationAssignments,
     configureEnemyForSimulation,
     simulationBubble,
+    interiors: interiorOcclusion,
+    registerInteriorGroup: (key, spec) => interiorOcclusion.registerGroup(key, spec),
+    addInteriorGroupNodes: (key, payload, options) => interiorOcclusion.addToGroup(key, payload, options),
+    setInteriorGroupEnabled: (regionOrKey, setId, enabled, options = {}) => {
+      if (typeof enabled === "undefined" && typeof setId === "boolean") {
+        return interiorOcclusion.setGroupState(String(regionOrKey || ""), setId, options);
+      }
+      const key = setId != null ? `${regionOrKey}:${setId}` : String(regionOrKey || "");
+      if (!key) return false;
+      return interiorOcclusion.setGroupState(key, enabled, options);
+    },
+    refreshInteriorGroup: (key, options) => interiorOcclusion.refreshGroup(key, options),
+    getInteriorGroupState: (key) => interiorOcclusion.getGroupState(key),
+    withInteriorGroup: (key, cb) => interiorOcclusion.withGroup(key, cb),
   });
   // share rig definitions for the editor if available
   window.RigDefinitions = {

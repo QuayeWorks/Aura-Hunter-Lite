@@ -9,10 +9,13 @@
   const assetCache = new Map();
   const regionUsage = new Map();
   const warmedNeighbors = new Set();
+  const interiorSpecsByRegion = new Map();
+  const interiorRuntimeByRegion = new Map();
+  let interiorRevisionCounter = 1;
   let activeRegionId = null;
   let lastCommand = null;
   let activeScene = null;
-  let lastKnownPosition = { x: 0, z: 0 };
+  let lastKnownPosition = { x: 0, y: 0, z: 0 };
 
   const LOOK_AHEAD_DEFAULT = 48;
   const LOOK_AHEAD_HYSTERESIS = 12;
@@ -272,6 +275,14 @@
     for (const spec of assetSpecs) {
       if (!assetSpecsLookup.has(spec.key)) {
         assetSpecsLookup.set(spec.key, spec);
+      }
+    }
+    interiorRuntimeByRegion.delete(region.id);
+    if (Object.prototype.hasOwnProperty.call(def, "interiors")) {
+      if (def.interiors) {
+        registerInteriorHints(region.id, def.interiors);
+      } else {
+        registerInteriorHints(region.id, null);
       }
     }
     return region;
@@ -577,18 +588,554 @@
   }
 
   function resolvePoint(position) {
-    if (!position) return { x: 0, z: 0 };
-    if (typeof position.x === "number" || typeof position.z === "number") {
+    if (!position) return { x: 0, y: 0, z: 0 };
+    if (typeof position.x === "number" || typeof position.z === "number" || typeof position.y === "number") {
       return {
         x: Number.isFinite(position.x) ? position.x : 0,
+        y: Number.isFinite(position.y) ? position.y : 0,
         z: Number.isFinite(position.z) ? position.z : 0
       };
     }
     if (Array.isArray(position)) {
+      if (position.length >= 3) {
+        const [px = 0, py = 0, pz = 0] = position;
+        return { x: Number(px) || 0, y: Number(py) || 0, z: Number(pz) || 0 };
+      }
       const [px = 0, pz = 0] = position;
-      return { x: Number(px) || 0, z: Number(pz) || 0 };
+      return { x: Number(px) || 0, y: 0, z: Number(pz) || 0 };
     }
-    return { x: 0, z: 0 };
+    return { x: 0, y: 0, z: 0 };
+  }
+
+  function toVec3(value, fallback = { x: 0, y: 0, z: 0 }) {
+    if (!value) return { ...fallback };
+    if (typeof value.x === "number" || typeof value.y === "number" || typeof value.z === "number") {
+      return {
+        x: Number.isFinite(value.x) ? value.x : fallback.x,
+        y: Number.isFinite(value.y) ? value.y : fallback.y,
+        z: Number.isFinite(value.z) ? value.z : fallback.z
+      };
+    }
+    if (Array.isArray(value)) {
+      if (value.length >= 3) {
+        const [x = fallback.x, y = fallback.y, z = fallback.z] = value;
+        return { x: Number(x) || 0, y: Number(y) || 0, z: Number(z) || 0 };
+      }
+      const [x = fallback.x, z = fallback.z] = value;
+      return { x: Number(x) || 0, y: fallback.y, z: Number(z) || 0 };
+    }
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return { x: value, y: value, z: value };
+    }
+    return { ...fallback };
+  }
+
+  function normalizeVec3(value, fallback = { x: 0, y: 0, z: 1 }) {
+    const vec = toVec3(value, fallback);
+    const length = Math.hypot(vec.x, vec.y, vec.z);
+    if (!Number.isFinite(length) || length <= 0.00001) {
+      const fb = toVec3(fallback, { x: 0, y: 0, z: 1 });
+      const fbLength = Math.hypot(fb.x, fb.y, fb.z);
+      if (!Number.isFinite(fbLength) || fbLength <= 0.00001) {
+        return { x: 0, y: 0, z: 1 };
+      }
+      return { x: fb.x / fbLength, y: fb.y / fbLength, z: fb.z / fbLength };
+    }
+    return { x: vec.x / length, y: vec.y / length, z: vec.z / length };
+  }
+
+  function dotVec3(a, b) {
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+  }
+
+  function crossVec3(a, b) {
+    return {
+      x: a.y * b.z - a.z * b.y,
+      y: a.z * b.x - a.x * b.z,
+      z: a.x * b.y - a.y * b.x
+    };
+  }
+
+  function subtractVec3(a, b) {
+    return { x: a.x - b.x, y: a.y - b.y, z: a.z - b.z };
+  }
+
+  function scaleVec3(a, scalar) {
+    return { x: a.x * scalar, y: a.y * scalar, z: a.z * scalar };
+  }
+
+  function normalizeSetReference(name, regionId) {
+    if (typeof name !== "string") return null;
+    const trimmed = name.trim();
+    if (!trimmed) return null;
+    if (trimmed.includes(":")) {
+      const parts = trimmed.split(":");
+      const last = parts[parts.length - 1].trim();
+      if (parts.length > 1) {
+        const regionPart = parts[0].trim().toLowerCase();
+        if (!regionPart || regionPart === regionId) {
+          return last;
+        }
+      }
+      return last || trimmed;
+    }
+    return trimmed;
+  }
+
+  function normalizeInteriorTrigger(source) {
+    if (!source || typeof source !== "object") return null;
+    const margin = Number.isFinite(source.margin)
+      ? Math.max(0, source.margin)
+      : (Number.isFinite(source.padding) ? Math.max(0, source.padding) : 0);
+    if (Number.isFinite(source.radius) || Number.isFinite(source.r)) {
+      const center = toVec3(source.center ?? source.position ?? source.origin ?? source, { x: 0, y: 0, z: 0 });
+      const radius = Number(source.radius ?? source.r ?? 0);
+      if (!Number.isFinite(radius) || radius <= 0) return null;
+      return {
+        type: "sphere",
+        cx: center.x,
+        cy: center.y,
+        cz: center.z,
+        radius: Math.max(0, radius),
+        margin
+      };
+    }
+    let min = null;
+    let max = null;
+    if (source.min || source.max) {
+      min = toVec3(source.min, { x: 0, y: 0, z: 0 });
+      max = toVec3(source.max, { x: 0, y: 0, z: 0 });
+    } else if (source.from || source.to) {
+      min = toVec3(source.from, { x: 0, y: 0, z: 0 });
+      max = toVec3(source.to, { x: 0, y: 0, z: 0 });
+    } else if (source.start || source.end) {
+      min = toVec3(source.start, { x: 0, y: 0, z: 0 });
+      max = toVec3(source.end, { x: 0, y: 0, z: 0 });
+    }
+    if (!min || !max) {
+      const center = toVec3(source.center ?? source.position ?? source.origin ?? { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 });
+      const sizeSource = source.size ?? source.extents ?? source.dimensions ?? null;
+      let size = null;
+      if (sizeSource) {
+        size = toVec3(sizeSource, { x: 0, y: 0, z: 0 });
+      } else if (Number.isFinite(source.width) || Number.isFinite(source.height) || Number.isFinite(source.depth)) {
+        size = {
+          x: Number(source.width) || 0,
+          y: Number(source.height) || 0,
+          z: Number(source.depth ?? source.length) || 0
+        };
+      }
+      if (!size) return null;
+      min = {
+        x: center.x - Math.abs(size.x) * 0.5,
+        y: center.y - Math.abs(size.y) * 0.5,
+        z: center.z - Math.abs(size.z) * 0.5
+      };
+      max = {
+        x: center.x + Math.abs(size.x) * 0.5,
+        y: center.y + Math.abs(size.y) * 0.5,
+        z: center.z + Math.abs(size.z) * 0.5
+      };
+    }
+    const minX = Math.min(min.x, max.x);
+    const maxX = Math.max(min.x, max.x);
+    const minY = Math.min(min.y, max.y);
+    const maxY = Math.max(min.y, max.y);
+    const minZ = Math.min(min.z, max.z);
+    const maxZ = Math.max(min.z, max.z);
+    return {
+      type: "box",
+      minX,
+      maxX,
+      minY,
+      maxY,
+      minZ,
+      maxZ,
+      hasY: Number.isFinite(minY) && Number.isFinite(maxY),
+      margin
+    };
+  }
+
+  function normalizeInteriorSet(def, regionId, index = 0) {
+    if (!def || typeof def !== "object") return null;
+    const rawId = def.id ?? def.key ?? def.name ?? (typeof index === "number" ? `set-${index}` : null);
+    const id = typeof rawId === "string" && rawId.trim() ? rawId.trim() : null;
+    if (!id) return null;
+    const triggers = [];
+    const triggerSources = [];
+    if (def.triggers) {
+      if (Array.isArray(def.triggers)) triggerSources.push(...def.triggers);
+      else triggerSources.push(def.triggers);
+    }
+    if (def.trigger) triggerSources.push(def.trigger);
+    if (def.volume) triggerSources.push(def.volume);
+    triggerSources.forEach((src) => {
+      const normalized = normalizeInteriorTrigger(src);
+      if (normalized) triggers.push(normalized);
+    });
+    const defaultEnabled = def.defaultEnabled === true || def.enabled === true;
+    const metadata = (def.metadata && typeof def.metadata === "object") ? { ...def.metadata } : {};
+    return {
+      id,
+      key: `${regionId}:${id}`,
+      regionId,
+      label: typeof def.label === "string" && def.label.trim() ? def.label.trim() : id,
+      defaultEnabled,
+      triggers,
+      sticky: def.sticky === true,
+      metadata
+    };
+  }
+
+  function normalizeInteriorPortal(def, regionId, index = 0) {
+    if (!def || typeof def !== "object") return null;
+    const rawId = def.id ?? def.key ?? def.name ?? (typeof index === "number" ? `portal-${index}` : null);
+    const id = typeof rawId === "string" && rawId.trim() ? rawId.trim() : null;
+    if (!id) return null;
+    const center = toVec3(def.center ?? def.position ?? def.origin ?? def.point ?? { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 });
+    const forward = normalizeVec3(def.normal ?? def.forward ?? def.direction ?? { x: 0, y: 0, z: 1 }, { x: 0, y: 0, z: 1 });
+    let up = normalizeVec3(def.up ?? { x: 0, y: 1, z: 0 }, { x: 0, y: 1, z: 0 });
+    const projection = dotVec3(up, forward);
+    if (Math.abs(projection) > 0.999) {
+      up = { x: 0, y: 1, z: 0 };
+    }
+    up = normalizeVec3(subtractVec3(up, scaleVec3(forward, dotVec3(up, forward))), { x: 0, y: 1, z: 0 });
+    if (!Number.isFinite(up.x) || !Number.isFinite(up.y) || !Number.isFinite(up.z)) {
+      up = { x: 0, y: 1, z: 0 };
+    }
+    let right = crossVec3(up, forward);
+    const rightLen = Math.hypot(right.x, right.y, right.z);
+    if (!Number.isFinite(rightLen) || rightLen <= 0.00001) {
+      right = { x: 1, y: 0, z: 0 };
+    } else {
+      right = { x: right.x / rightLen, y: right.y / rightLen, z: right.z / rightLen };
+    }
+    const widthSource = Number(def.width ?? def.size?.x ?? def.size?.width ?? def.extents?.x ?? def.scale?.x);
+    const heightSource = Number(def.height ?? def.size?.y ?? def.size?.height ?? def.extents?.y ?? def.scale?.y);
+    const halfWidth = Math.max(0.25, Number.isFinite(widthSource) ? Math.abs(widthSource) * 0.5 : 1.0);
+    const halfHeight = Math.max(0.25, Number.isFinite(heightSource) ? Math.abs(heightSource) * 0.5 : 1.5);
+    const margin = Number.isFinite(def.margin) ? Math.max(0, def.margin) : 0.3;
+    const enterThreshold = Number.isFinite(def.enterDistance ?? def.enterThreshold ?? def.inner ?? def.interiorThreshold)
+      ? Math.max(0.02, def.enterDistance ?? def.enterThreshold ?? def.inner ?? def.interiorThreshold)
+      : 0.15;
+    const exitThreshold = Number.isFinite(def.exitDistance ?? def.exitThreshold ?? def.outer ?? def.exteriorThreshold)
+      ? Math.max(enterThreshold * 1.2, def.exitDistance ?? def.exitThreshold ?? def.outer ?? def.exteriorThreshold)
+      : Math.max(enterThreshold * 1.6, 0.4);
+    const releaseMargin = Number.isFinite(def.releaseMargin) ? Math.max(margin, def.releaseMargin) : margin + 0.35;
+    const releaseDepth = Number.isFinite(def.releaseDepth) ? Math.max(exitThreshold, def.releaseDepth) : exitThreshold + 0.45;
+    const interiorSets = new Set();
+    const interiorSource = def.interiorSets ?? def.enable ?? def.inside ?? def.activate ?? def.sets ?? def.groups;
+    (Array.isArray(interiorSource) ? interiorSource : [interiorSource]).forEach((entry) => {
+      const ref = normalizeSetReference(entry, regionId);
+      if (ref) interiorSets.add(ref);
+    });
+    const exteriorSets = new Set();
+    const exteriorSource = def.exteriorSets ?? def.disable ?? def.outside ?? def.deactivate;
+    (Array.isArray(exteriorSource) ? exteriorSource : [exteriorSource]).forEach((entry) => {
+      const ref = normalizeSetReference(entry, regionId);
+      if (ref) exteriorSets.add(ref);
+    });
+    const metadata = (def.metadata && typeof def.metadata === "object") ? { ...def.metadata } : {};
+    return {
+      id,
+      regionId,
+      center,
+      forward,
+      up,
+      right,
+      halfWidth,
+      halfHeight,
+      margin,
+      enterThreshold,
+      exitThreshold,
+      releaseMargin,
+      releaseDepth,
+      interiorSets,
+      exteriorSets,
+      metadata
+    };
+  }
+
+  function normalizeInteriorHints(source, regionId) {
+    const result = {
+      regionId,
+      revision: interiorRevisionCounter += 1,
+      sets: new Map(),
+      portals: new Map()
+    };
+    if (!source) return result;
+    const setSource = Array.isArray(source)
+      ? source
+      : (Array.isArray(source.sets) ? source.sets : (Array.isArray(source.groups) ? source.groups : []));
+    setSource.forEach((entry, index) => {
+      const set = normalizeInteriorSet(entry, regionId, index);
+      if (set) result.sets.set(set.id, set);
+    });
+    const portalSource = Array.isArray(source.portals) ? source.portals : [];
+    portalSource.forEach((entry, index) => {
+      const portal = normalizeInteriorPortal(entry, regionId, index);
+      if (portal) result.portals.set(portal.id, portal);
+    });
+    return result;
+  }
+
+  function cloneInteriorHints(regionId) {
+    const id = typeof regionId === "string" ? regionId : regionId?.id;
+    if (!id) return null;
+    const spec = interiorSpecsByRegion.get(id);
+    if (!spec) return null;
+    const cloneTrigger = (trigger) => {
+      if (!trigger) return null;
+      if (trigger.type === "sphere") {
+        return {
+          type: "sphere",
+          center: { x: trigger.cx, y: trigger.cy, z: trigger.cz },
+          radius: trigger.radius,
+          margin: trigger.margin
+        };
+      }
+      if (trigger.type === "box") {
+        return {
+          type: "box",
+          min: { x: trigger.minX, y: trigger.minY, z: trigger.minZ },
+          max: { x: trigger.maxX, y: trigger.maxY, z: trigger.maxZ },
+          margin: trigger.margin
+        };
+      }
+      return null;
+    };
+    return {
+      sets: Array.from(spec.sets.values()).map((set) => ({
+        id: set.id,
+        label: set.label,
+        defaultEnabled: set.defaultEnabled,
+        triggers: set.triggers.map(cloneTrigger).filter(Boolean),
+        metadata: set.metadata ? { ...set.metadata } : null
+      })),
+      portals: Array.from(spec.portals.values()).map((portal) => ({
+        id: portal.id,
+        center: { ...portal.center },
+        forward: { ...portal.forward },
+        up: { ...portal.up },
+        right: { ...portal.right },
+        halfWidth: portal.halfWidth,
+        halfHeight: portal.halfHeight,
+        margin: portal.margin,
+        enterThreshold: portal.enterThreshold,
+        exitThreshold: portal.exitThreshold,
+        releaseMargin: portal.releaseMargin,
+        releaseDepth: portal.releaseDepth,
+        interiorSets: Array.from(portal.interiorSets),
+        exteriorSets: Array.from(portal.exteriorSets),
+        metadata: portal.metadata ? { ...portal.metadata } : null
+      }))
+    };
+  }
+
+  function ensureInteriorRuntime(regionId) {
+    const id = typeof regionId === "string" ? regionId : regionId?.id;
+    if (!id) return null;
+    const spec = interiorSpecsByRegion.get(id);
+    if (!spec || (!spec.sets.size && !spec.portals.size)) {
+      interiorRuntimeByRegion.delete(id);
+      return null;
+    }
+    const existing = interiorRuntimeByRegion.get(id);
+    if (existing && existing.revision === spec.revision) return existing;
+    const runtime = {
+      regionId: id,
+      revision: spec.revision,
+      sets: new Map(),
+      portals: new Map()
+    };
+    for (const set of spec.sets.values()) {
+      runtime.sets.set(set.id, {
+        spec: set,
+        enabled: !!set.defaultEnabled,
+        portalActive: 0,
+        portalInactive: 0,
+        volumeInside: !!set.defaultEnabled
+      });
+    }
+    for (const portal of spec.portals.values()) {
+      runtime.portals.set(portal.id, {
+        spec: portal,
+        inside: false,
+        lastInside: false,
+        lastBounds: false,
+        lastDistance: 0
+      });
+    }
+    interiorRuntimeByRegion.set(id, runtime);
+    return runtime;
+  }
+
+  function applyInteriorSetState(regionId, setState, enabled, opts = {}) {
+    const normalized = !!enabled;
+    if (!opts.force && setState.enabled === normalized) return;
+    setState.enabled = normalized;
+    const hx = window.HXH || {};
+    const manager = hx.interiors;
+    const payload = {
+      immediate: true,
+      force: true,
+      silent: !!opts.silent,
+      regionId,
+      setId: setState.spec.id,
+      reason: opts.reason || (normalized ? "interior-enter" : "interior-exit")
+    };
+    try {
+      if (manager && typeof manager.setGroupState === "function") {
+        manager.setGroupState(setState.spec.key, normalized, payload);
+      } else if (typeof hx.setInteriorGroupEnabled === "function") {
+        hx.setInteriorGroupEnabled(regionId, setState.spec.id, normalized, payload);
+      }
+    } catch (err) {
+      console.warn("[RegionManager] Failed to toggle interior group", setState.spec.key, err);
+    }
+  }
+
+  function evaluateInteriorOcclusion(regionId, point = lastKnownPosition, opts = {}) {
+    const id = typeof regionId === "string" ? regionId : regionId?.id;
+    if (!id) return null;
+    const runtime = ensureInteriorRuntime(id);
+    if (!runtime) return null;
+    const sets = runtime.sets;
+    const portals = runtime.portals;
+    const target = point ? {
+      x: Number.isFinite(point.x) ? point.x : 0,
+      y: Number.isFinite(point.y) ? point.y : 0,
+      z: Number.isFinite(point.z) ? point.z : 0
+    } : { x: 0, y: 0, z: 0 };
+
+    for (const setState of sets.values()) {
+      setState.portalActive = 0;
+      setState.portalInactive = 0;
+      setState.volumeInside = false;
+    }
+
+    for (const setState of sets.values()) {
+      const { triggers } = setState.spec;
+      if (!triggers || !triggers.length) continue;
+      for (const trigger of triggers) {
+        if (!trigger) continue;
+        if (trigger.type === "box") {
+          const margin = trigger.margin || 0;
+          if (
+            target.x >= trigger.minX - margin && target.x <= trigger.maxX + margin &&
+            target.z >= trigger.minZ - margin && target.z <= trigger.maxZ + margin &&
+            (!trigger.hasY || (target.y >= trigger.minY - margin && target.y <= trigger.maxY + margin))
+          ) {
+            setState.volumeInside = true;
+            break;
+          }
+        } else if (trigger.type === "sphere") {
+          const radius = trigger.radius + (trigger.margin || 0);
+          const dx = target.x - trigger.cx;
+          const dy = target.y - trigger.cy;
+          const dz = target.z - trigger.cz;
+          if (dx * dx + dy * dy + dz * dz <= radius * radius) {
+            setState.volumeInside = true;
+            break;
+          }
+        }
+      }
+    }
+
+    for (const portalState of portals.values()) {
+      const { spec } = portalState;
+      const rel = {
+        x: target.x - spec.center.x,
+        y: target.y - spec.center.y,
+        z: target.z - spec.center.z
+      };
+      const u = rel.x * spec.right.x + rel.y * spec.right.y + rel.z * spec.right.z;
+      const v = rel.x * spec.up.x + rel.y * spec.up.y + rel.z * spec.up.z;
+      const w = rel.x * spec.forward.x + rel.y * spec.forward.y + rel.z * spec.forward.z;
+      const inBounds = Math.abs(u) <= spec.halfWidth + spec.margin && Math.abs(v) <= spec.halfHeight + spec.margin;
+      let inside = portalState.inside;
+      if (inBounds) {
+        if (w <= -spec.enterThreshold) inside = true;
+        else if (w >= spec.exitThreshold) inside = false;
+      } else if (inside) {
+        const beyondWidth = Math.abs(u) > spec.halfWidth + spec.releaseMargin;
+        const beyondHeight = Math.abs(v) > spec.halfHeight + spec.releaseMargin;
+        const beyondDepth = w > spec.releaseDepth;
+        if (beyondWidth || beyondHeight || beyondDepth) inside = false;
+      }
+      portalState.lastInside = portalState.inside;
+      portalState.inside = inside;
+      portalState.lastBounds = inBounds;
+      portalState.lastDistance = w;
+      if (inside) {
+        for (const setId of spec.interiorSets) {
+          const setState = sets.get(setId);
+          if (setState) setState.portalActive += 1;
+        }
+        for (const setId of spec.exteriorSets) {
+          const setState = sets.get(setId);
+          if (setState) setState.portalInactive += 1;
+        }
+      } else {
+        for (const setId of spec.interiorSets) {
+          const setState = sets.get(setId);
+          if (setState) setState.portalInactive += 1;
+        }
+        for (const setId of spec.exteriorSets) {
+          const setState = sets.get(setId);
+          if (setState) setState.portalActive += 1;
+        }
+      }
+    }
+
+    for (const setState of sets.values()) {
+      const override = setState.portalActive > 0 ? true : (setState.portalInactive > 0 ? false : null);
+      let desired = override !== null ? override : (setState.volumeInside ? true : !!setState.spec.defaultEnabled);
+      if (!desired && setState.spec.sticky && setState.enabled) {
+        desired = true;
+      }
+      applyInteriorSetState(id, setState, desired, { force: opts.force });
+    }
+    return true;
+  }
+
+  function suspendInteriorOcclusion(regionId) {
+    const id = typeof regionId === "string" ? regionId : regionId?.id;
+    if (!id) return;
+    const runtime = interiorRuntimeByRegion.get(id);
+    if (!runtime) return;
+    for (const setState of runtime.sets.values()) {
+      if (setState.enabled) {
+        applyInteriorSetState(id, setState, false, { force: true, silent: true, reason: "region-exit" });
+      }
+      setState.portalActive = 0;
+      setState.portalInactive = 0;
+      setState.volumeInside = false;
+    }
+    for (const portalState of runtime.portals.values()) {
+      portalState.inside = false;
+      portalState.lastInside = false;
+      portalState.lastBounds = false;
+      portalState.lastDistance = 0;
+    }
+  }
+
+  function registerInteriorHints(regionId, hints) {
+    const id = typeof regionId === "string" ? regionId.trim().toLowerCase() : null;
+    if (!id) return null;
+    if (!hints) {
+      suspendInteriorOcclusion(id);
+      interiorSpecsByRegion.delete(id);
+      interiorRuntimeByRegion.delete(id);
+      return null;
+    }
+    const normalized = normalizeInteriorHints(hints, id);
+    interiorSpecsByRegion.set(id, normalized);
+    interiorRuntimeByRegion.delete(id);
+    if (activeRegionId === id) {
+      evaluateInteriorOcclusion(id, lastKnownPosition, { force: true });
+    }
+    return normalized;
   }
 
   function resolveCircleBounds(bounds) {
@@ -750,9 +1297,11 @@
     }
     if (region) {
       refreshLookAheadState(region, point);
+      evaluateInteriorOcclusion(region.id, point, { force: opts.force === true });
     } else if (warmedNeighbors.size) {
       for (const neighborId of warmedNeighbors) coolRegionAssets(neighborId);
       warmedNeighbors.clear();
+      if (activeRegionId) suspendInteriorOcclusion(activeRegionId);
     }
     return region;
   }
@@ -775,7 +1324,9 @@
     activateRegionAssets(region.id);
     if (previousId && previousId !== region.id) {
       deactivateRegionAssets(previousId);
+      suspendInteriorOcclusion(previousId);
     }
+    ensureInteriorRuntime(region.id);
     window.Spawns?.useRegion?.(region);
     window.WorldUtils?.applyRegionVisuals?.(region);
     const streamRadius = Number.isFinite(region.terrain?.streamRadius) ? region.terrain.streamRadius : null;
@@ -789,6 +1340,7 @@
     }
     notify(region);
     refreshLookAheadState(region, lastKnownPosition);
+    evaluateInteriorOcclusion(region.id, lastKnownPosition, { force: true });
     return true;
   }
 
@@ -948,6 +1500,28 @@
       const entry = getGraphEntry(typeof id === "string" ? id : id?.id);
       if (!entry) return [];
       return Array.from(entry.neighbors);
+    },
+    registerInteriorHints,
+    getInteriorHints: (id) => {
+      const targetId = typeof id === "string" ? id : id?.id || activeRegionId;
+      return targetId ? cloneInteriorHints(targetId) : null;
+    },
+    refreshInteriorOcclusion: (regionId) => {
+      const targetId = typeof regionId === "string" ? regionId : regionId?.id || activeRegionId;
+      if (!targetId) return false;
+      return !!evaluateInteriorOcclusion(targetId, lastKnownPosition, { force: true });
+    },
+    setInteriorSetState: (regionId, setId, enabled) => {
+      const targetId = typeof regionId === "string" ? regionId : regionId?.id || activeRegionId;
+      if (!targetId) return false;
+      const runtime = ensureInteriorRuntime(targetId);
+      if (!runtime) return false;
+      const key = typeof setId === "string" ? setId : setId?.id;
+      if (!key) return false;
+      const state = runtime.sets.get(key);
+      if (!state) return false;
+      applyInteriorSetState(targetId, state, enabled, { force: true });
+      return true;
     }
   };
 
