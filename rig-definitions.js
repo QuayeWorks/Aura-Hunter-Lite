@@ -11,6 +11,45 @@
       "hipR","legR_thigh","legR_shin","legR_foot"
     ]
   } : {});
+  const HUMANOID_PART_KEYS = [
+    "pelvis", "torsoLower", "torsoUpper", "neck", "head",
+    "shoulderL", "armL_upper", "armL_fore", "armL_hand",
+    "shoulderR", "armR_upper", "armR_fore", "armR_hand",
+    "hipL", "legL_thigh", "legL_shin", "legL_foot",
+    "hipR", "legR_thigh", "legR_shin", "legR_foot"
+  ];
+
+  const HUMANOID_SEGMENTS = {
+    pelvis: { w: 0.85, h: 0.35, d: 0.52 },
+    torsoLower: { w: 0.9, h: 0.45, d: 0.55 },
+    torsoUpper: { w: 0.95, h: 0.71, d: 0.55 },
+    neck: { w: 0.25, h: 0.25, d: 0.25 },
+    head: { w: 0.45, h: 0.5, d: 0.45 },
+    armL_upper: { w: 0.34, h: 0.75, d: 0.34 },
+    armL_fore: { w: 0.3, h: 0.7, d: 0.27 },
+    armL_hand: { w: 0.28, h: 0.25, d: 0.25 },
+    armR_upper: { w: 0.34, h: 0.75, d: 0.34 },
+    armR_fore: { w: 0.3, h: 0.7, d: 0.27 },
+    armR_hand: { w: 0.28, h: 0.25, d: 0.25 },
+    legL_thigh: { w: 0.45, h: 1.05, d: 0.5 },
+    legL_shin: { w: 0.33, h: 0.88, d: 0.43 },
+    legL_foot: { w: 0.32, h: 0.21, d: 0.75 },
+    legR_thigh: { w: 0.45, h: 1.05, d: 0.5 },
+    legR_shin: { w: 0.33, h: 0.88, d: 0.43 },
+    legR_foot: { w: 0.32, h: 0.21, d: 0.75 }
+  };
+
+  const MONKEY_PART_KEYS = [
+    ...HUMANOID_PART_KEYS,
+    "tailBase", "tailMid", "tailTip"
+  ];
+
+  const AQUATIC_PART_KEYS = [
+    "core", "torsoFront", "torsoRear", "neck", "head",
+    "finFrontL", "finFrontR", "finRearL", "finRearR",
+    "tailBase", "tailTip"
+  ];
+
   const defaultCosmetics = {
     faces: [
       { id: "neutral", label: "Neutral" },
@@ -59,11 +98,160 @@
     accessories: []
   };
 
+  function cloneTransforms(source = {}) {
+    const out = {};
+    Object.keys(source).forEach(key => {
+      const entry = source[key] || {};
+      const pos = entry.pos || {};
+      const rot = entry.rot || {};
+      out[key] = {
+        pos: {
+          x: Number(pos.x) || 0,
+          y: Number(pos.y) || 0,
+          z: Number(pos.z) || 0
+        },
+        rot: {
+          x: Number(rot.x) || 0,
+          y: Number(rot.y) || 0,
+          z: Number(rot.z) || 0
+        }
+      };
+    });
+    return out;
+  }
+
+  const HUMANOID_TRANSFORMS = cloneTransforms({
+    pelvis:      { pos:{x:0.000, y:1.190, z:0.000}, rot:{x:0, y:0, z:0} },
+    torsoLower:  { pos:{x:0.000, y:0.450, z:0.000}, rot:{x:0, y:0, z:0} },
+    torsoUpper:  { pos:{x:0.000, y:0.710, z:0.000}, rot:{x:0, y:0, z:0} },
+    neck:        { pos:{x:0.000, y:0.250, z:0.000}, rot:{x:0, y:0, z:0} },
+    head:        { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:0, y:0, z:0} },
+    shoulderL:   { pos:{x:-0.650,y:0.000, z:0.000}, rot:{x:0, y:180, z:0} },
+    armL_upper:  { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:0, y:0, z:0} },
+    armL_fore:   { pos:{x:0.000, y:-0.750,z:0.000}, rot:{x:0, y:0, z:0} },
+    armL_hand:   { pos:{x:0.000, y:-0.710,z:0.000}, rot:{x:0, y:0, z:0} },
+    shoulderR:   { pos:{x:0.650, y:0.000, z:0.000}, rot:{x:0, y:180, z:0} },
+    armR_upper:  { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:0, y:0, z:0} },
+    armR_fore:   { pos:{x:0.000, y:-0.750,z:0.000}, rot:{x:0, y:0, z:0} },
+    armR_hand:   { pos:{x:0.000, y:-0.710,z:0.000}, rot:{x:0, y:0, z:0} },
+    hipL:        { pos:{x:-0.250,y:-0.350,z:0.000}, rot:{x:0, y:0, z:0} },
+    legL_thigh:  { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:0, y:0, z:0} },
+    legL_shin:   { pos:{x:0.000, y:-1.050,z:0.000}, rot:{x:0, y:0, z:0} },
+    legL_foot:   { pos:{x:0.000, y:-0.880,z:-0.210}, rot:{x:0, y:0, z:0} },
+    hipR:        { pos:{x:0.250, y:-0.350,z:0.000}, rot:{x:0, y:0, z:0} },
+    legR_thigh:  { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:0, y:0, z:0} },
+    legR_shin:   { pos:{x:0.000, y:-1.050,z:0.000}, rot:{x:0, y:0, z:0} },
+    legR_foot:   { pos:{x:0.000, y:-0.880,z:-0.210}, rot:{x:0, y:0, z:0} }
+  });
+
+  const MONKEY_TRANSFORMS = cloneTransforms({
+    ...HUMANOID_TRANSFORMS,
+    tailBase: { pos:{x:0.000, y:-0.250, z:-0.350}, rot:{x:15, y:0, z:0} },
+    tailMid:  { pos:{x:0.000, y:-0.380, z:-0.520}, rot:{x:20, y:0, z:0} },
+    tailTip:  { pos:{x:0.000, y:-0.420, z:-0.520}, rot:{x:28, y:0, z:0} }
+  });
+
+  const AQUATIC_TRANSFORMS = cloneTransforms({
+    core:      { pos:{x:0.000, y:0.800, z:0.000}, rot:{x:0, y:0, z:0} },
+    torsoFront:{ pos:{x:0.000, y:0.000, z:0.750}, rot:{x:0, y:0, z:0} },
+    torsoRear: { pos:{x:0.000, y:0.000, z:-0.720}, rot:{x:0, y:0, z:0} },
+    neck:      { pos:{x:0.000, y:0.280, z:1.350}, rot:{x:0, y:0, z:0} },
+    head:      { pos:{x:0.000, y:0.000, z:0.600}, rot:{x:0, y:0, z:0} },
+    finFrontL: { pos:{x:-0.820, y:-0.100, z:0.600}, rot:{x:0, y:0, z:25} },
+    finFrontR: { pos:{x:0.820,  y:-0.100, z:0.600}, rot:{x:0, y:0, z:-25} },
+    finRearL:  { pos:{x:-0.780, y:-0.120, z:-0.450}, rot:{x:0, y:0, z:32} },
+    finRearR:  { pos:{x:0.780,  y:-0.120, z:-0.450}, rot:{x:0, y:0, z:-32} },
+    tailBase:  { pos:{x:0.000, y:-0.050, z:-1.020}, rot:{x:0, y:0, z:0} },
+    tailTip:   { pos:{x:0.000, y:-0.060, z:-0.900}, rot:{x:5, y:0, z:0} }
+  });
+
+  const HUMANOID_DEFAULT = {
+    id: "anthro-biped",
+    label: "Anthropomorphic Bipedal",
+    partKeys: HUMANOID_PART_KEYS,
+    defaults: {
+      rigType: "anthro-biped",
+      color: "#804a00",
+      collider: { width: 0.85, height: 2.4, depth: 0.7, y: 1.3 },
+      segments: HUMANOID_SEGMENTS,
+      transforms: HUMANOID_TRANSFORMS
+    },
+    builder: "humanoid",
+    options: { tail: false }
+  };
+
+  const MONKEY_SEGMENTS = {
+    ...HUMANOID_SEGMENTS,
+    tailBase: { w: 0.32, h: 0.45, d: 0.70 },
+    tailMid:  { w: 0.26, h: 0.40, d: 0.65 },
+    tailTip:  { w: 0.22, h: 0.35, d: 0.55 }
+  };
+
+  const MONKEY_DEFAULT = {
+    id: "monkey-build",
+    label: "Monkey Build",
+    partKeys: MONKEY_PART_KEYS,
+    defaults: {
+      rigType: "monkey-build",
+      color: "#8b5a2b",
+      collider: { width: 0.9, height: 2.35, depth: 0.75, y: 1.2 },
+      segments: MONKEY_SEGMENTS,
+      transforms: MONKEY_TRANSFORMS
+    },
+    builder: "humanoid",
+    options: { tail: true }
+  };
+
+  const AQUATIC_SEGMENTS = {
+    core:      { w: 1.25, h: 0.75, d: 1.60 },
+    torsoFront:{ w: 1.05, h: 0.65, d: 1.10 },
+    torsoRear: { w: 1.15, h: 0.60, d: 1.30 },
+    neck:      { w: 0.50, h: 0.45, d: 0.50 },
+    head:      { w: 0.70, h: 0.50, d: 0.70 },
+    finFrontL: { w: 0.24, h: 0.40, d: 1.10 },
+    finFrontR: { w: 0.24, h: 0.40, d: 1.10 },
+    finRearL:  { w: 0.28, h: 0.38, d: 1.05 },
+    finRearR:  { w: 0.28, h: 0.38, d: 1.05 },
+    tailBase:  { w: 0.42, h: 0.42, d: 0.90 },
+    tailTip:   { w: 0.36, h: 0.36, d: 1.05 }
+  };
+
+  const AQUATIC_DEFAULT = {
+    id: "aquatic-quad",
+    label: "Aquatic Quadruped",
+    partKeys: AQUATIC_PART_KEYS,
+    defaults: {
+      rigType: "aquatic-quad",
+      color: "#0d5c7d",
+      collider: { width: 1.4, height: 1.6, depth: 3.2, y: 0.9 },
+      segments: AQUATIC_SEGMENTS,
+      transforms: AQUATIC_TRANSFORMS
+    },
+    builder: "aquatic",
+    options: { }
+  };
+
+  const DEFAULT_RIG_TYPES = [HUMANOID_DEFAULT, AQUATIC_DEFAULT, MONKEY_DEFAULT];
+
   if (!RigDefinitions.COSMETICS) {
     RigDefinitions.COSMETICS = defaultCosmetics;
   }
   if (!RigDefinitions.DEFAULT_COSMETICS) {
     RigDefinitions.DEFAULT_COSMETICS = fallbackDefaultCosmetics;
+  }
+
+  if (!RigDefinitions.RIG_TYPES) {
+    RigDefinitions.RIG_TYPES = DEFAULT_RIG_TYPES.map(entry => JSON.parse(JSON.stringify(entry)));
+  }
+
+  if (!RigDefinitions.DEFAULT_RIG_TYPE) {
+    const first = RigDefinitions.RIG_TYPES && RigDefinitions.RIG_TYPES[0];
+    RigDefinitions.DEFAULT_RIG_TYPE = first?.id || "anthro-biped";
+  }
+
+  if (!RigDefinitions.PART_KEYS) {
+    const active = (RigDefinitions.RIG_TYPES || []).find(type => type.id === RigDefinitions.DEFAULT_RIG_TYPE) || (RigDefinitions.RIG_TYPES && RigDefinitions.RIG_TYPES[0]);
+    RigDefinitions.PART_KEYS = Array.isArray(active?.partKeys) ? active.partKeys.slice() : HUMANOID_PART_KEYS.slice();
   }
 
   if (!RigDefinitions.AnimationStore) {
