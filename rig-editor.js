@@ -1601,13 +1601,24 @@ const DEF = {
       autoKeyHookedGizmos.add(gizmo);
       return true;
     };
-    const registered = [
-      register(getManagerGizmo("position"), "pos"),
-      register(getManagerGizmo("rotation"), "rot"),
-      register(getManagerGizmo("scale"), "scl")
-    ].some(Boolean);
-    if (registered) {
-      autoKeyHooksInstalled = true;
+    const gizmoSpecs = [
+      ["position", "pos"],
+      ["rotation", "rot"],
+      ["scale", "scl"]
+    ];
+    for (const [type, channel] of gizmoSpecs) {
+      const gizmo = getManagerGizmo(type);
+      if (!gizmo || autoKeyHookedGizmos.has(gizmo)) continue;
+      register(gizmo, channel);
+    }
+
+    const allHooked = gizmoSpecs.every(([type]) => {
+      const gizmo = getManagerGizmo(type);
+      return gizmo && autoKeyHookedGizmos.has(gizmo);
+    });
+
+    autoKeyHooksInstalled = allHooked;
+    if (allHooked) {
       if (autoKeyHookObserver && scene) {
         scene.onBeforeRenderObservable.remove(autoKeyHookObserver);
         autoKeyHookObserver = null;
