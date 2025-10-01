@@ -2,57 +2,410 @@
 // animation editor, toolbar actions, robust picking (no pelvis-only), outline highlight,
 // and panel-free layout (right box removed).
 (() => {
-  // ---------- Defaults ----------
-const DEF = {
-  color: "#804a00",
-  // Sizes (from hxh_rig.xml)
-  pelvis: { w: 0.850, h: 0.350, d: 0.520 },
-  torsoLower: { w: 0.900, h: 0.450, d: 0.550 },
-  torsoUpper: { w: 0.950, h: 0.710, d: 0.550 },
-  neck: { w: 0.250, h: 0.250, d: 0.250 },
-  head: { w: 0.450, h: 0.500, d: 0.450 },
-  arm: {
-    upperW: 0.340, upperD: 0.340, upperLen: 0.750,
-    foreW: 0.300,  foreD: 0.270,  foreLen: 0.700,
-    handLen: 0.250
-  },
-  leg: {
-    thighW: 0.450, thighD: 0.500, thighLen: 1.050,
-    shinW: 0.330,  shinD: 0.430,  shinLen: 0.880,
-    footW: 0.320,  footH: 0.210,  footLen: 0.750
-  },
-  // Offsets/rotations (degrees converted in runtime where needed)
-  transforms: {
-    pelvis:      { pos:{x:0.000, y:1.190, z:0.000}, rot:{x:0, y:0, z:0} },
-    torsoLower:  { pos:{x:0.000, y:0.450, z:0.000}, rot:{x:0, y:0, z:0} },
-    torsoUpper:  { pos:{x:0.000, y:0.710, z:0.000}, rot:{x:0, y:0, z:0} },
-    neck:        { pos:{x:0.000, y:0.250, z:0.000}, rot:{x:0, y:0, z:0} },
-    head:        { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:0, y:0, z:0} },
-    shoulderL:   { pos:{x:-0.650,y:0.000, z:0.000}, rot:{x:0, y:180, z:0} },
-    armL_upper:  { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:0, y:0, z:0} },
-    armL_fore:   { pos:{x:0.000, y:-0.750,z:0.000}, rot:{x:0, y:0, z:0} },
-    armL_hand:   { pos:{x:0.000, y:-0.710,z:0.000}, rot:{x:0, y:0, z:0} },
-    shoulderR:   { pos:{x:0.650, y:0.000, z:0.000}, rot:{x:0, y:180, z:0} },
-    armR_upper:  { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:0, y:0, z:0} },
-    armR_fore:   { pos:{x:0.000, y:-0.750,z:0.000}, rot:{x:0, y:0, z:0} },
-    armR_hand:   { pos:{x:0.000, y:-0.710,z:0.000}, rot:{x:0, y:0, z:0} },
-    hipL:        { pos:{x:-0.250,y:-0.350,z:0.000}, rot:{x:0, y:0, z:0} },
-    legL_thigh:  { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:0, y:0, z:0} },
-    legL_shin:   { pos:{x:0.000, y:-1.050,z:0.000}, rot:{x:0, y:0, z:0} },
-    legL_foot:   { pos:{x:0.000, y:-0.880,z:-0.210}, rot:{x:0, y:0, z:0} },
-    hipR:        { pos:{x:0.250, y:-0.350,z:0.000}, rot:{x:0, y:0, z:0} },
-    legR_thigh:  { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:0, y:0, z:0} },
-    legR_shin:   { pos:{x:0.000, y:-1.050,z:0.000}, rot:{x:0, y:0, z:0} },
-    legR_foot:   { pos:{x:0.000, y:-0.880,z:-0.210}, rot:{x:0, y:0, z:0} },
-  }
-};
+  // ---------- Rig type catalog ----------
+  const deepClone = o => JSON.parse(JSON.stringify(o));
+  const RIG_TYPE_STORAGE_KEY = "hxh.rig.type";
 
+  const FALLBACK_RIG_TYPES = (() => {
+    const humanoid = {
+      id: "anthro-biped",
+      label: "Anthropomorphic Bipedal",
+      partKeys: [
+        "pelvis", "torsoLower", "torsoUpper", "neck", "head",
+        "shoulderL", "armL_upper", "armL_fore", "armL_hand",
+        "shoulderR", "armR_upper", "armR_fore", "armR_hand",
+        "hipL", "legL_thigh", "legL_shin", "legL_foot",
+        "hipR", "legR_thigh", "legR_shin", "legR_foot"
+      ],
+      defaults: {
+        rigType: "anthro-biped",
+        color: "#804a00",
+        collider: { width: 0.85, height: 2.4, depth: 0.7, y: 1.3 },
+        segments: {
+          pelvis: { w: 0.85, h: 0.35, d: 0.52 },
+          torsoLower: { w: 0.9, h: 0.45, d: 0.55 },
+          torsoUpper: { w: 0.95, h: 0.71, d: 0.55 },
+          neck: { w: 0.25, h: 0.25, d: 0.25 },
+          head: { w: 0.45, h: 0.5, d: 0.45 },
+          armL_upper: { w: 0.34, h: 0.75, d: 0.34 },
+          armL_fore: { w: 0.3, h: 0.7, d: 0.27 },
+          armL_hand: { w: 0.28, h: 0.25, d: 0.25 },
+          armR_upper: { w: 0.34, h: 0.75, d: 0.34 },
+          armR_fore: { w: 0.3, h: 0.7, d: 0.27 },
+          armR_hand: { w: 0.28, h: 0.25, d: 0.25 },
+          legL_thigh: { w: 0.45, h: 1.05, d: 0.5 },
+          legL_shin: { w: 0.33, h: 0.88, d: 0.43 },
+          legL_foot: { w: 0.32, h: 0.21, d: 0.75 },
+          legR_thigh: { w: 0.45, h: 1.05, d: 0.5 },
+          legR_shin: { w: 0.33, h: 0.88, d: 0.43 },
+          legR_foot: { w: 0.32, h: 0.21, d: 0.75 }
+        },
+        transforms: {
+          pelvis:      { pos:{x:0.000, y:1.190, z:0.000}, rot:{x:0, y:0, z:0} },
+          torsoLower:  { pos:{x:0.000, y:0.450, z:0.000}, rot:{x:0, y:0, z:0} },
+          torsoUpper:  { pos:{x:0.000, y:0.710, z:0.000}, rot:{x:0, y:0, z:0} },
+          neck:        { pos:{x:0.000, y:0.250, z:0.000}, rot:{x:0, y:0, z:0} },
+          head:        { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:0, y:0, z:0} },
+          shoulderL:   { pos:{x:-0.650,y:0.000, z:0.000}, rot:{x:0, y:180, z:0} },
+          armL_upper:  { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:0, y:0, z:0} },
+          armL_fore:   { pos:{x:0.000, y:-0.750,z:0.000}, rot:{x:0, y:0, z:0} },
+          armL_hand:   { pos:{x:0.000, y:-0.710,z:0.000}, rot:{x:0, y:0, z:0} },
+          shoulderR:   { pos:{x:0.650, y:0.000, z:0.000}, rot:{x:0, y:180, z:0} },
+          armR_upper:  { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:0, y:0, z:0} },
+          armR_fore:   { pos:{x:0.000, y:-0.750,z:0.000}, rot:{x:0, y:0, z:0} },
+          armR_hand:   { pos:{x:0.000, y:-0.710,z:0.000}, rot:{x:0, y:0, z:0} },
+          hipL:        { pos:{x:-0.250,y:-0.350,z:0.000}, rot:{x:0, y:0, z:0} },
+          legL_thigh:  { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:0, y:0, z:0} },
+          legL_shin:   { pos:{x:0.000, y:-1.050,z:0.000}, rot:{x:0, y:0, z:0} },
+          legL_foot:   { pos:{x:0.000, y:-0.880,z:-0.210}, rot:{x:0, y:0, z:0} },
+          hipR:        { pos:{x:0.250, y:-0.350,z:0.000}, rot:{x:0, y:0, z:0} },
+          legR_thigh:  { pos:{x:0.000, y:0.000, z:0.000}, rot:{x:0, y:0, z:0} },
+          legR_shin:   { pos:{x:0.000, y:-1.050,z:0.000}, rot:{x:0, y:0, z:0} },
+          legR_foot:   { pos:{x:0.000, y:-0.880,z:-0.210}, rot:{x:0, y:0, z:0} }
+        }
+      },
+      builder: "humanoid",
+      options: { tail: false }
+    };
+
+    const monkey = {
+      id: "monkey-build",
+      label: "Monkey Build",
+      partKeys: [
+        ...humanoid.partKeys,
+        "tailBase", "tailMid", "tailTip"
+      ],
+      defaults: {
+        rigType: "monkey-build",
+        color: "#8b5a2b",
+        collider: { width: 0.9, height: 2.35, depth: 0.75, y: 1.2 },
+        segments: {
+          ...humanoid.defaults.segments,
+          tailBase: { w: 0.32, h: 0.45, d: 0.70 },
+          tailMid:  { w: 0.26, h: 0.40, d: 0.65 },
+          tailTip:  { w: 0.22, h: 0.35, d: 0.55 }
+        },
+        transforms: {
+          ...humanoid.defaults.transforms,
+          tailBase: { pos:{x:0.000, y:-0.250, z:-0.350}, rot:{x:15, y:0, z:0} },
+          tailMid:  { pos:{x:0.000, y:-0.380, z:-0.520}, rot:{x:20, y:0, z:0} },
+          tailTip:  { pos:{x:0.000, y:-0.420, z:-0.520}, rot:{x:28, y:0, z:0} }
+        }
+      },
+      builder: "humanoid",
+      options: { tail: true }
+    };
+
+    const aquatic = {
+      id: "aquatic-quad",
+      label: "Aquatic Quadruped",
+      partKeys: [
+        "core", "torsoFront", "torsoRear", "neck", "head",
+        "finFrontL", "finFrontR", "finRearL", "finRearR",
+        "tailBase", "tailTip"
+      ],
+      defaults: {
+        rigType: "aquatic-quad",
+        color: "#0d5c7d",
+        collider: { width: 1.4, height: 1.6, depth: 3.2, y: 0.9 },
+        segments: {
+          core:      { w: 1.25, h: 0.75, d: 1.60 },
+          torsoFront:{ w: 1.05, h: 0.65, d: 1.10 },
+          torsoRear: { w: 1.15, h: 0.60, d: 1.30 },
+          neck:      { w: 0.50, h: 0.45, d: 0.50 },
+          head:      { w: 0.70, h: 0.50, d: 0.70 },
+          finFrontL: { w: 0.24, h: 0.40, d: 1.10 },
+          finFrontR: { w: 0.24, h: 0.40, d: 1.10 },
+          finRearL:  { w: 0.28, h: 0.38, d: 1.05 },
+          finRearR:  { w: 0.28, h: 0.38, d: 1.05 },
+          tailBase:  { w: 0.42, h: 0.42, d: 0.90 },
+          tailTip:   { w: 0.36, h: 0.36, d: 1.05 }
+        },
+        transforms: {
+          core:      { pos:{x:0.000, y:0.800, z:0.000}, rot:{x:0, y:0, z:0} },
+          torsoFront:{ pos:{x:0.000, y:0.000, z:0.750}, rot:{x:0, y:0, z:0} },
+          torsoRear: { pos:{x:0.000, y:0.000, z:-0.720}, rot:{x:0, y:0, z:0} },
+          neck:      { pos:{x:0.000, y:0.280, z:1.350}, rot:{x:0, y:0, z:0} },
+          head:      { pos:{x:0.000, y:0.000, z:0.600}, rot:{x:0, y:0, z:0} },
+          finFrontL: { pos:{x:-0.820, y:-0.100, z:0.600}, rot:{x:0, y:0, z:25} },
+          finFrontR: { pos:{x:0.820,  y:-0.100, z:0.600}, rot:{x:0, y:0, z:-25} },
+          finRearL:  { pos:{x:-0.780, y:-0.120, z:-0.450}, rot:{x:0, y:0, z:32} },
+          finRearR:  { pos:{x:0.780,  y:-0.120, z:-0.450}, rot:{x:0, y:0, z:-32} },
+          tailBase:  { pos:{x:0.000, y:-0.050, z:-1.020}, rot:{x:0, y:0, z:0} },
+          tailTip:   { pos:{x:0.000, y:-0.060, z:-0.900}, rot:{x:5, y:0, z:0} }
+        }
+      },
+      builder: "aquatic",
+      options: {}
+    };
+
+    return [humanoid, aquatic, monkey];
+  })();
+
+  function normalizeCollider(collider = {}, fallback = {}) {
+    const source = { ...fallback, ...collider };
+    return {
+      width: Number(source.width) || 1,
+      height: Number(source.height) || 1,
+      depth: Number(source.depth) || 1,
+      y: Number(source.y) || 0
+    };
+  }
+
+  function normalizeSegmentsMap(map = {}, partKeys = []) {
+    const out = {};
+    partKeys.forEach(key => {
+      const src = map[key];
+      if (!src) return;
+      const w = Number(src.w ?? src.width);
+      const h = Number(src.h ?? src.height);
+      const d = Number(src.d ?? src.depth ?? src.len ?? src.length);
+      if (!Number.isFinite(w) || !Number.isFinite(h) || !Number.isFinite(d)) return;
+      out[key] = { w, h, d };
+    });
+    return out;
+  }
+
+  function normalizeTransformsMap(map = {}, partKeys = []) {
+    const out = {};
+    partKeys.forEach(key => {
+      const src = map[key] || {};
+      const pos = src.pos || {};
+      const rot = src.rot || {};
+      out[key] = {
+        pos: {
+          x: Number(pos.x) || 0,
+          y: Number(pos.y) || 0,
+          z: Number(pos.z) || 0
+        },
+        rot: {
+          x: Number(rot.x) || 0,
+          y: Number(rot.y) || 0,
+          z: Number(rot.z) || 0
+        }
+      };
+    });
+    return out;
+  }
+
+  function normalizeRigEntry(entry, fallback) {
+    if (!entry && !fallback) return null;
+    const source = deepClone(entry || {});
+    const base = fallback || {};
+    const id = String(source.id || base.id || "").trim();
+    if (!id) return null;
+    const partKeys = Array.isArray(source.partKeys) && source.partKeys.length
+      ? source.partKeys.slice()
+      : (Array.isArray(base.partKeys) ? base.partKeys.slice() : []);
+    const defaultsBase = (source.defaults && typeof source.defaults === "object") ? source.defaults : {};
+    const fallbackDefaults = base.defaults || {};
+    const defaults = {
+      ...deepClone(fallbackDefaults),
+      ...deepClone(defaultsBase)
+    };
+    defaults.rigType = id;
+    defaults.color = defaults.color || fallbackDefaults.color || "#804a00";
+    defaults.collider = normalizeCollider(defaults.collider, fallbackDefaults.collider);
+    defaults.segments = normalizeSegmentsMap(defaults.segments, partKeys);
+    defaults.transforms = normalizeTransformsMap(defaults.transforms, partKeys);
+    return {
+      id,
+      label: String(source.label || base.label || id),
+      partKeys,
+      defaults,
+      builder: source.builder || base.builder || "humanoid",
+      options: { ...(base.options || {}), ...(source.options || {}) }
+    };
+  }
+
+  const fallbackMap = new Map(FALLBACK_RIG_TYPES.map(entry => [entry.id, entry]));
+  const rigTypeList = [];
+  const rigTypeMap = new Map();
+
+  const sharedRigTypes = Array.isArray(window.RigDefinitions?.RIG_TYPES) && window.RigDefinitions.RIG_TYPES.length
+    ? window.RigDefinitions.RIG_TYPES
+    : null;
+
+  const primarySource = sharedRigTypes || FALLBACK_RIG_TYPES;
+  primarySource.forEach(raw => {
+    const normalized = normalizeRigEntry(raw, fallbackMap.get(raw.id));
+    if (!normalized || rigTypeMap.has(normalized.id)) return;
+    rigTypeList.push(normalized);
+    rigTypeMap.set(normalized.id, normalized);
+  });
+
+  FALLBACK_RIG_TYPES.forEach(raw => {
+    if (rigTypeMap.has(raw.id)) return;
+    const normalized = normalizeRigEntry(raw, raw);
+    if (!normalized) return;
+    rigTypeList.push(normalized);
+    rigTypeMap.set(normalized.id, normalized);
+  });
+
+  const defaultRigId = (() => {
+    const explicit = typeof window.RigDefinitions?.DEFAULT_RIG_TYPE === "string"
+      ? window.RigDefinitions.DEFAULT_RIG_TYPE
+      : null;
+    if (explicit && rigTypeMap.has(explicit)) return explicit;
+    let stored = null;
+    try {
+      stored = localStorage.getItem(RIG_TYPE_STORAGE_KEY);
+    } catch {
+      stored = null;
+    }
+    if (stored && rigTypeMap.has(stored)) return stored;
+    return rigTypeList[0]?.id || "anthro-biped";
+  })();
+
+  let rigTypeId = defaultRigId;
+  let activeRigDef = rigTypeMap.get(rigTypeId) || rigTypeList[0] || null;
+  if (!activeRigDef && rigTypeList.length) {
+    activeRigDef = rigTypeList[0];
+    rigTypeId = activeRigDef.id;
+  }
+
+  let PART_KEYS = activeRigDef ? activeRigDef.partKeys.slice() : [];
+  if (window.RigDefinitions) {
+    window.RigDefinitions.PART_KEYS = PART_KEYS.slice();
+  }
+
+  function createDefaultParamsForType(id) {
+    const def = rigTypeMap.get(id) || rigTypeList.find(entry => entry.id === id) || activeRigDef;
+    const base = def ? deepClone(def.defaults) : { rigType: id, color: "#888", collider: { width: 1, height: 1, depth: 1, y: 0 }, segments: {}, transforms: {} };
+    base.rigType = def?.id || id;
+    base.segments = normalizeSegmentsMap(base.segments, def?.partKeys || []);
+    base.transforms = normalizeTransformsMap(base.transforms, def?.partKeys || []);
+    base.collider = normalizeCollider(base.collider, def?.defaults?.collider || {});
+    return base;
+  }
+
+  function currentRigDefinition() {
+    return rigTypeMap.get(rigTypeId) || activeRigDef || rigTypeList[0] || null;
+  }
+
+  function persistRigType(id) {
+    try {
+      localStorage.setItem(RIG_TYPE_STORAGE_KEY, id);
+    } catch {
+      /* ignore persistence errors */
+    }
+  }
+
+  function ensureRigParamsStructure(raw, keys = PART_KEYS, definition = currentRigDefinition()) {
+    const targetKeys = Array.isArray(keys) && keys.length ? keys : (definition?.partKeys || []);
+    const baseDef = definition?.defaults || {};
+    const paramsObj = raw && typeof raw === "object" ? raw : {};
+    if (!paramsObj.segments || typeof paramsObj.segments !== "object") {
+      paramsObj.segments = {};
+    }
+    const normalizedSegments = {};
+    targetKeys.forEach(key => {
+      const seg = paramsObj.segments[key];
+      let w = Number(seg?.w ?? seg?.width);
+      let h = Number(seg?.h ?? seg?.height);
+      let d = Number(seg?.d ?? seg?.depth ?? seg?.len ?? seg?.length);
+      if (!Number.isFinite(w) || !Number.isFinite(h) || !Number.isFinite(d)) {
+        const fallback = baseDef.segments?.[key];
+        w = Number(fallback?.w) || 0.4;
+        h = Number(fallback?.h) || 0.4;
+        d = Number(fallback?.d) || 0.4;
+      }
+      normalizedSegments[key] = { w, h, d };
+    });
+    paramsObj.segments = normalizedSegments;
+    paramsObj.collider = normalizeCollider(paramsObj.collider, baseDef.collider || {});
+    paramsObj.rigType = typeof paramsObj.rigType === "string" ? paramsObj.rigType : (currentRigDefinition()?.id || rigTypeId);
+    ensureTransformMap(paramsObj, targetKeys);
+    return paramsObj;
+  }
+
+  const rigParamCache = new Map();
+  let rigTypeSelectEl = null;
+  let partSelectorEl = null;
+
+  function updateRigTypeSelectUI() {
+    if (!rigTypeSelectEl) return;
+    rigTypeSelectEl.innerHTML = "";
+    rigTypeList.forEach(entry => {
+      const opt = document.createElement("option");
+      opt.value = entry.id;
+      opt.textContent = entry.label || entry.id;
+      rigTypeSelectEl.appendChild(opt);
+    });
+    rigTypeSelectEl.value = rigTypeId;
+  }
+
+  function populatePartSelector(selectedValue) {
+    if (!partSelectorEl) return;
+    const previous = selectedValue ?? partSelectorEl.value;
+    partSelectorEl.innerHTML = "";
+    PART_KEYS.forEach(key => {
+      const opt = document.createElement("option");
+      opt.value = key;
+      opt.textContent = key;
+      partSelectorEl.appendChild(opt);
+    });
+    if (previous && PART_KEYS.includes(previous)) {
+      partSelectorEl.value = previous;
+    }
+  }
+
+  function setRigType(newId, options = {}) {
+    if (!newId || !rigTypeMap.has(newId)) return false;
+    const { paramsOverride = null, skipCache = false, deferRefresh = false, force = false } = options;
+    if (newId === rigTypeId && !force && !paramsOverride) {
+      if (!deferRefresh) {
+        updateRigTypeSelectUI();
+        populatePartSelector();
+      }
+      return true;
+    }
+
+    if (!skipCache && params) {
+      try {
+        syncParamsFromScene();
+      } catch { /* ignore sync failures */ }
+      rigParamCache.set(rigTypeId, deepClone(params));
+    }
+
+    rigTypeId = newId;
+    activeRigDef = rigTypeMap.get(newId) || activeRigDef;
+    PART_KEYS = activeRigDef ? activeRigDef.partKeys.slice() : [];
+    if (window.RigDefinitions) {
+      window.RigDefinitions.PART_KEYS = PART_KEYS.slice();
+    }
+
+    let nextParams = null;
+    if (paramsOverride) {
+      nextParams = deepClone(paramsOverride);
+    } else if (!skipCache && rigParamCache.has(newId)) {
+      nextParams = deepClone(rigParamCache.get(newId));
+    } else {
+      nextParams = createDefaultParamsForType(newId);
+    }
+
+    params = ensureRigParamsStructure(nextParams, PART_KEYS, activeRigDef);
+    if (!params.color) {
+      params.color = getRigColor();
+    }
+    params.rigType = newId;
+    persistRigType(newId);
+
+    if (!deferRefresh) {
+      refresh();
+      clearSelection();
+      updateRigTypeSelectUI();
+      populatePartSelector();
+      markAnimationGroupDirty();
+      refreshDopeSheet?.();
+      applyPoseForFrame?.(playheadFrame);
+      saveLocalSilently?.();
+    }
+    return true;
+  }
 
   function t0(){ return { pos:{x:0,y:0,z:0}, rot:{x:0,y:0,z:0} }; }
   const d2r = d => d * Math.PI / 180;
-
-  // Deep clone helper
-  const deepClone = o => JSON.parse(JSON.stringify(o));
 
   // ===== Module-level state =====
   let gizmoMgr, selectedKey = null;
@@ -480,18 +833,6 @@ const DEF = {
       persistOnionSkinSetting(onionSkinEnabled);
     }
   }
-
-
-  // Prefer shared rig part keys if provided by the game
-  if (window.RigDefinitions && Array.isArray(window.RigDefinitions.PART_KEYS)) {
-    // Shadow the local const via a new binding for downstream references
-    // (Keep the old value available as LOCAL_PART_KEYS if needed)
-    const LOCAL_PART_KEYS = PART_KEYS;
-    // eslint-disable-next-line no-var
-    var PART_KEYS = window.RigDefinitions.PART_KEYS.slice();
-  }
-
-
   // ---------- Picking robustness ----------
   // Map pivot TransformNode -> part key (avoids pelvis fallback)
   const pivotToKey = new WeakMap();
@@ -531,16 +872,22 @@ const DEF = {
     return null;
   }
 
-  function ensureTransformMap(p){
+  function ensureTransformMap(p, keys = PART_KEYS){
     if (!p.transforms || typeof p.transforms!=="object") p.transforms = {};
-    for (const k of PART_KEYS){
+    const targetKeys = Array.isArray(keys) && keys.length ? keys : PART_KEYS;
+    const allowed = new Set(targetKeys);
+    targetKeys.forEach(k => {
       const base = p.transforms[k] || {};
-      const pos = base.pos || {}, rot = base.rot || {};
+      const pos = base.pos || {};
+      const rot = base.rot || {};
       p.transforms[k] = {
         pos:{ x:Number(pos.x)||0, y:Number(pos.y)||0, z:Number(pos.z)||0 },
         rot:{ x:Number(rot.x)||0, y:Number(rot.y)||0, z:Number(rot.z)||0 },
       };
-    }
+    });
+    Object.keys(p.transforms).forEach(key => {
+      if (!allowed.has(key)) delete p.transforms[key];
+    });
     return p.transforms;
   }
 
@@ -876,12 +1223,8 @@ const DEF = {
     updateAutoKeyButtonUI();
 
     // populate parts
-    partSel.innerHTML = "";
-    PART_KEYS.forEach(p=>{
-      const opt=document.createElement("option");
-      opt.value=p; opt.textContent=p;
-      partSel.appendChild(opt);
-    });
+    partSelectorEl = partSel;
+    populatePartSelector();
 
     timelineRoot.innerHTML = "";
 
@@ -1779,9 +2122,23 @@ const DEF = {
     booted = true;
 
     // load params (browser) or defaults, then normalize
-    try { params = JSON.parse(localStorage.getItem("hxh.rig.params")||"null"); } catch { params=null; }
-    if (!params) params = deepClone(DEF);
-    ensureTransformMap(params);
+    let storedParams = null;
+    try { storedParams = JSON.parse(localStorage.getItem("hxh.rig.params")||"null"); } catch { storedParams=null; }
+    if (storedParams && typeof storedParams === "object") {
+      const storedType = typeof storedParams.rigType === "string" ? storedParams.rigType : null;
+      if (storedType && rigTypeMap.has(storedType)) {
+        rigTypeId = storedType;
+        activeRigDef = rigTypeMap.get(storedType) || activeRigDef;
+        PART_KEYS = activeRigDef ? activeRigDef.partKeys.slice() : PART_KEYS;
+        if (window.RigDefinitions) {
+          window.RigDefinitions.PART_KEYS = PART_KEYS.slice();
+        }
+      }
+    }
+    params = ensureRigParamsStructure(storedParams ? deepClone(storedParams) : createDefaultParamsForType(rigTypeId), PART_KEYS, activeRigDef);
+    if (!params.color) {
+      params.color = getRigColor();
+    }
 
     const canvas = document.getElementById("rig-canvas");
     engine = new BABYLON.Engine(canvas, true, { stencil:true });
@@ -2062,6 +2419,27 @@ const DEF = {
       const el=document.getElementById(id);
       if (el) el.onclick=()=> setGizmoMode(mode);
     });
+    const toolbar = document.getElementById("rig-toolbar");
+    if (toolbar){
+      let picker = toolbar.querySelector("select[data-role='rig-type']");
+      if (!picker){
+        const wrap = document.createElement("div");
+        wrap.className = "rig-type-picker";
+        const label = document.createElement("label");
+        label.textContent = "Rig Type";
+        picker = document.createElement("select");
+        picker.dataset.role = "rig-type";
+        picker.className = "secondary";
+        label.appendChild(picker);
+        wrap.appendChild(label);
+        toolbar.insertBefore(wrap, toolbar.firstChild);
+      }
+      rigTypeSelectEl = picker;
+      updateRigTypeSelectUI();
+      picker.onchange = () => {
+        setRigType(picker.value);
+      };
+    }
     window.addEventListener("keydown",(e)=>{
       if (e.repeat) return;
       if (e.key==="s"||e.key==="S") setGizmoMode("select");
@@ -2077,13 +2455,14 @@ const DEF = {
     const q = id => document.getElementById(id);
 
     q("rig-reset")?.addEventListener("click", ()=>{
-      params = deepClone(DEF);
+      params = ensureRigParamsStructure(createDefaultParamsForType(rigTypeId), PART_KEYS, currentRigDefinition());
       refresh();
       saveLocalSilently();
       alert("Rig reset to defaults.");
     });
 
     q("rig-zero")?.addEventListener("click", ()=>{
+      ensureTransformMap(params, PART_KEYS);
       for (const k of Object.keys(params.transforms)) params.transforms[k] = t0();
       refresh();
       saveLocalSilently();
@@ -2108,8 +2487,14 @@ const DEF = {
         const text = await f.text();
         const loaded = parseRigXML(text);
         if (!loaded) { alert("Invalid XML format."); return; }
-        params = loaded; ensureTransformMap(params);
-        refresh(); saveLocalSilently(); alert("Rig imported.");
+        if (loaded.rigType && rigTypeMap.has(loaded.rigType)) {
+          setRigType(loaded.rigType, { paramsOverride: loaded.params || loaded, skipCache: true });
+        } else {
+          params = ensureRigParamsStructure(loaded.params || loaded, PART_KEYS, currentRigDefinition());
+          refresh();
+        }
+        saveLocalSilently();
+        alert("Rig imported.");
       }catch(err){ console.error(err); alert("Failed to import XML."); }
       finally { e.target.value=""; }
     });
@@ -2141,36 +2526,180 @@ const DEF = {
 
   // ---------- Build rig (same topology as the game) ----------
   function mat(hex){
-    const m = new BABYLON.StandardMaterial("m"+Math.random(), scene);
+    const m = new BABYLON.StandardMaterial(`m-${Math.random().toString(36).slice(2)}`, scene);
     const c = BABYLON.Color3.FromHexString(hex);
     m.diffuseColor=c; m.emissiveColor=c.scale(0.16);
     return m;
   }
 
-  function segY(parent, key, w, h, d, hex){
-    const pivot = new BABYLON.TransformNode(key+"_pivot", scene);
-    pivot.parent = parent;
-    const mesh = BABYLON.MeshBuilder.CreateBox(key,{width:w,height:h,depth:d},scene);
-    mesh.material = mat(hex);
-    mesh.parent = pivot;
-    mesh.position.y = -h*0.5;
+  function registerPivot(key, pivot){
     nodes[key] = pivot;
-    pivotToKey.set(pivot, key);       // register for robust selection
+    pivotToKey.set(pivot, key);
+    return pivot;
+  }
+
+  function createPivotOnly(parent, key){
+    const pivot = new BABYLON.TransformNode(key, scene);
+    pivot.parent = parent;
+    return registerPivot(key, pivot);
+  }
+
+  function createBoxSegment(parent, key, size, options = {}) {
+    const axis = options.axis || "y";
+    const origin = options.origin || "start";
+    const offset = options.offset || {};
+    const pivotName = options.pivotName || `${key}_pivot`;
+    const pivot = new BABYLON.TransformNode(pivotName, scene);
+    pivot.parent = parent;
+    registerPivot(key, pivot);
+    const mesh = BABYLON.MeshBuilder.CreateBox(key, { width: size.w, height: size.h, depth: size.d }, scene);
+    mesh.material = mat(options.materialHex || getRigColor());
+    mesh.parent = pivot;
+    mesh.isPickable = true;
+    mesh.metadata = { ...(mesh.metadata || {}), partKey: key };
+    mesh.position.set(0, 0, 0);
+    if (axis === "y") {
+      mesh.position.y = origin === "end" ? size.h * 0.5 : (origin === "center" ? 0 : -size.h * 0.5);
+    } else if (axis === "x") {
+      mesh.position.x = origin === "end" ? size.w * 0.5 : (origin === "center" ? 0 : -size.w * 0.5);
+      if (!options.keepVerticalCenter) {
+        mesh.position.y = -size.h * 0.5;
+      }
+    } else if (axis === "z") {
+      mesh.position.z = origin === "end" ? size.d * 0.5 : (origin === "center" ? 0 : -size.d * 0.5);
+      if (!options.keepVerticalCenter) {
+        mesh.position.y = -size.h * 0.5;
+      }
+    }
+    mesh.position.x += offset.x || 0;
+    mesh.position.y += offset.y || 0;
+    mesh.position.z += offset.z || 0;
     return { pivot, mesh };
   }
 
-  function footSeg(parent, key, w, h, len, hex){
-    const pivot = new BABYLON.TransformNode(key+"_pivot", scene);
-    pivot.parent = parent;
-    const mesh = BABYLON.MeshBuilder.CreateBox(key,{width:w,height:h,depth:len},scene);
-    mesh.material = mat(hex);
-    mesh.parent = pivot;
-    mesh.position.y = -h*0.5;
-    mesh.position.z = len*0.5;
-    nodes[key] = pivot;
-    pivotToKey.set(pivot, key);       // register for robust selection
-    return { pivot, mesh };
+  function getSegmentSize(key) {
+    if (!params) return { w: 0.4, h: 0.4, d: 0.4 };
+    if (!params.segments || typeof params.segments !== "object") params.segments = {};
+    const seg = params.segments[key];
+    let w = Number(seg?.w);
+    let h = Number(seg?.h);
+    let d = Number(seg?.d);
+    if (!Number.isFinite(w) || !Number.isFinite(h) || !Number.isFinite(d)) {
+      const fallback = currentRigDefinition()?.defaults?.segments?.[key];
+      w = Number(fallback?.w) || 0.4;
+      h = Number(fallback?.h) || 0.4;
+      d = Number(fallback?.d) || 0.4;
+      params.segments[key] = { w, h, d };
+    }
+    return { w, h, d };
   }
+
+  function getColliderDimensions() {
+    const fallback = currentRigDefinition()?.defaults?.collider || {};
+    const collider = params?.collider || {};
+    const width = Number(collider.width) || Number(fallback.width) || 1;
+    const height = Number(collider.height) || Number(fallback.height) || 1;
+    const depth = Number(collider.depth) || Number(fallback.depth) || 1;
+    const y = Number(collider.y) || Number(fallback.y) || 0;
+    if (params) {
+      params.collider = { width, height, depth, y };
+    }
+    return { width, height, depth, y };
+  }
+
+  function getRigColor() {
+    const candidate = typeof params?.color === "string" ? params.color.trim() : null;
+    if (candidate && /^#([0-9a-f]{3}){1,2}$/i.test(candidate)) {
+      return candidate;
+    }
+    const fallback = currentRigDefinition()?.defaults?.color;
+    return (typeof fallback === "string" && /^#([0-9a-f]{3}){1,2}$/i.test(fallback)) ? fallback : "#888888";
+  }
+
+  function buildHumanoidRig({ options = {} } = {}) {
+    const hex = getRigColor();
+    const pelvis = createBoxSegment(rigRoot, "pelvis", getSegmentSize("pelvis"), { axis: "y", origin: "start", materialHex: hex });
+    const torsoLower = createBoxSegment(pelvis.pivot, "torsoLower", getSegmentSize("torsoLower"), { axis: "y", origin: "start", materialHex: hex });
+    torsoLower.pivot.position.y = 0.30;
+    const torsoUpper = createBoxSegment(torsoLower.pivot, "torsoUpper", getSegmentSize("torsoUpper"), { axis: "y", origin: "start", materialHex: hex });
+    torsoUpper.pivot.position.y = 0.55;
+    const neck = createBoxSegment(torsoUpper.pivot, "neck", getSegmentSize("neck"), { axis: "y", origin: "start", materialHex: hex });
+    neck.pivot.position.y = 0.55;
+    createBoxSegment(neck.pivot, "head", getSegmentSize("head"), { axis: "y", origin: "end", materialHex: hex });
+
+    const shoulderL = createPivotOnly(torsoUpper.pivot, "shoulderL");
+    const shoulderR = createPivotOnly(torsoUpper.pivot, "shoulderR");
+    const armLUpper = createBoxSegment(shoulderL, "armL_upper", getSegmentSize("armL_upper"), { axis: "y", origin: "start", materialHex: hex });
+    const armLFore = createBoxSegment(armLUpper.pivot, "armL_fore", getSegmentSize("armL_fore"), { axis: "y", origin: "start", materialHex: hex });
+    createBoxSegment(armLFore.pivot, "armL_hand", getSegmentSize("armL_hand"), { axis: "y", origin: "start", materialHex: hex });
+    const armRUpper = createBoxSegment(shoulderR, "armR_upper", getSegmentSize("armR_upper"), { axis: "y", origin: "start", materialHex: hex });
+    const armRFore = createBoxSegment(armRUpper.pivot, "armR_fore", getSegmentSize("armR_fore"), { axis: "y", origin: "start", materialHex: hex });
+    createBoxSegment(armRFore.pivot, "armR_hand", getSegmentSize("armR_hand"), { axis: "y", origin: "start", materialHex: hex });
+
+    const hipL = createPivotOnly(pelvis.pivot, "hipL");
+    const hipR = createPivotOnly(pelvis.pivot, "hipR");
+    const legLThigh = createBoxSegment(hipL, "legL_thigh", getSegmentSize("legL_thigh"), { axis: "y", origin: "start", materialHex: hex });
+    const legLShin = createBoxSegment(legLThigh.pivot, "legL_shin", getSegmentSize("legL_shin"), { axis: "y", origin: "start", materialHex: hex });
+    createBoxSegment(legLShin.pivot, "legL_foot", getSegmentSize("legL_foot"), { axis: "z", origin: "end", materialHex: hex });
+    const legRThigh = createBoxSegment(hipR, "legR_thigh", getSegmentSize("legR_thigh"), { axis: "y", origin: "start", materialHex: hex });
+    const legRShin = createBoxSegment(legRThigh.pivot, "legR_shin", getSegmentSize("legR_shin"), { axis: "y", origin: "start", materialHex: hex });
+    createBoxSegment(legRShin.pivot, "legR_foot", getSegmentSize("legR_foot"), { axis: "z", origin: "end", materialHex: hex });
+
+    if (options.tail) {
+      const tailBase = createBoxSegment(pelvis.pivot, "tailBase", getSegmentSize("tailBase"), { axis: "z", origin: "start", materialHex: hex });
+      tailBase.pivot.position.z = -getSegmentSize("pelvis").d * 0.5;
+      tailBase.pivot.position.y = -0.15;
+      const tailMid = createBoxSegment(tailBase.pivot, "tailMid", getSegmentSize("tailMid"), { axis: "z", origin: "start", materialHex: hex });
+      tailMid.pivot.position.z = -getSegmentSize("tailBase").d * 0.6;
+      tailMid.pivot.position.y = -0.05;
+      const tailTip = createBoxSegment(tailMid.pivot, "tailTip", getSegmentSize("tailTip"), { axis: "z", origin: "start", materialHex: hex });
+      tailTip.pivot.position.z = -getSegmentSize("tailMid").d * 0.6;
+      tailTip.pivot.position.y = -0.05;
+    }
+  }
+
+  function buildAquaticRig(){
+    const hex = getRigColor();
+    const coreSize = getSegmentSize("core");
+    const core = createBoxSegment(rigRoot, "core", coreSize, { axis: "y", origin: "center", materialHex: hex });
+    core.pivot.position.y = 0.4;
+
+    const frontSize = getSegmentSize("torsoFront");
+    const torsoFront = createBoxSegment(core.pivot, "torsoFront", frontSize, { axis: "z", origin: "end", materialHex: hex, keepVerticalCenter: true });
+    torsoFront.pivot.position.z = coreSize.d * 0.5;
+    const rearSize = getSegmentSize("torsoRear");
+    const torsoRear = createBoxSegment(core.pivot, "torsoRear", rearSize, { axis: "z", origin: "start", materialHex: hex, keepVerticalCenter: true });
+    torsoRear.pivot.position.z = -coreSize.d * 0.5;
+
+    const neck = createBoxSegment(torsoFront.pivot, "neck", getSegmentSize("neck"), { axis: "z", origin: "end", materialHex: hex, keepVerticalCenter: true });
+    neck.pivot.position.z = frontSize.d * 0.5;
+    const head = createBoxSegment(neck.pivot, "head", getSegmentSize("head"), { axis: "z", origin: "end", materialHex: hex, keepVerticalCenter: true });
+    head.pivot.position.z = getSegmentSize("neck").d * 0.6;
+
+    const finFrontL = createBoxSegment(torsoFront.pivot, "finFrontL", getSegmentSize("finFrontL"), { axis: "x", origin: "start", materialHex: hex, keepVerticalCenter: true });
+    finFrontL.pivot.position.z = 0.35;
+    finFrontL.pivot.position.y = -0.05;
+    const finFrontR = createBoxSegment(torsoFront.pivot, "finFrontR", getSegmentSize("finFrontR"), { axis: "x", origin: "end", materialHex: hex, keepVerticalCenter: true });
+    finFrontR.pivot.position.z = 0.35;
+    finFrontR.pivot.position.y = -0.05;
+
+    const finRearL = createBoxSegment(torsoRear.pivot, "finRearL", getSegmentSize("finRearL"), { axis: "x", origin: "start", materialHex: hex, keepVerticalCenter: true });
+    finRearL.pivot.position.z = -0.3;
+    finRearL.pivot.position.y = -0.1;
+    const finRearR = createBoxSegment(torsoRear.pivot, "finRearR", getSegmentSize("finRearR"), { axis: "x", origin: "end", materialHex: hex, keepVerticalCenter: true });
+    finRearR.pivot.position.z = -0.3;
+    finRearR.pivot.position.y = -0.1;
+
+    const tailBase = createBoxSegment(torsoRear.pivot, "tailBase", getSegmentSize("tailBase"), { axis: "z", origin: "start", materialHex: hex, keepVerticalCenter: true });
+    tailBase.pivot.position.z = -rearSize.d * 0.5;
+    const tailTip = createBoxSegment(tailBase.pivot, "tailTip", getSegmentSize("tailTip"), { axis: "z", origin: "start", materialHex: hex, keepVerticalCenter: true });
+    tailTip.pivot.position.z = -getSegmentSize("tailBase").d * 0.7;
+  }
+
+  const RIG_BUILDERS = {
+    humanoid: buildHumanoidRig,
+    aquatic: buildAquaticRig
+  };
 
   function rebuildRig(){
     disposeOnionGhosts();
@@ -2178,66 +2707,19 @@ const DEF = {
     scene.meshes.slice().forEach(m=>{ if(!["g","beacon"].includes(m.name)) m.dispose(); });
     scene.transformNodes.slice().forEach(t=>{ if(!t.name.startsWith("Axes")) t.dispose(); });
     nodes = {};
-    // NOTE: pivotToKey is a WeakMap; old entries will GC automatically.
-
-    const hex = params.color;
-
-    // visible collider in editor (to read scale/height)
-    rigRoot = BABYLON.MeshBuilder.CreateBox("collider",{width:0.85,height:2.4,depth:0.7},scene);
-    rigRoot.position.y = 1.3;
+    const { width, height, depth, y } = getColliderDimensions();
+    rigRoot = BABYLON.MeshBuilder.CreateBox("collider",{width,height,depth},scene);
+    rigRoot.position.y = y;
     const cm = new BABYLON.StandardMaterial("cm",scene);
     cm.diffuseColor = new BABYLON.Color3(0.1,0.2,0.25); cm.alpha=0.25;
     rigRoot.material = cm; rigRoot.isPickable=false;
 
-    // torso chain
-    const pelvis      = segY(rigRoot, "pelvis",      params.pelvis.w,     params.pelvis.h,     params.pelvis.d,     hex);
-    const torsoLower  = segY(pelvis.pivot, "torsoLower", params.torsoLower.w, params.torsoLower.h, params.torsoLower.d, hex); torsoLower.pivot.position.y=0.30;
-    const torsoUpper  = segY(torsoLower.pivot, "torsoUpper", params.torsoUpper.w, params.torsoUpper.h, params.torsoUpper.d, hex); torsoUpper.pivot.position.y=0.55;
-    const neck        = segY(torsoUpper.pivot, "neck", params.neck.w, params.neck.h, params.neck.d, hex); neck.pivot.position.y=0.55;
+    const def = currentRigDefinition();
+    const builderKey = def?.builder || "humanoid";
+    const builder = RIG_BUILDERS[builderKey] || buildHumanoidRig;
+    builder({ options: def?.options || {} });
 
-    // head pivot (own transform)
-    const headPivot = new BABYLON.TransformNode("head_pivot", scene);
-    headPivot.parent = neck.pivot;
-    nodes["head"] = headPivot;
-    pivotToKey.set(headPivot, "head");
-    const head = BABYLON.MeshBuilder.CreateBox("head",{width:params.head.w,height:params.head.h,depth:params.head.d},scene);
-    head.material = mat(hex);
-    head.parent = headPivot;
-    head.position.y = params.head.h*0.5;
-
-    // shoulders anchors
-    const shoulderL = new BABYLON.TransformNode("shoulderL", scene); shoulderL.parent = torsoUpper.pivot; nodes["shoulderL"] = shoulderL; pivotToKey.set(shoulderL,"shoulderL");
-    const shoulderR = new BABYLON.TransformNode("shoulderR", scene); shoulderR.parent = torsoUpper.pivot; nodes["shoulderR"] = shoulderR; pivotToKey.set(shoulderR,"shoulderR");
-
-    // arms
-    const a = params.arm;
-    const armL = {};
-    armL.upper = segY(shoulderL, "armL_upper", a.upperW, a.upperLen, a.upperD, hex);
-    armL.fore  = segY(armL.upper.pivot, "armL_fore", a.foreW, a.foreLen, a.foreD, hex);
-    armL.hand  = segY(armL.fore.pivot,  "armL_hand", a.foreW, a.handLen, a.foreD, hex);
-
-    const armR = {};
-    armR.upper = segY(shoulderR, "armR_upper", a.upperW, a.upperLen, a.upperD, hex);
-    armR.fore  = segY(armR.upper.pivot, "armR_fore", a.foreW, a.foreLen, a.foreD, hex);
-    armR.hand  = segY(armR.fore.pivot,  "armR_hand", a.foreW, a.handLen, a.foreD, hex);
-
-    // hips anchors
-    const hipL = new BABYLON.TransformNode("hipL", scene); hipL.parent = pelvis.pivot; nodes["hipL"] = hipL; pivotToKey.set(hipL,"hipL");
-    const hipR = new BABYLON.TransformNode("hipR", scene); hipR.parent = pelvis.pivot; nodes["hipR"] = hipR; pivotToKey.set(hipR,"hipR");
-
-    // legs
-    const l = params.leg;
-    const legL = {};
-    legL.thigh = segY(hipL, "legL_thigh", l.thighW, l.thighLen, l.thighD, hex);
-    legL.shin  = segY(legL.thigh.pivot, "legL_shin", l.shinW, l.shinLen, l.shinD, hex);
-    legL.foot  = footSeg(legL.shin.pivot, "legL_foot", l.footW, l.footH, l.footLen, hex);
-
-    const legR = {};
-    legR.thigh = segY(hipR, "legR_thigh", l.thighW, l.thighLen, l.thighD, hex);
-    legR.shin  = segY(legR.thigh.pivot, "legR_shin", l.shinW, l.shinLen, l.shinD, hex);
-    legR.foot  = footSeg(legR.shin.pivot, "legR_foot", l.footW, l.footH, l.footLen, hex);
-
-    applyTransforms(); // pose from params
+    applyTransforms();
     markAnimationGroupDirty();
     if (onionSkinEnabled) {
       ensureOnionGhosts();
@@ -2246,7 +2728,7 @@ const DEF = {
   }
 
   function applyTransforms(){
-    const T = ensureTransformMap(params);
+    const T = ensureTransformMap(params, PART_KEYS);
     for (const key of PART_KEYS){
       const node = nodes[key]; if (!node) continue;
       const tr = T[key];
@@ -2263,6 +2745,10 @@ const DEF = {
 
   // ---------- Animation Preview ----------
   function partsForAnim(){
+    const def = currentRigDefinition();
+    if (!def || def.builder !== "humanoid") {
+      return {};
+    }
     return {
       lowerTorso:nodes.torsoLower, upperTorso:nodes.torsoUpper, neck:nodes.neck,
       armL:{ shoulder:nodes.armL_upper, elbow:nodes.armL_fore, wrist:nodes.armL_hand },
@@ -2278,6 +2764,7 @@ const DEF = {
   }
 
   function updateWalkAnimEditor(P, speed, grounded, dt, attackT=0){
+    if (!P.armL || !P.armR || !P.legL || !P.legR) return;
     const phInc = (grounded ? speed*4.8 : speed*2.4) * dt * 1.5;
     anim.phase += phInc; const ph = anim.phase;
 
@@ -2316,6 +2803,11 @@ const DEF = {
   }
 
   function animateTick(dt){
+    const def = currentRigDefinition();
+    if (!def || def.builder !== "humanoid") {
+      applyTransforms();
+      return;
+    }
     applyTransforms();
     const P = partsForAnim();
     let spd = anim.speed;
@@ -2373,7 +2865,15 @@ const DEF = {
   }
 
   // ---------- persistence & export ----------
-  function saveLocalSilently(){ try{ syncParamsFromScene(); localStorage.setItem("hxh.rig.params", JSON.stringify(params)); }catch{} }
+  function saveLocalSilently(){
+    try{
+      syncParamsFromScene();
+      if (params) {
+        params.rigType = rigTypeId;
+      }
+      localStorage.setItem("hxh.rig.params", JSON.stringify(params));
+    }catch{}
+  }
   function saveLocal(){ saveLocalSilently(); alert("Saved this rig to your browser (localStorage)."); }
 
   function parseFloatAttr(node,name,def=0){ const v=parseFloat(node?.getAttribute(name)); return Number.isFinite(v)?v:def; }
@@ -2400,28 +2900,103 @@ const DEF = {
     const doc=new DOMParser().parseFromString(text,"application/xml");
     if (doc.getElementsByTagName("parsererror").length) return null;
     const root=doc.querySelector("rig"); if(!root) return null;
-    const out=deepClone(DEF);
-    const col=root.getAttribute("color"); if(col) out.color=col;
+    const typeAttr = root.getAttribute("type") || root.getAttribute("rigType");
+    const def = (typeAttr && rigTypeMap.get(typeAttr)) || currentRigDefinition();
+    if (!def) return null;
+    const partKeys = def.partKeys;
+    const base = ensureRigParamsStructure(createDefaultParamsForType(def.id), partKeys, def);
+    const colorAttr = root.getAttribute("color");
+    if (colorAttr) { base.color = colorAttr; }
 
-    const sizes=root.querySelector("sizes");
-    if (sizes){
-      const set3=(tag,dst)=>{ const n=sizes.querySelector(tag); if(!n) return; ["w","h","d"].forEach(k=>{ if(n.hasAttribute(k)) dst[k]=parseFloatAttr(n,k,dst[k]); }); };
-      set3("pelvis",out.pelvis); set3("torsoLower",out.torsoLower); set3("torsoUpper",out.torsoUpper);
-      set3("neck",out.neck); set3("head",out.head);
-      const arm=sizes.querySelector("arm");
-      if(arm){ [["upperW","upperW"],["upperD","upperD"],["upperLen","upperLen"],["foreW","foreW"],["foreD","foreD"],["foreLen","foreLen"],["handLen","handLen"]].forEach(([attr,key])=>{
-        if(arm.hasAttribute(attr)) out.arm[key]=parseFloatAttr(arm,attr,out.arm[key]); }); }
-      const leg=sizes.querySelector("leg");
-      if(leg){ [["thighW","thighW"],["thighD","thighD"],["thighLen","thighLen"],["shinW","shinW"],["shinD","shinD"],["shinLen","shinLen"],["footW","footW"],["footH","footH"],["footLen","footLen"]].forEach(([attr,key])=>{
-        if(leg.hasAttribute(attr)) out.leg[key]=parseFloatAttr(leg,attr,out.leg[key]); }); }
+    const colliderNode = root.querySelector("collider");
+    if (colliderNode) {
+      base.collider = {
+        width: parseFloatAttr(colliderNode, "width", base.collider.width),
+        height: parseFloatAttr(colliderNode, "height", base.collider.height),
+        depth: parseFloatAttr(colliderNode, "depth", base.collider.depth),
+        y: parseFloatAttr(colliderNode, "y", base.collider.y)
+      };
     }
 
-    ensureTransformMap(out);
-    const T=root.querySelector("transforms");
-    if (T){
-      for (const key of PART_KEYS){
-        const n=T.querySelector(key); if(!n) continue;
-        const tr=out.transforms[key];
+    const segmentsNode = root.querySelector("segments");
+    if (segmentsNode) {
+      partKeys.forEach(key => {
+        const node = segmentsNode.querySelector(`part[name='${key}']`) || segmentsNode.querySelector(key);
+        if (!node) return;
+        const current = base.segments[key] || { w: 0.4, h: 0.4, d: 0.4 };
+        base.segments[key] = {
+          w: parseFloatAttr(node, "w", parseFloatAttr(node, "width", current.w)),
+          h: parseFloatAttr(node, "h", parseFloatAttr(node, "height", current.h)),
+          d: parseFloatAttr(node, "d", parseFloatAttr(node, "depth", current.d))
+        };
+      });
+    } else {
+      const sizes = root.querySelector("sizes");
+      if (sizes) {
+        const setSize = (tag, key) => {
+          const node = sizes.querySelector(tag);
+          if (!node) return;
+          const current = base.segments[key] || { w: 0.4, h: 0.4, d: 0.4 };
+          base.segments[key] = {
+            w: parseFloatAttr(node, "w", current.w),
+            h: parseFloatAttr(node, "h", current.h),
+            d: parseFloatAttr(node, "d", current.d)
+          };
+        };
+        setSize("pelvis", "pelvis");
+        setSize("torsoLower", "torsoLower");
+        setSize("torsoUpper", "torsoUpper");
+        setSize("neck", "neck");
+        setSize("head", "head");
+        const arm=sizes.querySelector("arm");
+        if (arm){
+          const upperDefaults = base.segments.armL_upper || { w: 0.34, h: 0.75, d: 0.34 };
+          const foreDefaults = base.segments.armL_fore || { w: 0.3, h: 0.7, d: 0.27 };
+          const handDefaults = base.segments.armL_hand || { w: foreDefaults.w, h: 0.25, d: foreDefaults.d };
+          const upperW=parseFloatAttr(arm,"upperW", upperDefaults.w);
+          const upperD=parseFloatAttr(arm,"upperD", upperDefaults.d);
+          const upperLen=parseFloatAttr(arm,"upperLen", upperDefaults.h);
+          const foreW=parseFloatAttr(arm,"foreW", foreDefaults.w);
+          const foreD=parseFloatAttr(arm,"foreD", foreDefaults.d);
+          const foreLen=parseFloatAttr(arm,"foreLen", foreDefaults.h);
+          const handLen=parseFloatAttr(arm,"handLen", handDefaults.h);
+          base.segments.armL_upper = { w: upperW, h: upperLen, d: upperD };
+          base.segments.armR_upper = { w: upperW, h: upperLen, d: upperD };
+          base.segments.armL_fore = { w: foreW, h: foreLen, d: foreD };
+          base.segments.armR_fore = { w: foreW, h: foreLen, d: foreD };
+          base.segments.armL_hand = { w: foreW, h: handLen, d: foreD };
+          base.segments.armR_hand = { w: foreW, h: handLen, d: foreD };
+        }
+        const leg=sizes.querySelector("leg");
+        if (leg){
+          const thighDefaults = base.segments.legL_thigh || { w: 0.45, h: 1.05, d: 0.5 };
+          const shinDefaults = base.segments.legL_shin || { w: 0.33, h: 0.88, d: 0.43 };
+          const footDefaults = base.segments.legL_foot || { w: 0.32, h: 0.21, d: 0.75 };
+          const thighW=parseFloatAttr(leg,"thighW", thighDefaults.w);
+          const thighD=parseFloatAttr(leg,"thighD", thighDefaults.d);
+          const thighLen=parseFloatAttr(leg,"thighLen", thighDefaults.h);
+          const shinW=parseFloatAttr(leg,"shinW", shinDefaults.w);
+          const shinD=parseFloatAttr(leg,"shinD", shinDefaults.d);
+          const shinLen=parseFloatAttr(leg,"shinLen", shinDefaults.h);
+          const footW=parseFloatAttr(leg,"footW", footDefaults.w);
+          const footH=parseFloatAttr(leg,"footH", footDefaults.h);
+          const footLen=parseFloatAttr(leg,"footLen", footDefaults.d);
+          base.segments.legL_thigh = { w: thighW, h: thighLen, d: thighD };
+          base.segments.legR_thigh = { w: thighW, h: thighLen, d: thighD };
+          base.segments.legL_shin = { w: shinW, h: shinLen, d: shinD };
+          base.segments.legR_shin = { w: shinW, h: shinLen, d: shinD };
+          base.segments.legL_foot = { w: footW, h: footH, d: footLen };
+          base.segments.legR_foot = { w: footW, h: footH, d: footLen };
+        }
+      }
+    }
+
+    ensureTransformMap(base, partKeys);
+    const transforms=root.querySelector("transforms");
+    if (transforms){
+      for (const key of partKeys){
+        const n=transforms.querySelector(key); if(!n) continue;
+        const tr=base.transforms[key];
         tr.pos.x=parseFloatAttr(n,"posX",tr.pos.x);
         tr.pos.y=parseFloatAttr(n,"posY",tr.pos.y);
         tr.pos.z=parseFloatAttr(n,"posZ",tr.pos.z);
@@ -2430,30 +3005,27 @@ const DEF = {
         tr.rot.z=parseFloatAttr(n,"rotZ",tr.rot.z);
       }
     }
-    return out;
+
+    return { rigType: def.id, params: ensureRigParamsStructure(base, partKeys, def) };
   }
 
   function exportXML(){
-	// Ensure we export the exact on-screen pose for every part
     syncParamsFromScene();
-    const p=params;
-    function attrs(obj){ return Object.entries(obj).map(([k,v])=>`${k}="${Number(v).toFixed(3)}"`).join(" "); }
-    function tnode(key){ const tr=p.transforms[key]||t0(); return `    <${key} posX="${tr.pos.x.toFixed(3)}" posY="${tr.pos.y.toFixed(3)}" posZ="${tr.pos.z.toFixed(3)}" rotX="${tr.rot.x.toFixed(3)}" rotY="${tr.rot.y.toFixed(3)}" rotZ="${tr.rot.z.toFixed(3)}" />`; }
-    const xml=`<?xml version="1.0" encoding="UTF-8"?>
-		<rig name="CustomRig" color="${p.color}">
-		  <sizes>
-			<pelvis ${attrs(p.pelvis)} />
-			<torsoLower ${attrs(p.torsoLower)} />
-			<torsoUpper ${attrs(p.torsoUpper)} />
-			<neck ${attrs(p.neck)} />
-			<head ${attrs(p.head)} />
-			<arm ${attrs(p.arm)} />
-			<leg ${attrs(p.leg)} />
-		  </sizes>
-		  <transforms>
-		${PART_KEYS.map(tnode).join("\n")}
-		  </transforms>
-		</rig>`;
+    if (params) { params.rigType = rigTypeId; }
+    const def = currentRigDefinition();
+    const typeId = def?.id || rigTypeId;
+    const color = getRigColor();
+    const collider = getColliderDimensions();
+    const segLines = PART_KEYS.map(key => {
+      const seg = params?.segments?.[key];
+      if (!seg) return null;
+      return `    <part name="${key}" w="${Number(seg.w).toFixed(3)}" h="${Number(seg.h).toFixed(3)}" d="${Number(seg.d).toFixed(3)}" />`;
+    }).filter(Boolean).join("\n");
+    const transformLines = PART_KEYS.map(key => {
+      const tr = params?.transforms?.[key] || t0();
+      return `    <${key} posX="${Number(tr.pos.x).toFixed(3)}" posY="${Number(tr.pos.y).toFixed(3)}" posZ="${Number(tr.pos.z).toFixed(3)}" rotX="${Number(tr.rot.x).toFixed(3)}" rotY="${Number(tr.rot.y).toFixed(3)}" rotZ="${Number(tr.rot.z).toFixed(3)}" />`;
+    }).join("\n");
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<rig type="${typeId}" color="${color}">\n  <collider width="${collider.width.toFixed(3)}" height="${collider.height.toFixed(3)}" depth="${collider.depth.toFixed(3)}" y="${collider.y.toFixed(3)}" />\n  <segments>\n${segLines}\n  </segments>\n  <transforms>\n${transformLines}\n  </transforms>\n</rig>`;
     const blob=new Blob([xml],{type:"application/xml"});
     const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=`hxh_rig_${Date.now()}.xml`;
     document.body.appendChild(a); a.click(); URL.revokeObjectURL(a.href); a.remove();
