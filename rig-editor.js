@@ -59,6 +59,25 @@ const DEF = {
   const UNIT_POS = 1000; // set to 1 if you prefer scene units
   let outlinedMesh = null;
   let refreshDopeSheet = null;
+  let keyClipboard = null;
+  let timelineKeyHandler = null;
+  const AUTO_KEY_STORAGE_KEY = "hxh.rig.autokey";
+  let autoKeyEnabled = false;
+  let autoKeyButton = null;
+  let easeSelectorRef = null;
+  const autoKeyState = { snapshot: null, part: null, channel: null };
+  const autoKeyHookedGizmos = new WeakSet();
+  let autoKeyHooksInstalled = false;
+  let autoKeyHookObserver = null;
+
+  try {
+    const stored = localStorage.getItem(AUTO_KEY_STORAGE_KEY);
+    if (stored && ["1", "true", "on", "yes"].includes(stored.toLowerCase())) {
+      autoKeyEnabled = true;
+    }
+  } catch {
+    autoKeyEnabled = false;
+  }
 
   // Visible mesh helper + red outline
   function meshForPart(key){ return scene.getMeshByName(key) || null; }
@@ -178,6 +197,47 @@ const DEF = {
       anim.joints[part][channel] = [];
     }
     return anim.joints[part][channel];
+  }
+
+  function getChannelValueFromNode(node, channel) {
+    if (!node) return null;
+    if (channel === "pos") {
+      return { x: node.position.x, y: node.position.y, z: node.position.z };
+    }
+    if (channel === "rot") {
+      return getNodeEuler(node);
+    }
+    if (channel === "scl") {
+      const s = node.scaling || new BABYLON.Vector3(1, 1, 1);
+      return { x: s.x, y: s.y, z: s.z };
+    }
+    return null;
+  }
+
+  function currentJointValue(part, channel) {
+    const node = nodes[part];
+    return getChannelValueFromNode(node, channel);
+  }
+
+  function captureNodeSnapshot(part) {
+    return {
+      pos: currentJointValue(part, "pos"),
+      rot: currentJointValue(part, "rot"),
+      scl: currentJointValue(part, "scl")
+    };
+  }
+
+  function hasChannelChanged(channel, before, after) {
+    const key = channel === "rot" ? "rot" : (channel === "scl" ? "scl" : "pos");
+    const prev = before?.[key];
+    const next = after?.[key];
+    if (!prev || !next) return false;
+    const epsilon = channel === "rot" ? 1e-4 : (channel === "scl" ? 1e-4 : 1e-4);
+    return (
+      Math.abs(prev.x - next.x) > epsilon ||
+      Math.abs(prev.y - next.y) > epsilon ||
+      Math.abs(prev.z - next.z) > epsilon
+    );
   }
 
 
@@ -420,6 +480,25 @@ const DEF = {
     const easeSel = document.getElementById("an-ease");
     const addBtn = document.getElementById("an-add");
     const delBtn = document.getElementById("an-del");
+    easeSelectorRef = easeSel;
+
+    let autoKeyBtn = document.getElementById("an-autokey");
+    const controlsParent = addBtn?.parentElement || delBtn?.parentElement || null;
+    if (!autoKeyBtn && controlsParent) {
+      autoKeyBtn = document.createElement("button");
+      autoKeyBtn.type = "button";
+      autoKeyBtn.id = "an-autokey";
+      autoKeyBtn.className = "secondary";
+      autoKeyBtn.title = "Toggle Auto-Key (records transforms automatically)";
+      controlsParent.insertBefore(autoKeyBtn, delBtn || null);
+    } else if (autoKeyBtn && controlsParent && autoKeyBtn.parentElement !== controlsParent) {
+      controlsParent.insertBefore(autoKeyBtn, delBtn || null);
+    }
+    if (autoKeyBtn) {
+      autoKeyBtn.onclick = () => { setAutoKeyEnabled(!autoKeyEnabled); };
+    }
+    autoKeyButton = autoKeyBtn || null;
+    updateAutoKeyButtonUI();
 
     // populate parts
     partSel.innerHTML = "";
@@ -516,6 +595,156 @@ const DEF = {
     let playheadDrag = null;
     let keyDrag = null;
     let boxSelect = null;
+
+    function insertKeyAtPlayhead({ selectNew = true } = {}) {
+      const part = partSel.value;
+      const ch = chSel.value;
+      const frame = Math.round(playheadFrame);
+      const cur = currentJointValue(part, ch);
+      if (!cur) return null;
+      const key = AnimationStore.addKey(part, ch, frame, cur, { ease: easeSel?.value || "linear", tolerance: 0.5 });
+      if (selectNew) {
+        selectedKeys.clear();
+        if (key) selectedKeys.add(key);
+      }
+      setFrame(frame, { snap: true });
+      drawTimeline();
+      return key;
+    }
+
+    function deleteKeys() {
+      let removed = false;
+      if (selectedKeys.size) {
+        const targets = Array.from(selectedKeys);
+        targets.forEach(key => {
+          const meta = keyMeta.get(key);
+          if (!meta) return;
+          if (AnimationStore.removeKey(meta.part, meta.channel, key.frame, { tolerance: 0.5 })) {
+            removed = true;
+            selectedKeys.delete(key);
+          }
+        });
+      } else {
+        const part = partSel.value;
+        const ch = chSel.value;
+        const frame = Math.round(playheadFrame);
+        if (AnimationStore.removeKey(part, ch, frame, { tolerance: 0.5 })) {
+          removed = true;
+        }
+      }
+      if (removed) {
+        drawTimeline();
+      }
+      return removed;
+    }
+
+    function gatherClipboardPayload() {
+      if (!selectedKeys.size) return null;
+      const keys = Array.from(selectedKeys).filter(key => keyMeta.has(key));
+      if (!keys.length) return null;
+      const baseFrame = keys.reduce((min, key) => Math.min(min, key.frame), keys[0].frame);
+      return {
+        baseFrame,
+        keys: keys.map(key => {
+          const meta = keyMeta.get(key);
+          return {
+            part: meta.part,
+            channel: meta.channel,
+            offset: key.frame - baseFrame,
+            value: deepClone(key.value),
+            ease: key.ease || "linear"
+          };
+        })
+      };
+    }
+
+    function copySelectionToClipboard() {
+      const payload = gatherClipboardPayload();
+      if (!payload) return false;
+      keyClipboard = payload;
+      return true;
+    }
+
+    function pasteClipboard(clipboard = keyClipboard) {
+      if (!clipboard || !Array.isArray(clipboard.keys) || !clipboard.keys.length) return false;
+      const targetFrame = Math.round(playheadFrame);
+      const newKeys = [];
+      clipboard.keys.forEach(entry => {
+        if (!entry) return;
+        const frame = targetFrame + (Number(entry.offset) || 0);
+        const value = deepClone(entry.value);
+        const key = AnimationStore.addKey(entry.part, entry.channel, frame, value, { ease: entry.ease || "linear", tolerance: 0.5 });
+        if (key) newKeys.push(key);
+      });
+      if (!newKeys.length) return false;
+      selectedKeys.clear();
+      newKeys.forEach(key => selectedKeys.add(key));
+      setFrame(targetFrame, { snap: true });
+      drawTimeline();
+      return true;
+    }
+
+    function duplicateSelection() {
+      const payload = gatherClipboardPayload();
+      if (!payload) return false;
+      keyClipboard = payload;
+      return pasteClipboard(payload);
+    }
+
+    if (timelineKeyHandler) {
+      window.removeEventListener("keydown", timelineKeyHandler);
+      timelineKeyHandler = null;
+    }
+
+    const isTypingTarget = el => {
+      if (!el) return false;
+      if (el.isContentEditable) return true;
+      const tag = el.tagName;
+      return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+    };
+
+    const rigScreenVisible = () => {
+      const screen = document.getElementById("screen--rig");
+      return !screen || screen.classList.contains("visible");
+    };
+
+    const handleTimelineKeydown = e => {
+      if (!rigScreenVisible()) return;
+      if (isTypingTarget(document.activeElement)) return;
+      const key = e.key;
+      if ((key === "i" || key === "I") && !e.ctrlKey && !e.metaKey) {
+        if (e.altKey) {
+          e.preventDefault();
+          deleteKeys();
+        } else {
+          e.preventDefault();
+          insertKeyAtPlayhead();
+        }
+        return;
+      }
+      if ((key === "Delete" || e.code === "Delete") && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault();
+        deleteKeys();
+        return;
+      }
+      if ((key === "c" || key === "C") && (e.ctrlKey || e.metaKey) && !e.altKey) {
+        e.preventDefault();
+        copySelectionToClipboard();
+        return;
+      }
+      if ((key === "v" || key === "V") && (e.ctrlKey || e.metaKey) && !e.altKey) {
+        e.preventDefault();
+        pasteClipboard();
+        return;
+      }
+      if ((key === "d" || key === "D") && e.shiftKey && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault();
+        duplicateSelection();
+      }
+    };
+
+    timelineKeyHandler = handleTimelineKeydown;
+    window.addEventListener("keydown", timelineKeyHandler);
 
     function currentTrackKeys(){
       return trackOf(partSel.value, chSel.value);
@@ -1078,38 +1307,9 @@ const DEF = {
     playheadHandle.addEventListener("pointerup", finishPlayheadDrag);
     playheadHandle.addEventListener("pointercancel", finishPlayheadDrag);
 
-    addBtn.onclick = ()=>{
-      const part = partSel.value, ch = chSel.value;
-      const cur = currentTRSAt(part,ch);
-      const frame = Math.round(playheadFrame);
-      const key = AnimationStore.addKey(part, ch, frame, cur, { ease: easeSel.value || "linear", tolerance: 0.5 });
-      selectedKeys.clear();
-      if (key) selectedKeys.add(key);
-      setFrame(frame, { snap: true });
-      drawTimeline();
-    };
+    addBtn.onclick = () => { insertKeyAtPlayhead(); };
 
-    delBtn.onclick = ()=>{
-      let removed = false;
-      if (selectedKeys.size){
-        const targets = Array.from(selectedKeys);
-        targets.forEach(key=>{
-          const meta = keyMeta.get(key);
-          if (!meta) return;
-          if (AnimationStore.removeKey(meta.part, meta.channel, key.frame, { tolerance: 0.5 })){
-            removed = true;
-            selectedKeys.delete(key);
-          }
-        });
-      } else {
-        const part = partSel.value, ch = chSel.value;
-        const frame = Math.round(playheadFrame);
-        removed = AnimationStore.removeKey(part, ch, frame, { tolerance: 0.5 });
-      }
-      if (removed){
-        drawTimeline();
-      }
-    };
+    delBtn.onclick = () => { deleteKeys(); };
 
     partSel.addEventListener("change", ()=>{ selectedKeys.clear(); drawTimeline(); });
     chSel.addEventListener("change", ()=>{ selectedKeys.clear(); drawTimeline(); });
@@ -1122,17 +1322,6 @@ const DEF = {
     drawTimeline();
     refreshDopeSheet = drawTimeline;
   }
-
-    function currentTRSAt(part,ch){
-      const p = nodes[part]; if (!p) return {x:0,y:0,z:0};
-      if (ch==="pos") return {x:p.position.x, y:p.position.y, z:p.position.z};
-      if (ch==="rot") {
-        const e = getNodeEuler(p);
-        return { x: e.x, y: e.y, z: e.z };
-      }
-      const s = p.scaling||new BABYLON.Vector3(1,1,1);
-      return {x:s.x,y:s.y,z:s.z};
-    }
 
     function lerp(a,b,t){ return a + (b-a)*t; }
     function ease(t,e){ if(e==="easeIn")return t*t; if(e==="easeOut")return 1-(1-t)*(1-t); if(e==="easeInOut")return t<.5?2*t*t:1-Math.pow(-2*t+2,2)/2; return t; }
@@ -1276,6 +1465,7 @@ const DEF = {
     if (typeof gizmoMgr.clearGizmos === "function"){ gizmoMgr.clearGizmos(); }
     else { gizmoMgr.positionGizmoEnabled=false; gizmoMgr.rotationGizmoEnabled=false; gizmoMgr.scaleGizmoEnabled=false; gizmoMgr.attachToMesh(null); }
     setGizmoMode("select");
+    ensureAutoKeyHooks();
 
     // Toolbar, actions, picking
     buildToolbar();
@@ -1339,6 +1529,98 @@ const DEF = {
     const rot = new BABYLON.Vector3(e.x, e.y, e.z);
     const scl = p.scaling?.clone?.()||new BABYLON.Vector3(1,1,1);
     return {pos,rot,scl};
+  }
+
+  function persistAutoKeySetting(enabled) {
+    try {
+      localStorage.setItem(AUTO_KEY_STORAGE_KEY, enabled ? "1" : "0");
+    } catch {
+      /* ignore persistence errors */
+    }
+  }
+
+  function updateAutoKeyButtonUI() {
+    if (!autoKeyButton) return;
+    autoKeyButton.textContent = autoKeyEnabled ? "Auto-Key On" : "Auto-Key Off";
+    autoKeyButton.classList.toggle("primary", autoKeyEnabled);
+    autoKeyButton.classList.toggle("secondary", !autoKeyEnabled);
+    autoKeyButton.setAttribute("aria-pressed", autoKeyEnabled ? "true" : "false");
+  }
+
+  function setAutoKeyEnabled(value) {
+    autoKeyEnabled = Boolean(value);
+    updateAutoKeyButtonUI();
+    persistAutoKeySetting(autoKeyEnabled);
+  }
+
+  function insertAutoKeyForChannel(part, channel) {
+    if (!autoKeyEnabled) return null;
+    const value = currentJointValue(part, channel);
+    if (!value) return null;
+    const frame = Math.round(playheadFrame);
+    const ease = easeSelectorRef?.value || "linear";
+    const key = AnimationStore.addKey(part, channel, frame, value, { ease, tolerance: 0.5 });
+    refreshDopeSheet?.();
+    return key;
+  }
+
+  function getManagerGizmo(kind) {
+    if (!gizmoMgr) return null;
+    const key = `${kind}Gizmo`;
+    return gizmoMgr.gizmos?.[key] || gizmoMgr[key] || null;
+  }
+
+  function ensureAutoKeyHooks() {
+    if (!gizmoMgr || autoKeyHooksInstalled) return;
+    const register = (gizmo, channel) => {
+      if (!gizmo || autoKeyHookedGizmos.has(gizmo)) return false;
+      if (!gizmo.onDragStartObservable || !gizmo.onDragEndObservable) return false;
+      gizmo.onDragStartObservable.add(() => {
+        if (!selectedKey) {
+          autoKeyState.snapshot = null;
+          autoKeyState.part = null;
+          autoKeyState.channel = null;
+          return;
+        }
+        autoKeyState.snapshot = captureNodeSnapshot(selectedKey);
+        autoKeyState.part = selectedKey;
+        autoKeyState.channel = channel;
+      });
+      gizmo.onDragEndObservable.add(() => {
+        const part = autoKeyState.part;
+        const snapshot = autoKeyState.snapshot;
+        autoKeyState.snapshot = null;
+        autoKeyState.part = null;
+        autoKeyState.channel = null;
+        if (!part || !snapshot) return;
+        const after = captureNodeSnapshot(part);
+        if (!autoKeyEnabled || !after) return;
+        if (!hasChannelChanged(channel, snapshot, after)) return;
+        insertAutoKeyForChannel(part, channel);
+      });
+      autoKeyHookedGizmos.add(gizmo);
+      return true;
+    };
+    const registered = [
+      register(getManagerGizmo("position"), "pos"),
+      register(getManagerGizmo("rotation"), "rot"),
+      register(getManagerGizmo("scale"), "scl")
+    ].some(Boolean);
+    if (registered) {
+      autoKeyHooksInstalled = true;
+      if (autoKeyHookObserver && scene) {
+        scene.onBeforeRenderObservable.remove(autoKeyHookObserver);
+        autoKeyHookObserver = null;
+      }
+    } else if (scene && !autoKeyHookObserver) {
+      autoKeyHookObserver = scene.onBeforeRenderObservable.add(() => {
+        ensureAutoKeyHooks();
+        if (autoKeyHooksInstalled && autoKeyHookObserver) {
+          scene.onBeforeRenderObservable.remove(autoKeyHookObserver);
+          autoKeyHookObserver = null;
+        }
+      });
+    }
   }
 
   // reflect live changes to UI + params
