@@ -73,6 +73,21 @@ const DEF = {
   let autoKeyHooksInstalled = false;
   let autoKeyHookObserver = null;
   let interpolationMode = "linear";
+  const ONION_SKIN_STORAGE_KEY = "hxh.rig.onionSkin";
+  const ONION_OFFSETS = [-2, -1, 1, 2];
+  const onionMaterials = { past: null, future: null };
+  let onionSkinEnabled = false;
+  let onionSkinButton = null;
+  let onionGhosts = [];
+
+  try {
+    const storedGhost = localStorage.getItem(ONION_SKIN_STORAGE_KEY);
+    if (storedGhost && ["1", "true", "on"].includes(storedGhost.toLowerCase())) {
+      onionSkinEnabled = true;
+    }
+  } catch {
+    onionSkinEnabled = false;
+  }
 
   try {
     const stored = localStorage.getItem(AUTO_KEY_STORAGE_KEY);
@@ -251,6 +266,219 @@ const DEF = {
       Math.abs(prev.y - next.y) > epsilon ||
       Math.abs(prev.z - next.z) > epsilon
     );
+  }
+
+  function captureRigSnapshot() {
+    const snapshot = {};
+    for (const key of PART_KEYS) {
+      const node = nodes[key];
+      if (!node) continue;
+      const position = node.position?.clone?.() || new BABYLON.Vector3();
+      const scaling = node.scaling?.clone?.() || new BABYLON.Vector3(1, 1, 1);
+      let rotationQuaternion = node.rotationQuaternion;
+      if (!rotationQuaternion) {
+        rotationQuaternion = BABYLON.Quaternion.FromEulerAngles(node.rotation?.x || 0, node.rotation?.y || 0, node.rotation?.z || 0);
+      }
+      snapshot[key] = {
+        position,
+        scaling,
+        rotationQuaternion: rotationQuaternion.clone(),
+        hadQuaternion: Boolean(node.rotationQuaternion)
+      };
+    }
+    return snapshot;
+  }
+
+  function restoreRigSnapshot(snapshot) {
+    if (!snapshot) return;
+    for (const key of Object.keys(snapshot)) {
+      const node = nodes[key];
+      const snap = snapshot[key];
+      if (!node || !snap) continue;
+      if (node.position) node.position.copyFrom(snap.position);
+      if (node.scaling) node.scaling.copyFrom(snap.scaling);
+      if (!node.rotationQuaternion) {
+        node.rotationQuaternion = new BABYLON.Quaternion();
+      }
+      node.rotationQuaternion.copyFrom(snap.rotationQuaternion);
+      if (!snap.hadQuaternion && node.rotation) {
+        node.rotationQuaternion.toEulerAnglesToRef(node.rotation);
+      } else {
+        syncRotationFromQuaternion(node);
+      }
+    }
+  }
+
+  function persistOnionSkinSetting(enabled) {
+    try {
+      localStorage.setItem(ONION_SKIN_STORAGE_KEY, enabled ? "1" : "0");
+    } catch {
+      /* ignore persistence errors */
+    }
+  }
+
+  function updateOnionSkinButtonUI() {
+    if (!onionSkinButton) return;
+    onionSkinButton.textContent = onionSkinEnabled ? "👻 Ghost On" : "Ghost Off";
+    onionSkinButton.classList.toggle("primary", onionSkinEnabled);
+    onionSkinButton.classList.toggle("secondary", !onionSkinEnabled);
+    onionSkinButton.setAttribute("aria-pressed", onionSkinEnabled ? "true" : "false");
+  }
+
+  function disposeOnionGhosts() {
+    if (!onionGhosts.length) return;
+    onionGhosts.forEach(ghost => {
+      try { ghost.root?.dispose?.(); } catch { /* ignore */ }
+    });
+    onionGhosts = [];
+  }
+
+  function ghostMaterialFor(offset) {
+    const key = offset < 0 ? "past" : "future";
+    const cached = onionMaterials[key];
+    if (cached) {
+      const disposed = typeof cached.isDisposed === "function" ? cached.isDisposed() : cached.isDisposed;
+      if (!disposed) return cached;
+    }
+    if (!scene) return null;
+    const mat = new BABYLON.StandardMaterial(`onion-${key}-${Date.now()}`, scene);
+    const color = offset < 0 ? new BABYLON.Color3(1, 0.45, 0.4) : new BABYLON.Color3(0.4, 0.75, 1);
+    mat.diffuseColor = color;
+    mat.emissiveColor = color.scale(0.2);
+    mat.alpha = 0.25;
+    mat.specularColor = BABYLON.Color3.Black();
+    mat.backFaceCulling = true;
+    onionMaterials[key] = mat;
+    return mat;
+  }
+
+  function ensureOnionGhosts() {
+    if (!onionSkinEnabled || !scene) return;
+    if (onionGhosts.length === ONION_OFFSETS.length && onionGhosts.every(g => g && !g.root?.isDisposed?.())) {
+      return;
+    }
+    disposeOnionGhosts();
+    const availableParts = new Map();
+    for (const key of PART_KEYS) {
+      const mesh = scene.getMeshByName(key);
+      if (mesh) availableParts.set(key, mesh);
+    }
+    if (!availableParts.size) return;
+    onionGhosts = ONION_OFFSETS.map(offset => {
+      const root = new BABYLON.TransformNode(`onion-root-${offset}-${Date.now()}`, scene);
+      root.isPickable = false;
+      const mat = ghostMaterialFor(offset);
+      const meshes = new Map();
+      availableParts.forEach((src, key) => {
+        const clone = src.clone?.(`onion-${offset}-${key}`, root);
+        if (!clone) return;
+        clone.parent = root;
+        clone.material = mat;
+        clone.isPickable = false;
+        clone.renderOutline = false;
+        clone.alwaysSelectAsActiveMesh = false;
+        clone.visibility = 1;
+        clone.checkCollisions = false;
+        clone.metadata = { ...(clone.metadata || {}), onionSkin: true, offset };
+        if (!clone.rotationQuaternion) {
+          clone.rotationQuaternion = new BABYLON.Quaternion();
+        }
+        meshes.set(key, clone);
+      });
+      return { offset, root, meshes };
+    });
+  }
+
+  function gatherWorldTransforms() {
+    const transforms = new Map();
+    if (!scene) return transforms;
+    const scaling = new BABYLON.Vector3();
+    const rotation = new BABYLON.Quaternion();
+    const position = new BABYLON.Vector3();
+    for (const key of PART_KEYS) {
+      const mesh = scene.getMeshByName(key);
+      if (!mesh) continue;
+      const matrix = mesh.getWorldMatrix();
+      matrix.decompose(scaling, rotation, position);
+      transforms.set(key, {
+        position: position.clone(),
+        rotation: rotation.clone(),
+        scaling: scaling.clone()
+      });
+    }
+    return transforms;
+  }
+
+  function sampleGhostTransforms(offsets) {
+    const results = new Map();
+    if (!scene || !offsets.length) return results;
+    const snapshot = captureRigSnapshot();
+    const baseFrame = playheadFrame;
+    const range = currentRange();
+    const clampFrame = value => {
+      const clamped = Math.max(range.start, Math.min(range.end, value));
+      return Number.isFinite(clamped) ? clamped : range.start;
+    };
+    for (const offset of offsets) {
+      const targetFrame = clampFrame(baseFrame + offset);
+      applyAtTime(frameToSeconds(targetFrame));
+      results.set(offset, { frame: targetFrame, transforms: gatherWorldTransforms() });
+    }
+    restoreRigSnapshot(snapshot);
+    return results;
+  }
+
+  function updateOnionGhosts() {
+    if (!onionSkinEnabled) return;
+    ensureOnionGhosts();
+    if (!onionGhosts.length) return;
+    const samples = sampleGhostTransforms(onionGhosts.map(g => g.offset));
+    const baseFrameRounded = Math.round(playheadFrame);
+    onionGhosts.forEach(ghost => {
+      const data = samples.get(ghost.offset);
+      if (!data || !data.transforms) {
+        ghost.root.setEnabled(false);
+        return;
+      }
+      const sameFrame = Math.round(data.frame) === baseFrameRounded;
+      const hasTransforms = data.transforms.size > 0;
+      const visible = hasTransforms && !sameFrame;
+      ghost.root.setEnabled(visible);
+      if (!visible) return;
+      ghost.root.getChildren().forEach(child => child.setEnabled(true));
+      ghost.meshes.forEach((mesh, key) => {
+        const tr = data.transforms.get(key);
+        if (!tr) {
+          mesh.setEnabled(false);
+          return;
+        }
+        mesh.setEnabled(true);
+        mesh.position.copyFrom(tr.position);
+        if (!mesh.rotationQuaternion) {
+          mesh.rotationQuaternion = new BABYLON.Quaternion();
+        }
+        mesh.rotationQuaternion.copyFrom(tr.rotation);
+        if (mesh.rotation) {
+          mesh.rotationQuaternion.toEulerAnglesToRef(mesh.rotation);
+        }
+        mesh.scaling.copyFrom(tr.scaling);
+      });
+    });
+  }
+
+  function setOnionSkinEnabled(enabled, { persist = true } = {}) {
+    const next = Boolean(enabled);
+    onionSkinEnabled = next;
+    updateOnionSkinButtonUI();
+    if (onionSkinEnabled) {
+      ensureOnionGhosts();
+      updateOnionGhosts();
+    } else {
+      disposeOnionGhosts();
+    }
+    if (persist) {
+      persistOnionSkinSetting(onionSkinEnabled);
+    }
   }
 
 
@@ -484,6 +712,7 @@ const DEF = {
     } else {
       applyAtTime(frameToSeconds(frame));
     }
+    updateOnionGhosts();
     updateToolbar();
   }
 
@@ -1609,6 +1838,7 @@ const DEF = {
 
     buildAnimBar();
     buildAnimEditor();
+    setOnionSkinEnabled(onionSkinEnabled, { persist: false });
     // buildResizablePanel(); // disabled to remove right box
 
     // --- Gizmos ---
@@ -1943,6 +2173,7 @@ const DEF = {
   }
 
   function rebuildRig(){
+    disposeOnionGhosts();
     // purge previous (keep ground/axes/beacon)
     scene.meshes.slice().forEach(m=>{ if(!["g","beacon"].includes(m.name)) m.dispose(); });
     scene.transformNodes.slice().forEach(t=>{ if(!t.name.startsWith("Axes")) t.dispose(); });
@@ -2008,6 +2239,10 @@ const DEF = {
 
     applyTransforms(); // pose from params
     markAnimationGroupDirty();
+    if (onionSkinEnabled) {
+      ensureOnionGhosts();
+      updateOnionGhosts();
+    }
   }
 
   function applyTransforms(){
@@ -2119,15 +2354,22 @@ const DEF = {
       </select>
       <label class="anim-speed">Speed
         <input id="anim-speed" type="range" min="0.2" max="3" step="0.1" value="1">
-      </label>`;
+      </label>
+      <button id="anim-onion" class="secondary" title="Toggle onion-skin ghost preview">Ghost Off</button>`;
     wrap.appendChild(bar);
 
     const btn = document.getElementById("anim-play");
     const mode = document.getElementById("anim-mode");
     const spd  = document.getElementById("anim-speed");
+    const ghostBtn = document.getElementById("anim-onion");
     btn.onclick = ()=>{ anim.playing=!anim.playing; btn.textContent = anim.playing ? "⏸ Pause" : "▶ Play"; };
     mode.onchange= ()=>{ anim.mode = mode.value; };
     spd.oninput  = ()=>{ anim.speed = Number(spd.value)||1; };
+    if (ghostBtn) {
+      onionSkinButton = ghostBtn;
+      ghostBtn.onclick = () => setOnionSkinEnabled(!onionSkinEnabled);
+      updateOnionSkinButtonUI();
+    }
   }
 
   // ---------- persistence & export ----------
@@ -2261,5 +2503,14 @@ const DEF = {
   }
 
   // public
-  window.RigEditor = { boot: guardedBoot, unsafeBoot: boot };
+  window.RigEditor = {
+    boot: guardedBoot,
+    unsafeBoot: boot,
+    setOnionSkin(enabled) {
+      setOnionSkinEnabled(Boolean(enabled));
+    },
+    isOnionSkinEnabled() {
+      return onionSkinEnabled;
+    }
+  };
 })();
