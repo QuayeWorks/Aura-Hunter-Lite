@@ -3208,8 +3208,10 @@
          const baseRotZ = pivot.rotation.z;
          pivot.position.copyFrom(foot.restPos);
          if (!grounded) {
-            pivot.rotation.x = baseRotX;
-            pivot.rotation.z = baseRotZ;
+            const euler = getNodeEuler(pivot);
+            euler.x = baseRotX;
+            euler.z = baseRotZ;
+            setNodeEuler(pivot, euler);
             continue;
          }
          foot.mesh.computeWorldMatrix(true);
@@ -3220,14 +3222,18 @@
          TMP_IK_ORIGIN.set(center.x, center.y + foot.castUp, center.z);
          const pick = scene.pickWithRay(new BABYLON.Ray(TMP_IK_ORIGIN, VEC3_DOWN, foot.castUp + foot.maxDrop), isGroundMesh);
          if (!pick || !pick.hit) {
-            pivot.rotation.x = baseRotX;
-            pivot.rotation.z = baseRotZ;
+            const euler = getNodeEuler(pivot);
+            euler.x = baseRotX;
+            euler.z = baseRotZ;
+            setNodeEuler(pivot, euler);
             continue;
          }
          const gap = bottomY - pick.pickedPoint.y;
          if (gap > foot.contactThreshold) {
-            pivot.rotation.x = baseRotX;
-            pivot.rotation.z = baseRotZ;
+            const euler = getNodeEuler(pivot);
+            euler.x = baseRotX;
+            euler.z = baseRotZ;
+            setNodeEuler(pivot, euler);
             continue;
          }
          const desiredMin = pick.pickedPoint.y + foot.clearance;
@@ -3238,8 +3244,10 @@
          const normal = pick.getNormal(true) || VEC3_UP;
          const tiltX = Math.atan2(normal.z, normal.y);
          const tiltZ = -Math.atan2(normal.x, normal.y);
-         pivot.rotation.x = baseRotX + tiltX;
-         pivot.rotation.z = baseRotZ + tiltZ;
+         const euler = getNodeEuler(pivot);
+         euler.x = baseRotX + tiltX;
+         euler.z = baseRotZ + tiltZ;
+         setNodeEuler(pivot, euler);
       }
    }
 
@@ -5695,8 +5703,53 @@
       "shoulderL", "armL_upper", "armL_fore", "armL_hand",
       "shoulderR", "armR_upper", "armR_fore", "armR_hand",
       "hipL", "legL_thigh", "legL_shin", "legL_foot",
-      "hipR", "legR_thigh", "legR_shin", "legR_foot",
-   ];
+   "hipR", "legR_thigh", "legR_shin", "legR_foot",
+  ];
+
+   const TMP_RIG_EULER = new BABYLON.Vector3();
+
+   function getNodeEuler(node) {
+      if (!node) return { x: 0, y: 0, z: 0 };
+      if (node.rotationQuaternion) {
+         node.rotationQuaternion.toEulerAnglesToRef(TMP_RIG_EULER);
+         return { x: TMP_RIG_EULER.x, y: TMP_RIG_EULER.y, z: TMP_RIG_EULER.z };
+      }
+      const rot = node.rotation || { x: 0, y: 0, z: 0 };
+      return { x: rot.x || 0, y: rot.y || 0, z: rot.z || 0 };
+   }
+
+   function setNodeEuler(node, euler) {
+      if (!node) return;
+      const x = Number(euler?.x) || 0;
+      const y = Number(euler?.y) || 0;
+      const z = Number(euler?.z) || 0;
+      if (node.rotation) node.rotation.set(x, y, z);
+      if (!node.rotationQuaternion) node.rotationQuaternion = new BABYLON.Quaternion();
+      BABYLON.Quaternion.FromEulerAnglesToRef(x, y, z, node.rotationQuaternion);
+   }
+
+   function syncRigNodesToQuaternion(map) {
+      if (!map) return;
+      for (const key of PART_KEYS) {
+         const node = map[key];
+         if (!node) continue;
+         const rot = node.rotation || TMP_RIG_EULER;
+         setNodeEuler(node, rot);
+      }
+   }
+
+   function syncRigNodesFromQuaternion(map) {
+      if (!map) return;
+      for (const key of PART_KEYS) {
+         const node = map[key];
+         if (!node) continue;
+         if (node.rotationQuaternion) {
+            node.rotationQuaternion.toEulerAnglesToRef(node.rotation ?? TMP_RIG_EULER);
+         } else {
+            setNodeEuler(node, node.rotation || TMP_RIG_EULER);
+         }
+      }
+   }
 
    // default sizes + *sane default transforms* (shoulders/hips start in a T-pose)
    const DEFAULT_RIG = {
@@ -7596,12 +7649,12 @@
       state.prevPlayerPos = playerRoot.position.clone();
       player.checkCollisions = true;
       playerCosmeticController = p.cosmetics || null;
-      player.metadata = {
-         parts: p.parts,
-         animPhase: 0,
-         footIK: p.root.metadata?.footIK,
-         cosmetics: playerCosmeticController?.getState?.() || getCosmeticSelection()
-      };
+      const basePlayerMeta = p.root.metadata || {};
+      basePlayerMeta.parts = p.parts;
+      basePlayerMeta.animPhase = 0;
+      basePlayerMeta.footIK = p.root.metadata?.footIK;
+      basePlayerMeta.cosmetics = playerCosmeticController?.getState?.() || getCosmeticSelection();
+      player.metadata = basePlayerMeta;
       applyCosmeticsToPlayer();
       updateTerrainStreaming(playerRoot.position, 0, true);
       window.RegionManager?.updateSpatialState?.(playerRoot.position, { silent: true });
@@ -7819,6 +7872,7 @@
       const hairMatCache = new Map();
       const shoeMatCache = new Map();
       const accessoryMatCache = new Map();
+      const animationStore = window.RigDefinitions && window.RigDefinitions.AnimationStore;
 
       function mat(c) {
          const m = new BABYLON.StandardMaterial("m" + Math.random(), scene);
@@ -8045,14 +8099,134 @@
       // apply transforms (absolute, same as editor)
       const T = rig.transforms || {};
 
-      function apply(key) {
-         const n = nodes[key];
-         if (!n) return;
-         const tr = T[key] || t0();
-         n.position.set(tr.pos.x || 0, tr.pos.y || 0, tr.pos.z || 0);
-         n.rotation.set(d2r(tr.rot.x || 0), d2r(tr.rot.y || 0), d2r(tr.rot.z || 0));
+      function applyBasePose() {
+         PART_KEYS.forEach(key => {
+            const n = nodes[key];
+            if (!n) return;
+            const tr = T[key] || t0();
+            n.position.set(tr.pos.x || 0, tr.pos.y || 0, tr.pos.z || 0);
+            setNodeEuler(n, {
+               x: d2r(tr.rot.x || 0),
+               y: d2r(tr.rot.y || 0),
+               z: d2r(tr.rot.z || 0)
+            });
+         });
       }
-      PART_KEYS.forEach(apply);
+
+      applyBasePose();
+      syncRigNodesToQuaternion(rigNodeMap);
+
+      const rigNodeMap = {};
+      PART_KEYS.forEach(key => {
+         if (nodes[key]) rigNodeMap[key] = nodes[key];
+      });
+
+      const rigAnimation = {
+         binding: null,
+         frame: null,
+         loop: true,
+         nodes: rigNodeMap,
+         applyBasePose,
+         setFrame(frame, options = {}) {
+            const binding = this.binding;
+            if (!binding || !binding.group) return false;
+            const range = binding.range || { start: 0, end: binding.fps || 30 };
+            const span = Math.max(1e-6, (range.end ?? (range.start + (binding.fps || 30))) - range.start);
+            let absolute = Number.isFinite(frame) ? frame : range.start;
+            let target = absolute;
+            if (options.loop !== false) {
+               let relative = (absolute - range.start) % span;
+               if (relative < 0) relative += span;
+               target = range.start + relative;
+            } else {
+               if (absolute < range.start) target = range.start;
+               else if (absolute > range.end) target = range.end;
+            }
+            this.frame = absolute;
+            applyBasePose();
+            binding.group.goToFrame(target);
+            binding.group.pause();
+            syncRigNodesFromQuaternion(rigNodeMap);
+            return true;
+         },
+         advance(dt, speedRatio = 1, loop = true) {
+            if (!this.binding || !this.binding.group) return false;
+            const fps = this.binding.fps || 30;
+            const current = typeof this.frame === "number" ? this.frame : (this.binding.range?.start ?? 0);
+            const next = current + dt * fps * Math.max(0, speedRatio);
+            return this.setFrame(next, { loop });
+         }
+      };
+
+      let animationStoreUnsub = null;
+
+      function disposeAnimationBinding() {
+         if (animationStoreUnsub) {
+            try { animationStoreUnsub(); } catch (err) { /* ignore */ }
+            animationStoreUnsub = null;
+         }
+         if (rigAnimation.binding?.group) {
+            try { rigAnimation.binding.group.dispose(); } catch (err) { /* ignore */ }
+         }
+         rigAnimation.binding = null;
+         rigAnimation.frame = null;
+         applyBasePose();
+         syncRigNodesToQuaternion(rigNodeMap);
+      }
+
+      function rebuildAnimationBinding() {
+         if (rigAnimation.binding?.group) {
+            try { rigAnimation.binding.group.dispose(); } catch (err) { /* ignore */ }
+         }
+         rigAnimation.binding = null;
+
+         if (!animationStore || typeof animationStore.buildAnimationGroup !== "function") {
+            rigAnimation.frame = null;
+            applyBasePose();
+            syncRigNodesToQuaternion(rigNodeMap);
+            return;
+         }
+
+         const activeAnim = typeof animationStore.getActive === "function"
+            ? animationStore.getActive()
+            : null;
+         const build = animationStore.buildAnimationGroup({
+            scene,
+            nodes: rigNodeMap,
+            animation: activeAnim,
+            id: `humanoid-${Math.random().toString(36).slice(2)}`
+         });
+         if (build && build.group) {
+            rigAnimation.binding = {
+               group: build.group,
+               fps: build.fps,
+               range: { start: build.range.start, end: build.range.end },
+               name: build.name || activeAnim?.name || null
+            };
+            rigAnimation.binding.group.start(false, 1.0, build.range.start, build.range.end);
+            rigAnimation.binding.group.pause();
+            const targetFrame = typeof rigAnimation.frame === "number" ? rigAnimation.frame : build.range.start;
+            rigAnimation.setFrame(targetFrame, { loop: rigAnimation.loop !== false });
+         } else {
+            rigAnimation.frame = null;
+            applyBasePose();
+            syncRigNodesToQuaternion(rigNodeMap);
+         }
+      }
+
+      rigAnimation.rebuild = rebuildAnimationBinding;
+      rigAnimation.dispose = disposeAnimationBinding;
+
+      if (animationStore && typeof animationStore.onChange === "function") {
+         animationStoreUnsub = animationStore.onChange(() => {
+            rebuildAnimationBinding();
+         });
+      }
+      rebuildAnimationBinding();
+
+      root.onDisposeObservable?.add(() => {
+         disposeAnimationBinding();
+      });
 
       // expose parts for animation
       const parts = {
@@ -8482,6 +8656,8 @@
 
       root.metadata = {
          parts,
+         rigNodes: rigNodeMap,
+         rigAnimation,
          animPhase: 0,
          footIK,
          cosmetics: cosmetics.getState()
@@ -8490,7 +8666,9 @@
       return {
          root,
          parts,
-         cosmetics
+         cosmetics,
+         rigAnimation,
+         rigNodes: rigNodeMap
       };
    }
 
@@ -8614,6 +8792,8 @@
       const meta = h.root.metadata || {};
       meta.parts = h.parts;
       meta.animPhase = 0;
+      if (!meta.rigNodes && h.rigNodes) meta.rigNodes = h.rigNodes;
+      if (!meta.rigAnimation && h.rigAnimation) meta.rigAnimation = h.rigAnimation;
       h.root.metadata = meta;
       return e;
    }
@@ -9149,159 +9329,215 @@
    }
 
    // ------------ Anim helpers ------------
+   function getRigAnimation(rootMesh) {
+      return rootMesh?.metadata?.rigAnimation || null;
+   }
+
+   function getRigNodes(rootMesh) {
+      return rootMesh?.metadata?.rigNodes || null;
+   }
+
+   function advanceRigAnimation(rootMesh, dt, speedRatio, loop = true) {
+      const rigAnim = getRigAnimation(rootMesh);
+      if (!rigAnim || !rigAnim.binding?.group) return false;
+      const ratio = Number.isFinite(speedRatio) ? speedRatio : 1;
+      return !!rigAnim.advance(dt, ratio, loop);
+   }
+
+   function syncRigPoseFromFallback(rootMesh) {
+      const rigNodes = getRigNodes(rootMesh);
+      if (rigNodes) syncRigNodesToQuaternion(rigNodes);
+   }
+
+   function applyAttackOverlay(parts, attackT) {
+      if (!parts || attackT <= 0) return;
+      const shoulder = parts.armR?.shoulder;
+      const elbow = parts.armR?.elbow;
+      const wrist = parts.armR?.wrist;
+      if (!shoulder || !elbow || !wrist) return;
+      const t = Math.min(1, attackT / 0.22);
+      const k = Math.sin(t * Math.PI);
+      const reach = 1.6 * 1.9;
+      const elbowStart = 0.2;
+      const elbowEnd = -0.32;
+      const wristStart = 0.12;
+      const wristEnd = -0.08;
+
+      const shoulderRot = getNodeEuler(shoulder);
+      shoulderRot.x = -reach * k;
+      setNodeEuler(shoulder, shoulderRot);
+
+      const elbowRot = getNodeEuler(elbow);
+      elbowRot.x = elbowStart * (1 - k) + elbowEnd * k;
+      setNodeEuler(elbow, elbowRot);
+
+      const wristRot = getNodeEuler(wrist);
+      wristRot.x = wristStart * (1 - k) + wristEnd * k;
+      setNodeEuler(wrist, wristRot);
+   }
+
    function updateWalkAnim(rootMesh, speed, grounded, dt, attackT = 0) {
-      const P = rootMesh.metadata?.parts;
-      if (!P) return;
-      const phPrev = rootMesh.metadata.animPhase || 0;
-      const ph = phPrev + (grounded ? speed * 4.8 : speed * 2.4) * dt * ANIM_SPEED;
-      rootMesh.metadata.animPhase = ph;
+      const parts = rootMesh.metadata?.parts;
+      if (!parts) return;
+      const phasePrev = rootMesh.metadata.animPhase || 0;
+      const phase = phasePrev + (grounded ? speed * 4.8 : speed * 2.4) * dt * ANIM_SPEED;
+      rootMesh.metadata.animPhase = phase;
 
-      P.pelvis.position.x = 0;
-      P.pelvis.position.y = 0;
-      P.pelvis.position.z = 0;
-      P.pelvis.rotation.set(0, 0, 0);
-      if (P.head) {
-         P.head.rotation.x = 0;
-         P.head.rotation.y = 0;
-         P.head.rotation.z = 0;
+      const rigLoop = getRigAnimation(rootMesh)?.loop !== false;
+      const rigAdvanced = advanceRigAnimation(
+         rootMesh,
+         dt,
+         grounded ? Math.max(0.1, Math.min(3, speed * 1.8 + 0.3)) : 0.6,
+         rigLoop
+      );
+      if (rigAdvanced) {
+         if (attackT > 0) {
+            applyAttackOverlay(parts, attackT);
+         }
+         return;
       }
-      P.armL.shoulder.rotation.y = 0;
-      P.armR.shoulder.rotation.y = 0;
-      P.armL.shoulder.rotation.z = 0;
-      P.armR.shoulder.rotation.z = 0;
-      P.legL.hip.rotation.y = 0;
-      P.legR.hip.rotation.y = 0;
-      P.legL.hip.rotation.z = 0;
-      P.legR.hip.rotation.z = 0;
-      P.armL.elbow.rotation.y = 0;
-      P.armR.elbow.rotation.y = 0;
-      P.armL.wrist.rotation.z = 0;
-      P.armR.wrist.rotation.z = 0;
 
-      const swing = grounded ? Math.sin(ph) * 0.7 : 0.3 * Math.sin(ph * 0.6);
+      parts.pelvis.position.x = 0;
+      parts.pelvis.position.y = 0;
+      parts.pelvis.position.z = 0;
+      parts.pelvis.rotation.set(0, 0, 0);
+      if (parts.head) {
+         parts.head.rotation.x = 0;
+         parts.head.rotation.y = 0;
+         parts.head.rotation.z = 0;
+      }
+      parts.armL.shoulder.rotation.y = 0;
+      parts.armR.shoulder.rotation.y = 0;
+      parts.armL.shoulder.rotation.z = 0;
+      parts.armR.shoulder.rotation.z = 0;
+      parts.legL.hip.rotation.y = 0;
+      parts.legR.hip.rotation.y = 0;
+      parts.legL.hip.rotation.z = 0;
+      parts.legR.hip.rotation.z = 0;
+      parts.armL.elbow.rotation.y = 0;
+      parts.armR.elbow.rotation.y = 0;
+      parts.armL.wrist.rotation.z = 0;
+      parts.armR.wrist.rotation.z = 0;
+
+      const swing = grounded ? Math.sin(phase) * 0.7 : 0.3 * Math.sin(phase * 0.6);
       const armSwing = swing * 0.8;
 
-      P.legL.hip.rotation.x = swing;
-      P.legR.hip.rotation.x = -swing;
-      const kneeL = Math.max(0, -Math.sin(ph)) * 1.1;
-      const kneeR = Math.max(0, Math.sin(ph)) * 1.1;
-      P.legL.knee.rotation.x = kneeL;
-      P.legR.knee.rotation.x = kneeR;
-      P.legL.ankle.rotation.x = -kneeL * 0.35 + 0.1 * Math.sin(ph * 2);
-      P.legR.ankle.rotation.x = -kneeR * 0.35 - 0.1 * Math.sin(ph * 2);
+      parts.legL.hip.rotation.x = swing;
+      parts.legR.hip.rotation.x = -swing;
+      const kneeL = Math.max(0, -Math.sin(phase)) * 1.1;
+      const kneeR = Math.max(0, Math.sin(phase)) * 1.1;
+      parts.legL.knee.rotation.x = kneeL;
+      parts.legR.knee.rotation.x = kneeR;
+      parts.legL.ankle.rotation.x = -kneeL * 0.35 + 0.1 * Math.sin(phase * 2);
+      parts.legR.ankle.rotation.x = -kneeR * 0.35 - 0.1 * Math.sin(phase * 2);
 
-      P.armL.shoulder.rotation.x = -armSwing;
-      P.armR.shoulder.rotation.x = armSwing;
-      const elbowL = Math.max(0, Math.sin(ph)) * 0.6;
-      const elbowR = Math.max(0, -Math.sin(ph)) * 0.6;
-      P.armL.elbow.rotation.x = elbowL;
-      P.armR.elbow.rotation.x = elbowR;
-      P.armL.wrist.rotation.x = -elbowL * 0.4;
-      P.armR.wrist.rotation.x = -elbowR * 0.4;
+      parts.armL.shoulder.rotation.x = -armSwing;
+      parts.armR.shoulder.rotation.x = armSwing;
+      const elbowL = Math.max(0, Math.sin(phase)) * 0.6;
+      const elbowR = Math.max(0, -Math.sin(phase)) * 0.6;
+      parts.armL.elbow.rotation.x = elbowL;
+      parts.armR.elbow.rotation.x = elbowR;
+      parts.armL.wrist.rotation.x = -elbowL * 0.4;
+      parts.armR.wrist.rotation.x = -elbowR * 0.4;
 
       if (!grounded) {
-         P.armL.shoulder.rotation.x = 0.5;
-         P.armR.shoulder.rotation.x = 0.5;
-         P.legL.knee.rotation.x = Math.max(P.legL.knee.rotation.x, 0.4);
-         P.legR.knee.rotation.x = Math.max(P.legR.knee.rotation.x, 0.4);
-         P.legL.ankle.rotation.x = 0.15;
-         P.legR.ankle.rotation.x = 0.15;
+         parts.armL.shoulder.rotation.x = 0.5;
+         parts.armR.shoulder.rotation.x = 0.5;
+         parts.legL.knee.rotation.x = Math.max(parts.legL.knee.rotation.x, 0.4);
+         parts.legR.knee.rotation.x = Math.max(parts.legR.knee.rotation.x, 0.4);
+         parts.legL.ankle.rotation.x = 0.15;
+         parts.legR.ankle.rotation.x = 0.15;
       }
 
       if (attackT > 0) {
-         const t = Math.min(1, attackT / 0.22);
-         const k = Math.sin(t * Math.PI);
-         const reach = 1.6 * 1.9;
-         const elbowStart = 0.2;
-         const elbowEnd = -0.32;
-         const wristStart = 0.12;
-         const wristEnd = -0.08;
-         P.armR.shoulder.rotation.x = -reach * k;
-         P.armR.elbow.rotation.x = elbowStart * (1 - k) + elbowEnd * k;
-         P.armR.wrist.rotation.x = wristStart * (1 - k) + wristEnd * k;
+         applyAttackOverlay(parts, attackT);
       }
 
-      P.lowerTorso.rotation.x = 0.05 * Math.sin(ph * 2) * (grounded ? 1 : 0.3);
-      P.upperTorso.rotation.x = 0.03 * Math.sin(ph * 2 + 0.4) * (grounded ? 1 : 0.3);
-      P.neck.rotation.x = -0.03 * Math.sin(ph * 2 + 0.2);
+      parts.lowerTorso.rotation.x = 0.05 * Math.sin(phase * 2) * (grounded ? 1 : 0.3);
+      parts.upperTorso.rotation.x = 0.03 * Math.sin(phase * 2 + 0.4) * (grounded ? 1 : 0.3);
+      parts.neck.rotation.x = -0.03 * Math.sin(phase * 2 + 0.2);
+
+      syncRigPoseFromFallback(rootMesh);
    }
 
    function updateIdleAnim(rootMesh, dt, attackT = 0) {
-      const P = rootMesh.metadata?.parts;
-      if (!P) return;
-      const phPrev = rootMesh.metadata.animPhase || 0;
-      const ph = phPrev + dt * ANIM_SPEED * 0.9;
-      rootMesh.metadata.animPhase = ph;
+      const parts = rootMesh.metadata?.parts;
+      if (!parts) return;
+      const phasePrev = rootMesh.metadata.animPhase || 0;
+      const phase = phasePrev + dt * ANIM_SPEED * 0.9;
+      rootMesh.metadata.animPhase = phase;
 
-      const breathe = Math.sin(ph * 0.8) * 0.05;
-      const sway = Math.sin(ph * 0.35) * 0.1;
-      const shift = Math.sin(ph * 0.45 + 1.2) * 0.08;
-
-      P.pelvis.position.x = shift * 0.4;
-      P.pelvis.position.y = 0.02 * Math.sin(ph * 0.8 + 0.4);
-      P.pelvis.position.z = 0;
-      P.pelvis.rotation.x = 0;
-      P.pelvis.rotation.y = sway * 0.45;
-      P.pelvis.rotation.z = -shift * 0.35;
-
-      P.lowerTorso.rotation.x = breathe * 0.6;
-      P.lowerTorso.rotation.y = 0.08 * Math.sin(ph * 0.45);
-      P.lowerTorso.rotation.z = sway * 0.25;
-
-      P.upperTorso.rotation.x = 0.12 * Math.sin(ph * 0.85 + 0.6);
-      P.upperTorso.rotation.y = 0.14 * Math.sin(ph * 0.35 + 0.3);
-      P.upperTorso.rotation.z = -sway * 0.4;
-
-      P.neck.rotation.x = -0.06 * Math.sin(ph * 0.9 + 0.9);
-      P.neck.rotation.y = 0.04 * Math.sin(ph * 0.7);
-      P.neck.rotation.z = 0.02 * Math.sin(ph * 0.5 + 0.5);
-
-      if (P.head) {
-         P.head.rotation.x = -0.03 * Math.sin(ph * 0.85 + 0.4);
-         P.head.rotation.y = 0.05 * Math.sin(ph * 0.6 + 1.1);
-         P.head.rotation.z = 0.01 * Math.sin(ph * 0.8);
+      const rigLoop = getRigAnimation(rootMesh)?.loop !== false;
+      const rigAdvanced = advanceRigAnimation(rootMesh, dt, 1, rigLoop);
+      if (rigAdvanced) {
+         if (attackT > 0) {
+            applyAttackOverlay(parts, attackT);
+         }
+         return;
       }
 
-      const armOsc = Math.sin(ph * 0.8);
-      P.armL.shoulder.rotation.x = -0.18 + 0.09 * armOsc;
-      P.armR.shoulder.rotation.x = -0.12 - 0.09 * armOsc;
-      P.armL.shoulder.rotation.y = 0.05 * Math.sin(ph * 0.5);
-      P.armR.shoulder.rotation.y = -0.05 * Math.sin(ph * 0.5 + 0.4);
-      P.armL.shoulder.rotation.z = 0.18 + 0.04 * Math.sin(ph * 0.7);
-      P.armR.shoulder.rotation.z = -0.18 + 0.04 * Math.sin(ph * 0.7 + Math.PI);
+      const breathe = Math.sin(phase * 0.8) * 0.05;
+      const sway = Math.sin(phase * 0.35) * 0.1;
+      const shift = Math.sin(phase * 0.45 + 1.2) * 0.08;
 
-      P.armL.elbow.rotation.x = 0.28 + 0.05 * Math.sin(ph * 0.9 + 0.3);
-      P.armR.elbow.rotation.x = 0.28 + 0.05 * Math.sin(ph * 0.9 - 0.3);
-      P.armL.elbow.rotation.y = 0;
-      P.armR.elbow.rotation.y = 0;
-      P.armL.wrist.rotation.x = -0.12 + 0.04 * Math.sin(ph * 1.1);
-      P.armR.wrist.rotation.x = -0.12 + 0.04 * Math.sin(ph * 1.1 + 0.5);
-      P.armL.wrist.rotation.z = 0.02 * Math.sin(ph * 1.4);
-      P.armR.wrist.rotation.z = -0.02 * Math.sin(ph * 1.3);
+      parts.pelvis.position.x = shift * 0.4;
+      parts.pelvis.position.y = 0.02 * Math.sin(phase * 0.8 + 0.4);
+      parts.pelvis.position.z = 0;
+      parts.pelvis.rotation.x = 0;
+      parts.pelvis.rotation.y = sway * 0.45;
+      parts.pelvis.rotation.z = -shift * 0.35;
 
-      P.legL.hip.rotation.x = 0.12 + 0.03 * Math.sin(ph * 0.6);
-      P.legR.hip.rotation.x = 0.12 + 0.03 * Math.sin(ph * 0.6 + Math.PI);
-      P.legL.hip.rotation.y = 0.02 * Math.sin(ph * 0.4);
-      P.legR.hip.rotation.y = -0.02 * Math.sin(ph * 0.4);
-      P.legL.hip.rotation.z = shift * 0.8;
-      P.legR.hip.rotation.z = -shift * 0.8;
-      P.legL.knee.rotation.x = 0.14 + 0.025 * Math.sin(ph * 0.7);
-      P.legR.knee.rotation.x = 0.14 + 0.025 * Math.sin(ph * 0.7 + Math.PI);
-      P.legL.ankle.rotation.x = -0.08 + 0.02 * Math.sin(ph * 0.9);
-      P.legR.ankle.rotation.x = -0.08 + 0.02 * Math.sin(ph * 0.9 + Math.PI);
+      parts.lowerTorso.rotation.x = breathe * 0.6;
+      parts.lowerTorso.rotation.y = 0.08 * Math.sin(phase * 0.45);
+      parts.lowerTorso.rotation.z = sway * 0.25;
+
+      parts.upperTorso.rotation.x = 0.12 * Math.sin(phase * 0.85 + 0.6);
+      parts.upperTorso.rotation.y = 0.14 * Math.sin(phase * 0.35 + 0.3);
+      parts.upperTorso.rotation.z = -sway * 0.4;
+
+      parts.neck.rotation.x = -0.06 * Math.sin(phase * 0.9 + 0.9);
+      parts.neck.rotation.y = 0.04 * Math.sin(phase * 0.7);
+      parts.neck.rotation.z = 0.02 * Math.sin(phase * 0.5 + 0.5);
+
+      if (parts.head) {
+         parts.head.rotation.x = -0.03 * Math.sin(phase * 0.85 + 0.4);
+         parts.head.rotation.y = 0.05 * Math.sin(phase * 0.6 + 1.1);
+         parts.head.rotation.z = 0.01 * Math.sin(phase * 0.8);
+      }
+
+      const armOsc = Math.sin(phase * 0.8);
+      parts.armL.shoulder.rotation.x = -0.18 + 0.09 * armOsc;
+      parts.armR.shoulder.rotation.x = -0.12 - 0.09 * armOsc;
+      parts.armL.shoulder.rotation.y = 0.05 * Math.sin(phase * 0.5);
+      parts.armR.shoulder.rotation.y = -0.05 * Math.sin(phase * 0.5 + 0.4);
+      parts.armL.shoulder.rotation.z = 0.18 + 0.04 * Math.sin(phase * 0.7);
+      parts.armR.shoulder.rotation.z = -0.18 + 0.04 * Math.sin(phase * 0.7 + Math.PI);
+
+      parts.armL.elbow.rotation.x = 0.28 + 0.05 * Math.sin(phase * 0.9 + 0.3);
+      parts.armR.elbow.rotation.x = 0.28 + 0.05 * Math.sin(phase * 0.9 - 0.3);
+      parts.armL.elbow.rotation.y = 0;
+      parts.armR.elbow.rotation.y = 0;
+      parts.armL.wrist.rotation.x = -0.12 + 0.04 * Math.sin(phase * 1.1);
+      parts.armR.wrist.rotation.x = -0.12 + 0.04 * Math.sin(phase * 1.1 + 0.5);
+      parts.armL.wrist.rotation.z = 0.02 * Math.sin(phase * 1.4);
+      parts.armR.wrist.rotation.z = -0.02 * Math.sin(phase * 1.3);
+
+      parts.legL.hip.rotation.x = 0.12 + 0.03 * Math.sin(phase * 0.6);
+      parts.legR.hip.rotation.x = 0.12 + 0.03 * Math.sin(phase * 0.6 + Math.PI);
+      parts.legL.hip.rotation.y = 0.02 * Math.sin(phase * 0.4);
+      parts.legR.hip.rotation.y = -0.02 * Math.sin(phase * 0.4);
+      parts.legL.hip.rotation.z = shift * 0.8;
+      parts.legR.hip.rotation.z = -shift * 0.8;
+      parts.legL.knee.rotation.x = 0.14 + 0.025 * Math.sin(phase * 0.7);
+      parts.legR.knee.rotation.x = 0.14 + 0.025 * Math.sin(phase * 0.7 + Math.PI);
+      parts.legL.ankle.rotation.x = -0.08 + 0.02 * Math.sin(phase * 0.9);
+      parts.legR.ankle.rotation.x = -0.08 + 0.02 * Math.sin(phase * 0.9 + Math.PI);
 
       if (attackT > 0) {
-         const t = Math.min(1, attackT / 0.22);
-         const k = Math.sin(t * Math.PI);
-         const reach = 1.6 * 1.9;
-         const elbowStart = 0.2;
-         const elbowEnd = -0.32;
-         const wristStart = 0.12;
-         const wristEnd = -0.08;
-         P.armR.shoulder.rotation.x = -reach * k;
-         P.armR.elbow.rotation.x = elbowStart * (1 - k) + elbowEnd * k;
-         P.armR.wrist.rotation.x = wristStart * (1 - k) + wristEnd * k;
+         applyAttackOverlay(parts, attackT);
       }
+
+      syncRigPoseFromFallback(rootMesh);
    }
 
    // ------------ Main loop ------------
