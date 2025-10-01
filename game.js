@@ -8113,13 +8113,13 @@
          });
       }
 
-      applyBasePose();
-      syncRigNodesToQuaternion(rigNodeMap);
-
       const rigNodeMap = {};
       PART_KEYS.forEach(key => {
          if (nodes[key]) rigNodeMap[key] = nodes[key];
       });
+
+      applyBasePose();
+      syncRigNodesToQuaternion(rigNodeMap);
 
       const rigAnimation = {
          binding: null,
