@@ -62,13 +62,17 @@ const DEF = {
   let keyClipboard = null;
   let timelineKeyHandler = null;
   const AUTO_KEY_STORAGE_KEY = "hxh.rig.autokey";
+  const INTERPOLATION_STORAGE_KEY = "hxh.rig.interpolation";
+  const VALID_INTERPOLATION_MODES = new Set(["linear", "stepped"]);
   let autoKeyEnabled = false;
   let autoKeyButton = null;
   let easeSelectorRef = null;
+  let interpolationSelectRef = null;
   const autoKeyState = { snapshot: null, part: null, channel: null };
   const autoKeyHookedGizmos = new WeakSet();
   let autoKeyHooksInstalled = false;
   let autoKeyHookObserver = null;
+  let interpolationMode = "linear";
 
   try {
     const stored = localStorage.getItem(AUTO_KEY_STORAGE_KEY);
@@ -77,6 +81,15 @@ const DEF = {
     }
   } catch {
     autoKeyEnabled = false;
+  }
+
+  try {
+    const storedMode = localStorage.getItem(INTERPOLATION_STORAGE_KEY);
+    if (storedMode && VALID_INTERPOLATION_MODES.has(storedMode)) {
+      interpolationMode = storedMode;
+    }
+  } catch {
+    interpolationMode = "linear";
   }
 
   // Visible mesh helper + red outline
@@ -318,6 +331,98 @@ const DEF = {
 
   const TMP_EULER = new BABYLON.Vector3();
 
+  function isSteppedMode() {
+    return interpolationMode === "stepped";
+  }
+
+  function persistInterpolationMode(mode) {
+    try {
+      localStorage.setItem(INTERPOLATION_STORAGE_KEY, mode);
+    } catch {
+      /* ignore persistence errors */
+    }
+  }
+
+  function updateInterpolationUI() {
+    if (!interpolationSelectRef) return;
+    interpolationSelectRef.value = interpolationMode;
+    const label = interpolationSelectRef.closest("label");
+    if (label) {
+      label.setAttribute("data-mode", interpolationMode);
+    }
+  }
+
+  function ensureSteppedKeyStyles() {
+    const styleId = "rig-editor-stepped-style";
+    if (document.getElementById(styleId)) return;
+    const style = document.createElement("style");
+    style.id = styleId;
+    style.textContent = `
+.timeline-key.stepped{ position:relative; }
+.timeline-key.stepped::after{
+  content:"";
+  position:absolute;
+  inset:-3px;
+  border:2px solid rgba(255,255,255,0.85);
+  border-radius:3px;
+  pointer-events:none;
+}
+.timeline-key.stepped.selected::after{
+  border-color:#ffe28a;
+}
+`;
+    document.head.appendChild(style);
+  }
+
+  function applyInterpolationModeToGroup(group) {
+    if (!group) return;
+    const target = isSteppedMode() ? BABYLON.Animation.ANIMATIONKEYINTERPOLATION_STEP : null;
+    const animations = Array.isArray(group.targetedAnimations) ? group.targetedAnimations : [];
+    animations.forEach(entry => {
+      const animation = entry?.animation;
+      if (!animation || typeof animation.getKeys !== "function") return;
+      const keys = animation.getKeys();
+      if (!Array.isArray(keys) || !keys.length) return;
+      let changed = false;
+      if (target != null) {
+        keys.forEach(key => {
+          if (!key) return;
+          if (key.interpolation !== target) {
+            key.interpolation = target;
+            changed = true;
+          }
+        });
+      } else {
+        keys.forEach(key => {
+          if (!key || key.interpolation == null) return;
+          delete key.interpolation;
+          changed = true;
+        });
+      }
+      if (changed && typeof animation.setKeys === "function") {
+        animation.setKeys(keys);
+      }
+    });
+  }
+
+  function setInterpolationMode(mode) {
+    const normalized = VALID_INTERPOLATION_MODES.has(mode) ? mode : "linear";
+    if (normalized === interpolationMode) {
+      updateInterpolationUI();
+      return;
+    }
+    interpolationMode = normalized;
+    updateInterpolationUI();
+    persistInterpolationMode(interpolationMode);
+    markAnimationGroupDirty();
+    const binding = ensureAnimationGroup();
+    if (binding?.group) {
+      applyInterpolationModeToGroup(binding.group);
+    }
+    applyPoseForFrame(playheadFrame);
+    refreshDopeSheet?.();
+  }
+
   function getNodeEuler(node) {
     if (!node) return { x: 0, y: 0, z: 0 };
     if (node.rotationQuaternion) {
@@ -426,6 +531,7 @@ const DEF = {
         range: { start: build.range.start, end: build.range.end },
         name: build.name || animData.name || null
       };
+      applyInterpolationModeToGroup(animationBinding.group);
       animationBinding.group.start(false, 1.0, animationBinding.range.start, animationBinding.range.end);
       animationBinding.group.pause();
     } else {
@@ -461,6 +567,7 @@ const DEF = {
   const anim = { playing:false, mode:"walk", speed:1.0, grounded:true, phase:0, attackT:0, loop:true };
 
   function buildAnimEditor(){
+    ensureSteppedKeyStyles();
     const timelineRoot = document.getElementById("an-timeline");
     const timeSlider = document.getElementById("an-time");
     const timeOut = document.getElementById("an-time-readout");
@@ -481,6 +588,45 @@ const DEF = {
     const addBtn = document.getElementById("an-add");
     const delBtn = document.getElementById("an-del");
     easeSelectorRef = easeSel;
+
+    const curveRow = document.querySelector("#anim-panel .curve-row");
+    if (curveRow) {
+      let interpLabel = curveRow.querySelector("label[data-role='interp-mode']");
+      if (!interpLabel) {
+        interpLabel = document.createElement("label");
+        interpLabel.dataset.role = "interp-mode";
+        const text = document.createElement("span");
+        text.textContent = "Key Mode";
+        const select = document.createElement("select");
+        select.id = "an-interp";
+        const optLinear = document.createElement("option");
+        optLinear.value = "linear";
+        optLinear.textContent = "Linear";
+        const optStepped = document.createElement("option");
+        optStepped.value = "stepped";
+        optStepped.textContent = "Stepped";
+        select.append(optLinear, optStepped);
+        interpLabel.append(text, select);
+        curveRow.appendChild(interpLabel);
+        select.onchange = () => setInterpolationMode(select.value);
+        interpolationSelectRef = select;
+      } else {
+        const select = interpLabel.querySelector("select");
+        if (select) {
+          select.innerHTML = "";
+          const optLinear = document.createElement("option");
+          optLinear.value = "linear";
+          optLinear.textContent = "Linear";
+          const optStepped = document.createElement("option");
+          optStepped.value = "stepped";
+          optStepped.textContent = "Stepped";
+          select.append(optLinear, optStepped);
+          select.onchange = () => setInterpolationMode(select.value);
+          interpolationSelectRef = select;
+        }
+      }
+      updateInterpolationUI();
+    }
 
     let autoKeyBtn = document.getElementById("an-autokey");
     const controlsParent = addBtn?.parentElement || delBtn?.parentElement || null;
@@ -1016,9 +1162,13 @@ const DEF = {
           arr.forEach(key=>{
             const el=document.createElement("div");
             el.className=`timeline-key channel-${ch.short}`;
+            if (isSteppedMode()) {
+              el.classList.add("stepped");
+            }
             const pct = ((key.frame - range.start) / total) * 100;
             el.style.left = `${Math.max(0, Math.min(100, pct))}%`;
-            el.title = `Frame ${key.frame.toFixed(2)} (${frameToSeconds(key.frame).toFixed(3)}s)`;
+            const modeSuffix = isSteppedMode() ? " — Hold" : "";
+            el.title = `Frame ${key.frame.toFixed(2)} (${frameToSeconds(key.frame).toFixed(3)}s${modeSuffix})`;
             el.addEventListener("pointerdown", e=>{
               e.preventDefault();
               e.stopPropagation();
@@ -1076,7 +1226,8 @@ const DEF = {
                   if (node){
                     const clamped = Math.max(0, Math.min(100, pctMoved));
                     node.style.left = `${clamped}%`;
-                    node.title = `Frame ${moved.frame.toFixed(2)} (${frameToSeconds(moved.frame).toFixed(3)}s)`;
+                    const suffix = isSteppedMode() ? " — Hold" : "";
+                    node.title = `Frame ${moved.frame.toFixed(2)} (${frameToSeconds(moved.frame).toFixed(3)}s${suffix})`;
                   }
                 }
               });
@@ -1336,6 +1487,7 @@ const DEF = {
       for(let i=1;i<keys.length;i++){ if(frame<=keys[i].frame){ b=i; a=i-1; break; } }
       const ka=keys[a], kb=keys[b];
       const u=(frame-ka.frame)/Math.max(1e-6,(kb.frame-ka.frame));
+      if (isSteppedMode()) return ka.value;
       const w=ease(u,kb.ease||"linear");
       return { x:lerp(ka.value.x,kb.value.x,w), y:lerp(ka.value.y,kb.value.y,w), z:lerp(ka.value.z,kb.value.z,w) };
     }
