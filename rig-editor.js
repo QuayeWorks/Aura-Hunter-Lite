@@ -251,14 +251,161 @@ const DEF = {
   let booted = false;
   let pendingUnlockBoot = null;
 
+  const timelineControls = { btnPlay: null };
+  let playheadFrame = 0;
+  let animationBinding = { group: null, fps: 30, range: { start: 0, end: 30 }, name: null };
+  let animationGroupDirty = true;
+
+  const TMP_EULER = new BABYLON.Vector3();
+
+  function getNodeEuler(node) {
+    if (!node) return { x: 0, y: 0, z: 0 };
+    if (node.rotationQuaternion) {
+      node.rotationQuaternion.toEulerAnglesToRef(TMP_EULER);
+      return { x: TMP_EULER.x, y: TMP_EULER.y, z: TMP_EULER.z };
+    }
+    const rot = node.rotation || { x: 0, y: 0, z: 0 };
+    return { x: rot.x || 0, y: rot.y || 0, z: rot.z || 0 };
+  }
+
+  function setNodeEuler(node, euler) {
+    if (!node) return;
+    const x = Number(euler?.x) || 0;
+    const y = Number(euler?.y) || 0;
+    const z = Number(euler?.z) || 0;
+    if (node.rotation) node.rotation.set(x, y, z);
+    if (!node.rotationQuaternion) node.rotationQuaternion = new BABYLON.Quaternion();
+    BABYLON.Quaternion.FromEulerAnglesToRef(x, y, z, node.rotationQuaternion);
+  }
+
+  function syncRotationToQuaternion(node) {
+    if (!node) return;
+    const rot = node.rotation || { x: 0, y: 0, z: 0 };
+    setNodeEuler(node, rot);
+  }
+
+  function syncRotationFromQuaternion(node) {
+    if (!node) return;
+    if (node.rotationQuaternion) {
+      node.rotationQuaternion.toEulerAnglesToRef(node.rotation ?? TMP_EULER);
+    } else {
+      syncRotationToQuaternion(node);
+    }
+  }
+
+  function syncAllNodeQuaternions() {
+    for (const key of PART_KEYS) {
+      const node = nodes[key];
+      if (!node) continue;
+      syncRotationToQuaternion(node);
+    }
+  }
+
+  function syncNodesFromQuaternion() {
+    for (const key of PART_KEYS) {
+      const node = nodes[key];
+      if (!node) continue;
+      syncRotationFromQuaternion(node);
+    }
+  }
+
+  function applyPoseForFrame(frame, bindingOverride) {
+    applyTransforms();
+    const binding = bindingOverride || ensureAnimationGroup();
+    if (binding && binding.group) {
+      binding.group.goToFrame(frame);
+      binding.group.pause();
+      syncNodesFromQuaternion();
+    } else {
+      applyAtTime(frameToSeconds(frame));
+    }
+    updateToolbar();
+  }
+
+  function disposeAnimationGroup() {
+    if (animationBinding.group) {
+      try { animationBinding.group.dispose(); } catch (err) { /* ignore */ }
+    }
+    animationBinding = { group: null, fps: 30, range: { start: 0, end: 30 }, name: null };
+  }
+
+  function markAnimationGroupDirty() {
+    animationGroupDirty = true;
+    if (anim.playing) {
+      anim.playing = false;
+      if (timelineControls.btnPlay) timelineControls.btnPlay.textContent = "▶";
+    }
+    if (animationBinding.group) {
+      try { animationBinding.group.pause(); } catch (err) { /* ignore */ }
+    }
+  }
+
+  function rebuildAnimationGroup() {
+    if (!scene || !AnimationStore || typeof AnimationStore.buildAnimationGroup !== "function") {
+      disposeAnimationGroup();
+      animationGroupDirty = false;
+      return animationBinding;
+    }
+    const animData = ensureAnimation();
+    if (!animData) {
+      disposeAnimationGroup();
+      animationGroupDirty = false;
+      return animationBinding;
+    }
+    disposeAnimationGroup();
+    const build = AnimationStore.buildAnimationGroup({
+      scene,
+      nodes,
+      animation: animData,
+      id: `rig-editor-${animData.name || "anim"}-${Date.now()}`
+    });
+    if (build && build.group) {
+      animationBinding = {
+        group: build.group,
+        fps: build.fps,
+        range: { start: build.range.start, end: build.range.end },
+        name: build.name || animData.name || null
+      };
+      animationBinding.group.start(false, 1.0, animationBinding.range.start, animationBinding.range.end);
+      animationBinding.group.pause();
+    } else {
+      const range = currentRange();
+      animationBinding = {
+        group: null,
+        fps: animData.fps || currentFps(),
+        range: { start: range.start, end: range.end },
+        name: animData.name || null
+      };
+    }
+    animationGroupDirty = false;
+    if (!anim.playing) {
+      applyPoseForFrame(playheadFrame, animationBinding);
+    }
+    return animationBinding;
+  }
+
+  function ensureAnimationGroup() {
+    if (animationGroupDirty) {
+      rebuildAnimationGroup();
+    }
+    return animationBinding;
+  }
+
+  if (typeof AnimationStore.onChange === "function") {
+    AnimationStore.onChange(() => {
+      markAnimationGroupDirty();
+    });
+  }
+
   // Animation-preview state
-  const anim = { playing:false, mode:"walk", speed:1.0, grounded:true, phase:0, attackT:0 };
+  const anim = { playing:false, mode:"walk", speed:1.0, grounded:true, phase:0, attackT:0, loop:true };
 
   function buildAnimEditor(){
     const timelineRoot = document.getElementById("an-timeline");
     const timeSlider = document.getElementById("an-time");
     const timeOut = document.getElementById("an-time-readout");
     const btnPlay = document.getElementById("an-play");
+    timelineControls.btnPlay = btnPlay;
     const btnStop = document.getElementById("an-stop");
     const btnToStart = document.getElementById("an-to-start");
     const btnPrev = document.getElementById("an-prev");
@@ -337,6 +484,23 @@ const DEF = {
     sheetEl.appendChild(bodyEl);
     timelineRoot.appendChild(sheetEl);
 
+    const transport = btnToStart?.parentElement || null;
+    if (transport) {
+      const loopLabel = document.createElement("label");
+      loopLabel.className = "timeline-loop";
+      const loopInput = document.createElement("input");
+      loopInput.type = "checkbox";
+      loopInput.id = "an-loop";
+      loopInput.checked = anim.loop !== false;
+      const loopText = document.createElement("span");
+      loopText.textContent = "Loop";
+      loopLabel.append(loopInput, loopText);
+      transport.appendChild(loopLabel);
+      loopInput.addEventListener("change", () => {
+        anim.loop = loopInput.checked;
+      });
+    }
+
     const CHANNELS = [
       { short: "pos", name: "position", label: "Position" },
       { short: "rot", name: "rotation", label: "Rotation" },
@@ -348,7 +512,7 @@ const DEF = {
     const keyMeta = new Map();
     const rowElements = new Map();
     const expandedJoints = new Map();
-    let playheadFrame = currentRange().start;
+    playheadFrame = currentRange().start;
     let playheadDrag = null;
     let keyDrag = null;
     let boxSelect = null;
@@ -454,15 +618,20 @@ const DEF = {
     }
 
     function setFrame(frame, opts = {}){
-      const { snap = true } = opts;
+      const { snap = true, fromAnimation = false } = opts;
       const range = currentRange();
       const clamped = Math.min(range.end, Math.max(range.start, frame));
-      playheadFrame = snap ? Math.round(clamped) : clamped;
+      playheadFrame = fromAnimation ? clamped : (snap ? Math.round(clamped) : clamped);
       const displayFrame = Math.round(playheadFrame);
       timeSlider.value = String(displayFrame);
       positionPlayhead(playheadFrame);
       updateTimeReadout();
-      applyAtTime(frameToSeconds(playheadFrame));
+      if (!fromAnimation) {
+        applyPoseForFrame(playheadFrame);
+      } else {
+        syncNodesFromQuaternion();
+        updateToolbar();
+      }
     }
 
     function clearKeySelection(){
@@ -715,9 +884,30 @@ const DEF = {
     timeSlider.oninput = ()=> setFrame(Number(timeSlider.value)||currentRange().start, { snap: true });
 
     btnPlay.onclick = togglePlay;
-    btnStop.onclick = ()=>{ anim.playing=false; btnPlay.textContent="▶"; };
-    btnToStart.onclick = ()=>{ anim.playing=false; btnPlay.textContent="▶"; setFrame(currentRange().start, { snap: true }); };
-    btnToEnd.onclick = ()=>{ anim.playing=false; btnPlay.textContent="▶"; setFrame(currentRange().end, { snap: true }); };
+    btnStop.onclick = ()=>{
+      anim.playing=false;
+      btnPlay.textContent="▶";
+      const binding = ensureAnimationGroup();
+      if (binding?.group) binding.group.pause();
+      const startFrame = binding?.range?.start ?? currentRange().start;
+      setFrame(startFrame, { snap: true });
+    };
+    btnToStart.onclick = ()=>{
+      anim.playing=false;
+      btnPlay.textContent="▶";
+      const binding = ensureAnimationGroup();
+      if (binding?.group) binding.group.pause();
+      const start = binding?.range?.start ?? currentRange().start;
+      setFrame(start, { snap: true });
+    };
+    btnToEnd.onclick = ()=>{
+      anim.playing=false;
+      btnPlay.textContent="▶";
+      const binding = ensureAnimationGroup();
+      if (binding?.group) binding.group.pause();
+      const end = binding?.range?.end ?? currentRange().end;
+      setFrame(end, { snap: true });
+    };
 
     function stepToNeighbor(dir){
       const keys = currentTrackKeys().slice().sort((a,b)=>a.frame-b.frame);
@@ -743,10 +933,23 @@ const DEF = {
       }
     }
 
-    btnPrev.onclick = ()=>{ anim.playing=false; btnPlay.textContent="▶"; stepToNeighbor(-1); };
-    btnNext.onclick = ()=>{ anim.playing=false; btnPlay.textContent="▶"; stepToNeighbor(1); };
+    btnPrev.onclick = ()=>{
+      anim.playing=false;
+      btnPlay.textContent="▶";
+      const binding = ensureAnimationGroup();
+      if (binding?.group) binding.group.pause();
+      stepToNeighbor(-1);
+    };
+    btnNext.onclick = ()=>{
+      anim.playing=false;
+      btnPlay.textContent="▶";
+      const binding = ensureAnimationGroup();
+      if (binding?.group) binding.group.pause();
+      stepToNeighbor(1);
+    };
 
     lenEl.addEventListener("change", ()=>{
+      const animData = ensureAnimation();
       const fps = currentFps();
       const seconds = Math.max(0.25, Math.min(60, Number(lenEl.value) || 2));
       const frames = Math.max(1, Math.round(seconds * fps));
@@ -754,6 +957,7 @@ const DEF = {
       range.end = range.start + frames;
       syncRangeUI();
       drawTimeline();
+      if (AnimationStore.touch) AnimationStore.touch(animData?.name);
     });
 
     fpsEl.addEventListener("change", ()=>{
@@ -762,9 +966,11 @@ const DEF = {
       animData.fps = fps;
       syncRangeUI();
       drawTimeline();
+      if (AnimationStore.touch) AnimationStore.touch(animData?.name);
     });
 
     rangeStartEl.addEventListener("change", ()=>{
+      const animData = ensureAnimation();
       const range = currentRange();
       let start = Math.floor(Number(rangeStartEl.value) || 0);
       start = Math.max(0, start);
@@ -774,15 +980,18 @@ const DEF = {
       range.start = start;
       syncRangeUI();
       drawTimeline();
+      if (AnimationStore.touch) AnimationStore.touch(animData?.name);
     });
 
     rangeEndEl.addEventListener("change", ()=>{
+      const animData = ensureAnimation();
       const range = currentRange();
       let end = Math.floor(Number(rangeEndEl.value) || (range.start + 1));
       end = Math.max(range.start + 1, end);
       range.end = end;
       syncRangeUI();
       drawTimeline();
+      if (AnimationStore.touch) AnimationStore.touch(animData?.name);
     });
 
     bodyEl.addEventListener("pointerdown", e=>{
@@ -917,7 +1126,10 @@ const DEF = {
     function currentTRSAt(part,ch){
       const p = nodes[part]; if (!p) return {x:0,y:0,z:0};
       if (ch==="pos") return {x:p.position.x, y:p.position.y, z:p.position.z};
-      if (ch==="rot") return {x:p.rotation.x, y:p.rotation.y, z:p.rotation.z};
+      if (ch==="rot") {
+        const e = getNodeEuler(p);
+        return { x: e.x, y: e.y, z: e.z };
+      }
       const s = p.scaling||new BABYLON.Vector3(1,1,1);
       return {x:s.x,y:s.y,z:s.z};
     }
@@ -943,22 +1155,52 @@ const DEF = {
       PART_KEYS.forEach(part=>{
         const p=nodes[part]; if(!p) return;
         const P=sampleChannel(part,"pos",t); if(P) p.position.set(P.x,P.y,P.z);
-        const R=sampleChannel(part,"rot",t); if(R) p.rotation.set(R.x,R.y,R.z);
+        const R=sampleChannel(part,"rot",t); if(R) setNodeEuler(p, R);
         const S=sampleChannel(part,"scl",t); if(S) p.scaling?.set?.(S.x,S.y,S.z);
       });
-      updateToolbar(); // keep readouts + params in sync
     }
 
-    function togglePlay(){ anim.playing=!anim.playing; btnPlay.textContent = anim.playing ? "⏸" : "▶"; }
+    function togglePlay(){
+      const binding = ensureAnimationGroup();
+      anim.playing=!anim.playing;
+      btnPlay.textContent = anim.playing ? "⏸" : "▶";
+      if (!binding || !binding.group){
+        if (anim.playing) {
+          anim.playing = false;
+          btnPlay.textContent = "▶";
+        }
+        return;
+      }
+      if (anim.playing){
+        binding.group.stop();
+        binding.group.start(anim.loop !== false, 1.0, binding.range.start, binding.range.end);
+        binding.group.goToFrame(playheadFrame);
+      } else {
+        binding.group.pause();
+      }
+    }
 
     scene.onBeforeRenderObservable.add(()=>{
       if(!anim.playing) return;
+      const binding = ensureAnimationGroup();
+      if (binding && binding.group){
+        const animatable = binding.group.animatables?.[0];
+        const current = animatable ? (typeof animatable.masterFrame === "number" ? animatable.masterFrame : animatable.currentFrame) : null;
+        if (typeof current === "number"){
+          if (!anim.loop && current >= binding.range.end - 1e-3){
+            anim.playing = false;
+            btnPlay.textContent = "▶";
+            binding.group.pause();
+            setFrame(binding.range.end, { snap: true, fromAnimation: true });
+            return;
+          }
+          setFrame(current, { snap: false, fromAnimation: true });
+        }
+        return;
+      }
       const dt = engine.getDeltaTime()/1000;
-      const fps = currentFps();
-      const range = currentRange();
-      let next = playheadFrame + dt * fps;
-      if (next > range.end) next = range.start;
-      setFrame(next, { snap: false });
+      animateTick(dt);
+      syncAllNodeQuaternions();
     });
   }
 
@@ -1046,8 +1288,15 @@ const DEF = {
     canvas.addEventListener("wheel", ()=>{ targetRadius = camera.radius; }, {passive:true});
 
     engine.runRenderLoop(()=>{
+      if (animationGroupDirty) ensureAnimationGroup();
       const dt = engine.getDeltaTime()/1000;
-      if (anim.playing) animateTick(dt);
+      if (anim.playing){
+        const binding = animationBinding;
+        if (!binding.group){
+          animateTick(dt);
+          syncAllNodeQuaternions();
+        }
+      }
       scene.render();
     });
     window.addEventListener("resize", ()=> engine.resize());
@@ -1085,7 +1334,10 @@ const DEF = {
   function currentTRS(){
     if (!selectedKey) return null;
     const p = nodes[selectedKey]; if(!p) return null;
-    const pos=p.position.clone(), rot=p.rotation.clone(), scl=p.scaling?.clone?.()||new BABYLON.Vector3(1,1,1);
+    const pos = p.position.clone();
+    const e = getNodeEuler(p);
+    const rot = new BABYLON.Vector3(e.x, e.y, e.z);
+    const scl = p.scaling?.clone?.()||new BABYLON.Vector3(1,1,1);
     return {pos,rot,scl};
   }
 
@@ -1310,6 +1562,7 @@ const DEF = {
     legR.foot  = footSeg(legR.shin.pivot, "legR_foot", l.footW, l.footH, l.footLen, hex);
 
     applyTransforms(); // pose from params
+    markAnimationGroupDirty();
   }
 
   function applyTransforms(){
@@ -1318,7 +1571,11 @@ const DEF = {
       const node = nodes[key]; if (!node) continue;
       const tr = T[key];
       node.position.set(tr.pos.x, tr.pos.y, tr.pos.z);
-      node.rotation.set(d2r(tr.rot.x), d2r(tr.rot.y), d2r(tr.rot.z));
+      setNodeEuler(node, {
+        x: d2r(tr.rot.x),
+        y: d2r(tr.rot.y),
+        z: d2r(tr.rot.z)
+      });
     }
   }
 
@@ -1334,7 +1591,11 @@ const DEF = {
       legR:{ hip:nodes.legR_thigh, knee:nodes.legR_shin, ankle:nodes.legR_foot },
     };
   }
-  function addRot(n, rx=0,ry=0,rz=0){ if(!n) return; n.rotation.x+=rx; n.rotation.y+=ry; n.rotation.z+=rz; }
+  function addRot(n, rx=0,ry=0,rz=0){
+    if(!n) return;
+    const e = getNodeEuler(n);
+    setNodeEuler(n, { x: e.x + rx, y: e.y + ry, z: e.z + rz });
+  }
 
   function updateWalkAnimEditor(P, speed, grounded, dt, attackT=0){
     const phInc = (grounded ? speed*4.8 : speed*2.4) * dt * 1.5;
@@ -1432,19 +1693,20 @@ const DEF = {
 
   // Sync all live node transforms into params.transforms (deg in params)
   function syncParamsFromScene(){
-	ensureTransformMap(params);
-	for (const key of PART_KEYS){
-		const n = nodes[key];
-		if (!n) continue;
-		const t = params.transforms[key];
-		t.pos.x = n.position.x;
-		t.pos.y = n.position.y;
-		t.pos.z = n.position.z;
-		t.rot.x = BABYLON.Angle.FromRadians(n.rotation.x).degrees();
-		t.rot.y = BABYLON.Angle.FromRadians(n.rotation.y).degrees();
-		t.rot.z = BABYLON.Angle.FromRadians(n.rotation.z).degrees();
-	  }
-	}
+        ensureTransformMap(params);
+        for (const key of PART_KEYS){
+                const n = nodes[key];
+                if (!n) continue;
+                const t = params.transforms[key];
+                t.pos.x = n.position.x;
+                t.pos.y = n.position.y;
+                t.pos.z = n.position.z;
+                const e = getNodeEuler(n);
+                t.rot.x = BABYLON.Angle.FromRadians(e.x).degrees();
+                t.rot.y = BABYLON.Angle.FromRadians(e.y).degrees();
+                t.rot.z = BABYLON.Angle.FromRadians(e.z).degrees();
+          }
+        }
 
 
   function parseRigXML(text){

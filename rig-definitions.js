@@ -78,6 +78,24 @@
 
     const animations = {};
     let activeName = null;
+    const changeListeners = new Set();
+
+    function emitChange(type, detail = {}) {
+      const payload = {
+        type,
+        name: typeof detail.name === "string" ? detail.name : (detail.animation?.name ?? null),
+        animation: detail.animation || null
+      };
+      changeListeners.forEach(listener => {
+        try {
+          listener(payload);
+        } catch (err) {
+          if (typeof console !== "undefined" && console.warn) {
+            console.warn("AnimationStore listener error", err);
+          }
+        }
+      });
+    }
 
     function normalizeChannel(channel) {
       const key = CHANNEL_ALIASES[channel];
@@ -166,6 +184,7 @@
         if (!activeName) {
           activeName = name;
         }
+        emitChange("create", { animation: anim });
         return anim;
       },
 
@@ -175,6 +194,7 @@
         if (activeName === name) {
           activeName = this.listAnimations()[0] || null;
         }
+        emitChange("delete", { name });
         return true;
       },
 
@@ -190,10 +210,12 @@
         const idx = track.findIndex(k => Math.abs(k.frame - key.frame) <= tolerance);
         if (idx >= 0) {
           track[idx] = { ...track[idx], ...key };
+          emitChange("updateKey", { animation: anim });
           return track[idx];
         }
         track.push(key);
         track.sort((a, b) => a.frame - b.frame);
+        emitChange("addKey", { animation: anim });
         return key;
       },
 
@@ -204,6 +226,7 @@
         const idx = track.findIndex(k => Math.abs(k.frame - frame) <= tolerance);
         if (idx < 0) return false;
         track.splice(idx, 1);
+        emitChange("removeKey", { animation: anim });
         return true;
       },
 
@@ -215,6 +238,7 @@
         if (idx < 0) return null;
         track[idx].frame = Number(newFrame) || 0;
         track.sort((a, b) => a.frame - b.frame);
+        emitChange("moveKey", { animation: anim });
         return track[idx];
       },
 
@@ -233,15 +257,166 @@
       setActive(name) {
         if (name == null) {
           activeName = null;
+          emitChange("activate", { name: null, animation: null });
           return null;
         }
         if (!animations[name]) throw new Error(`Animation '${name}' not found`);
         activeName = name;
-        return animations[name];
+        const anim = animations[name];
+        emitChange("activate", { animation: anim });
+        return anim;
       },
 
       getActive() {
         return activeName ? animations[activeName] : null;
+      },
+
+      onChange(listener) {
+        if (typeof listener !== "function") return () => {};
+        changeListeners.add(listener);
+        return () => {
+          changeListeners.delete(listener);
+        };
+      },
+
+      touch(name) {
+        const anim = name ? animations[name] : (activeName ? animations[activeName] : null);
+        emitChange("update", { animation: anim, name });
+      },
+
+      buildAnimationGroup(options = {}) {
+        if (typeof BABYLON === "undefined") return null;
+        const {
+          scene,
+          nodes,
+          animation: animationOverride,
+          animationName,
+          id,
+          useQuaternions = true,
+          loopMode = BABYLON.Animation.ANIMATIONLOOPMODE_CYCLE
+        } = options || {};
+        if (!scene || typeof scene !== "object") return null;
+
+        const anim = animationOverride || (animationName ? animations[animationName] : this.getActive());
+        if (!anim) return null;
+
+        const fps = Number(anim.fps) || 30;
+        const range = sanitizeRange(anim.range, fps);
+        anim.range = range;
+
+        const nodeLookup = new Map();
+        if (nodes instanceof Map) {
+          nodes.forEach((node, key) => {
+            if (node) nodeLookup.set(key, node);
+          });
+        } else if (nodes && typeof nodes === "object") {
+          Object.keys(nodes).forEach(key => {
+            const node = nodes[key];
+            if (node) nodeLookup.set(key, node);
+          });
+        }
+        if (!nodeLookup.size) return null;
+
+        const groupName = id || `anim-${anim.name || "clip"}-${Math.random().toString(36).slice(2)}`;
+        const group = new BABYLON.AnimationGroup(groupName, scene);
+        let added = false;
+
+        const toVector3 = (value, defaultValue = 0) => new BABYLON.Vector3(
+          Number(value?.x) || defaultValue,
+          Number(value?.y) || defaultValue,
+          Number(value?.z) || defaultValue
+        );
+
+        const toQuaternion = value => {
+          const q = new BABYLON.Quaternion();
+          BABYLON.Quaternion.FromEulerAnglesToRef(
+            Number(value?.x) || 0,
+            Number(value?.y) || 0,
+            Number(value?.z) || 0,
+            q
+          );
+          return q;
+        };
+
+        const joints = anim.joints || {};
+        Object.keys(joints).forEach(joint => {
+          const node = nodeLookup.get(joint);
+          if (!node) return;
+          const jointData = joints[joint] || {};
+
+          if (Array.isArray(jointData.position) && jointData.position.length) {
+            const animPos = new BABYLON.Animation(
+              `${groupName}-${joint}-pos`,
+              "position",
+              fps,
+              BABYLON.Animation.ANIMATIONTYPE_VECTOR3,
+              loopMode
+            );
+            animPos.setKeys(jointData.position.map(key => ({
+              frame: Number(key.frame) || 0,
+              value: toVector3(key.value)
+            })));
+            group.addTargetedAnimation(animPos, node);
+            added = true;
+          }
+
+          if (Array.isArray(jointData.rotation) && jointData.rotation.length) {
+            const prop = useQuaternions ? "rotationQuaternion" : "rotation";
+            const type = useQuaternions
+              ? BABYLON.Animation.ANIMATIONTYPE_QUATERNION
+              : BABYLON.Animation.ANIMATIONTYPE_VECTOR3;
+            if (useQuaternions && !node.rotationQuaternion) {
+              node.rotationQuaternion = new BABYLON.Quaternion();
+              BABYLON.Quaternion.FromEulerAnglesToRef(
+                node.rotation?.x || 0,
+                node.rotation?.y || 0,
+                node.rotation?.z || 0,
+                node.rotationQuaternion
+              );
+            }
+            const animRot = new BABYLON.Animation(
+              `${groupName}-${joint}-rot`,
+              prop,
+              fps,
+              type,
+              loopMode
+            );
+            animRot.setKeys(jointData.rotation.map(key => ({
+              frame: Number(key.frame) || 0,
+              value: useQuaternions ? toQuaternion(key.value) : toVector3(key.value)
+            })));
+            group.addTargetedAnimation(animRot, node);
+            added = true;
+          }
+
+          if (Array.isArray(jointData.scale) && jointData.scale.length) {
+            const animScale = new BABYLON.Animation(
+              `${groupName}-${joint}-scl`,
+              "scaling",
+              fps,
+              BABYLON.Animation.ANIMATIONTYPE_VECTOR3,
+              loopMode
+            );
+            animScale.setKeys(jointData.scale.map(key => ({
+              frame: Number(key.frame) || 0,
+              value: toVector3(key.value, 1)
+            })));
+            group.addTargetedAnimation(animScale, node);
+            added = true;
+          }
+        });
+
+        if (!added) {
+          group.dispose();
+          return null;
+        }
+
+        return {
+          group,
+          fps,
+          range: { start: range.start, end: range.end },
+          name: anim.name || null
+        };
       }
     };
   }
