@@ -973,6 +973,8 @@
   let pendingUnlockBoot = null;
 
   const timelineControls = { btnPlay: null };
+  const TIMELINE_MIN_VIEW_SPAN = 2;
+  let timelineViewRange = null;
   let playheadFrame = 0;
   let animationBinding = { group: null, fps: 30, range: { start: 0, end: 30 }, name: null };
   let animationGroupDirty = true;
@@ -1020,6 +1022,38 @@
 }
 `;
     document.head.appendChild(style);
+  }
+
+  function clampTimelineViewRange(start, end) {
+    const range = currentRange();
+    const fullSpan = Math.max(1, range.end - range.start);
+    const minSpan = Math.min(fullSpan, Math.max(1, TIMELINE_MIN_VIEW_SPAN));
+    let span = Number(end) - Number(start);
+    if (!Number.isFinite(span) || span <= 0) span = fullSpan;
+    span = Math.max(minSpan, Math.min(fullSpan, span));
+    let clampedStart = Number(start);
+    if (!Number.isFinite(clampedStart)) clampedStart = range.start;
+    clampedStart = Math.max(range.start, Math.min(range.end - span, clampedStart));
+    const clampedEnd = Math.min(range.end, clampedStart + span);
+    return { start: clampedStart, end: clampedEnd };
+  }
+
+  function ensureTimelineViewRange() {
+    const range = currentRange();
+    if (!timelineViewRange || !Number.isFinite(timelineViewRange.start) || !Number.isFinite(timelineViewRange.end)) {
+      timelineViewRange = { start: range.start, end: range.end };
+    }
+    timelineViewRange = clampTimelineViewRange(timelineViewRange.start, timelineViewRange.end);
+    return timelineViewRange;
+  }
+
+  function getTimelineViewRange() {
+    return ensureTimelineViewRange();
+  }
+
+  function setTimelineViewRange(start, end) {
+    timelineViewRange = clampTimelineViewRange(start, end);
+    return timelineViewRange;
   }
 
   function applyInterpolationModeToGroup(group) {
@@ -1222,6 +1256,9 @@
     const timeOut = document.getElementById("an-time-readout");
     const btnPlay = document.getElementById("an-play");
     timelineControls.btnPlay = btnPlay;
+    if (btnPlay) {
+      btnPlay.title = "Play / Pause (Space)";
+    }
     const btnStop = document.getElementById("an-stop");
     const btnToStart = document.getElementById("an-to-start");
     const btnPrev = document.getElementById("an-prev");
@@ -1236,6 +1273,9 @@
     const easeSel = document.getElementById("an-ease");
     const addBtn = document.getElementById("an-add");
     const delBtn = document.getElementById("an-del");
+    if (addBtn) {
+      addBtn.title = "Insert key at current frame (I)";
+    }
     easeSelectorRef = easeSel;
 
     const curveRow = document.querySelector("#anim-panel .curve-row");
@@ -1290,6 +1330,7 @@
       controlsParent.insertBefore(autoKeyBtn, delBtn || null);
     }
     if (autoKeyBtn) {
+      autoKeyBtn.title = "Toggle Auto-Key (records transforms automatically)";
       autoKeyBtn.onclick = () => { setAutoKeyEnabled(!autoKeyEnabled); };
     }
     autoKeyButton = autoKeyBtn || null;
@@ -1383,9 +1424,47 @@
     const rowElements = new Map();
     const expandedJoints = new Map();
     playheadFrame = currentRange().start;
+    ensureTimelineViewRange();
     let playheadDrag = null;
     let keyDrag = null;
     let boxSelect = null;
+    let panState = null;
+    const indicatorRegistry = new Map();
+
+    const registerIndicator = (part, channel, el) => {
+      if (!part || !channel || !el) return;
+      const key = `${part}|${channel}`;
+      if (!indicatorRegistry.has(key)) {
+        indicatorRegistry.set(key, []);
+      }
+      indicatorRegistry.get(key).push(el);
+    };
+
+    function updateIndicatorStates() {
+      const animData = ensureAnimation();
+      const jointsData = animData.joints || {};
+      const frame = Math.round(playheadFrame);
+      indicatorRegistry.forEach((elements, key) => {
+        const [part, channel] = key.split("|");
+        const data = jointsData[part] || {};
+        const channelName = CHANNEL_ALIAS[channel] || channel;
+        const track = Array.isArray(data[channelName]) ? data[channelName] : [];
+        const keyed = track.length > 0;
+        const onFrame = keyed && track.some(k => Math.abs(k.frame - frame) <= 0.001);
+        elements.forEach(el => {
+          if (keyed) {
+            el.dataset.keyed = "true";
+          } else {
+            delete el.dataset.keyed;
+          }
+          if (onFrame) {
+            el.dataset.active = "true";
+          } else {
+            delete el.dataset.active;
+          }
+        });
+      });
+    }
 
     function insertKeyAtPlayhead({ selectNew = true } = {}) {
       const part = partSel.value;
@@ -1552,15 +1631,17 @@
         return range.start;
       }
       const pct = Math.min(1, Math.max(0, (x - rect.left) / rect.width));
+      const view = getTimelineViewRange();
+      const total = Math.max(1e-6, view.end - view.start);
+      const frame = view.start + pct * total;
       const range = currentRange();
-      const total = Math.max(1, range.end - range.start);
-      return range.start + pct * total;
+      return Math.min(range.end, Math.max(range.start, frame));
     }
 
     function positionPlayhead(frame){
-      const range = currentRange();
-      const total = Math.max(1, range.end - range.start);
-      const pct = Math.min(1, Math.max(0, (frame - range.start) / total));
+      const view = getTimelineViewRange();
+      const total = Math.max(1e-6, view.end - view.start);
+      const pct = Math.min(1, Math.max(0, (frame - view.start) / total));
       playheadLine.style.left = `${pct * 100}%`;
       const overlayLeft = overlayEl.offsetLeft;
       const overlayWidth = overlayEl.clientWidth || 1;
@@ -1571,6 +1652,28 @@
       const displayFrame = Math.round(playheadFrame);
       const seconds = frameToSeconds(playheadFrame);
       timeOut.textContent = `F${displayFrame} (${seconds.toFixed(3)}s)`;
+    }
+
+    function ensurePlayheadVisible(padding = 0.08) {
+      const view = getTimelineViewRange();
+      const span = Math.max(1, view.end - view.start);
+      const pad = Math.max(1, span * padding);
+      let updated = false;
+      const prevStart = view.start;
+      const prevEnd = view.end;
+      let newStart = view.start;
+      if (playheadFrame < view.start + pad) {
+        newStart = playheadFrame - pad;
+        updated = true;
+      } else if (playheadFrame > view.end - pad) {
+        newStart = playheadFrame + pad - span;
+        updated = true;
+      }
+      if (updated) {
+        const next = setTimelineViewRange(newStart, newStart + span);
+        return Math.abs(next.start - prevStart) > 1e-3 || Math.abs(next.end - prevEnd) > 1e-3;
+      }
+      return false;
     }
 
     function updateKeySelection(){
@@ -1609,12 +1712,12 @@
     }
 
     function updateRuler(){
-      const range = currentRange();
-      const total = Math.max(1, range.end - range.start);
+      const view = getTimelineViewRange();
+      const total = Math.max(1e-6, view.end - view.start);
       const width = overlayEl.clientWidth || 1;
-      const targetPx = 60;
-      let framesPerTick = Math.max(1, Math.round(total / Math.max(1, width / targetPx)));
-      const pow = Math.pow(10, Math.floor(Math.log10(framesPerTick)));
+      const targetPx = 70;
+      let framesPerTick = Math.max(1e-6, total / Math.max(1, width / targetPx));
+      const pow = Math.pow(10, Math.floor(Math.log10(Math.max(1e-6, framesPerTick))));
       const norm = framesPerTick / pow;
       let step;
       if (norm <= 1) step = 1;
@@ -1623,8 +1726,10 @@
       else step = 10;
       framesPerTick = Math.max(1, Math.round(step * pow));
       rulerEl.innerHTML = "";
-      for (let f = range.start; f <= range.end; f += framesPerTick){
-        const pct = ((f - range.start) / total) * 100;
+      const startTick = Math.floor(view.start / framesPerTick) * framesPerTick;
+      for (let f = startTick; f <= view.end + framesPerTick; f += framesPerTick){
+        const pct = ((f - view.start) / total) * 100;
+        if (pct < -5 || pct > 105) continue;
         const tick = document.createElement("div");
         tick.className = "tick";
         tick.style.left = `${Math.max(0, Math.min(100, pct))}%`;
@@ -1644,8 +1749,17 @@
       playheadFrame = fromAnimation ? clamped : (snap ? Math.round(clamped) : clamped);
       const displayFrame = Math.round(playheadFrame);
       timeSlider.value = String(displayFrame);
-      positionPlayhead(playheadFrame);
+      let viewChanged = false;
+      if (!fromAnimation) {
+        viewChanged = ensurePlayheadVisible();
+      }
+      if (viewChanged) {
+        drawTimeline();
+      } else {
+        positionPlayhead(playheadFrame);
+      }
       updateTimeReadout();
+      updateIndicatorStates();
       if (!fromAnimation) {
         applyPoseForFrame(playheadFrame);
       } else {
@@ -1689,6 +1803,7 @@
       rowsEl.innerHTML = "";
       keyElements.clear();
       rowElements.clear();
+      indicatorRegistry.clear();
       const animData = ensureAnimation();
       const jointsData = animData.joints || {};
       const filterMode = filterSel.value || "animated";
@@ -1712,6 +1827,8 @@
       const jointNames = Array.from(jointSet).filter(Boolean).sort((a,b)=>a.localeCompare(b));
 
       keyMeta.clear();
+      const viewRange = getTimelineViewRange();
+      const total = Math.max(1e-6, viewRange.end - viewRange.start);
       jointNames.forEach(joint=>{
         const jointData = jointsData[joint] || {};
         CHANNELS.forEach(ch=>{
@@ -1737,6 +1854,7 @@
         rowsEl.appendChild(empty);
         updateKeySelection();
         updateActiveRowHighlight();
+        updateIndicatorStates();
         positionPlayhead(playheadFrame);
         return;
       }
@@ -1758,8 +1876,17 @@
           drawTimeline();
         });
         const nameSpan = document.createElement("span");
+        nameSpan.classList.add("label-text");
         nameSpan.textContent = joint;
-        label.append(caret, nameSpan);
+        const indicatorWrap = document.createElement("div");
+        indicatorWrap.className = "channel-indicators";
+        CHANNELS.forEach(ch => {
+          const indicator = document.createElement("span");
+          indicator.className = `channel-indicator channel-${ch.short}`;
+          indicatorWrap.appendChild(indicator);
+          registerIndicator(joint, ch.short, indicator);
+        });
+        label.append(caret, nameSpan, indicatorWrap);
         label.addEventListener("click", e=>{
           e.preventDefault();
           e.stopPropagation();
@@ -1795,7 +1922,13 @@
           chRow.dataset.channel = ch.short;
           const chLabel = document.createElement("div");
           chLabel.className = "dope-label channel";
-          chLabel.textContent = ch.label;
+          const chIndicator = document.createElement("span");
+          chIndicator.className = `channel-indicator channel-${ch.short}`;
+          registerIndicator(joint, ch.short, chIndicator);
+          const chText = document.createElement("span");
+          chText.className = "label-text";
+          chText.textContent = ch.label;
+          chLabel.append(chIndicator, chText);
           chLabel.addEventListener("click", e=>{
             e.preventDefault();
             e.stopPropagation();
@@ -1810,8 +1943,10 @@
             if (isSteppedMode()) {
               el.classList.add("stepped");
             }
-            const pct = ((key.frame - range.start) / total) * 100;
+            const pct = ((key.frame - viewRange.start) / total) * 100;
             el.style.left = `${Math.max(0, Math.min(100, pct))}%`;
+            const offscreen = key.frame < viewRange.start - 1e-3 || key.frame > viewRange.end + 1e-3;
+            el.style.display = offscreen ? "none" : "";
             const modeSuffix = isSteppedMode() ? " — Hold" : "";
             el.title = `Frame ${key.frame.toFixed(2)} (${frameToSeconds(key.frame).toFixed(3)}s${modeSuffix})`;
             el.addEventListener("pointerdown", e=>{
@@ -1903,6 +2038,7 @@
 
       updateKeySelection();
       updateActiveRowHighlight();
+      updateIndicatorStates();
       positionPlayhead(playheadFrame);
     }
 
@@ -2020,11 +2156,26 @@
     });
 
     bodyEl.addEventListener("pointerdown", e=>{
-      if (e.button !== 0) return;
-      if (e.target === playheadHandle || e.target.closest(".timeline-key")) return;
-      if (e.target.closest(".dope-label")) return;
       const overlayRect = getOverlayRect();
-      if (overlayRect.width <= 0 || e.clientX < overlayRect.left) return;
+      const inTimeline = overlayRect.width > 0 && e.clientX >= overlayRect.left && e.clientX <= overlayRect.right && e.clientY >= overlayRect.top && e.clientY <= overlayRect.bottom;
+      if (!inTimeline) return;
+      if (e.target === playheadHandle || e.target.closest(".timeline-key")) return;
+      const wantsPan = e.button === 1 || e.button === 2 || (e.button === 0 && e.altKey);
+      if (wantsPan){
+        const view = getTimelineViewRange();
+        panState = {
+          pointerId: e.pointerId,
+          startX: e.clientX,
+          startView: { start: view.start, end: view.end },
+          lastStart: view.start,
+          lastEnd: view.end
+        };
+        bodyEl.setPointerCapture(e.pointerId);
+        e.preventDefault();
+        return;
+      }
+      if (e.button !== 0) return;
+      if (e.target.closest(".dope-label")) return;
       const channelRow = e.target.closest(".dope-row.channel-row");
       if (channelRow){
         setActiveTrackInternal(channelRow.dataset.part, channelRow.dataset.channel);
@@ -2047,6 +2198,24 @@
     });
 
     bodyEl.addEventListener("pointermove", e=>{
+      if (panState && panState.pointerId === e.pointerId){
+        const overlayRect = getOverlayRect();
+        if (overlayRect.width > 0){
+          const span = panState.startView.end - panState.startView.start;
+          if (span > 0){
+            const deltaPx = e.clientX - panState.startX;
+            const deltaFrames = -(deltaPx / overlayRect.width) * span;
+            const updated = setTimelineViewRange(panState.startView.start + deltaFrames, panState.startView.end + deltaFrames);
+            if (Math.abs(updated.start - panState.lastStart) > 1e-3 || Math.abs(updated.end - panState.lastEnd) > 1e-3){
+              panState.lastStart = updated.start;
+              panState.lastEnd = updated.end;
+              drawTimeline();
+            }
+          }
+        }
+        e.preventDefault();
+        return;
+      }
       if (keyDrag && keyDrag.pointerId === e.pointerId) return;
       if (!boxSelect || boxSelect.pointerId !== e.pointerId) return;
       const overlayRect = getOverlayRect();
@@ -2084,6 +2253,58 @@
     };
     bodyEl.addEventListener("pointerup", finishBoxSelect);
     bodyEl.addEventListener("pointercancel", finishBoxSelect);
+
+    const finishPan = e=>{
+      if (!panState || panState.pointerId !== e.pointerId) return;
+      bodyEl.releasePointerCapture(e.pointerId);
+      panState = null;
+    };
+    bodyEl.addEventListener("pointerup", finishPan);
+    bodyEl.addEventListener("pointercancel", finishPan);
+
+    bodyEl.addEventListener("contextmenu", e=>{
+      if (e.target.closest(".dope-body")) {
+        e.preventDefault();
+      }
+    });
+
+    bodyEl.addEventListener("wheel", e=>{
+      if (e.ctrlKey) return;
+      const overlayRect = getOverlayRect();
+      if (overlayRect.width <= 0) return;
+      if (e.clientX < overlayRect.left || e.clientX > overlayRect.right || e.clientY < overlayRect.top || e.clientY > overlayRect.bottom) return;
+      const prev = getTimelineViewRange();
+      const prevStart = prev.start;
+      const prevEnd = prev.end;
+      let start = prevStart;
+      let end = prevEnd;
+      const span = Math.max(1e-6, prevEnd - prevStart);
+      const pct = Math.min(1, Math.max(0, (e.clientX - overlayRect.left) / overlayRect.width));
+      let handled = false;
+      if (Math.abs(e.deltaY) > 0.01){
+        handled = true;
+        const focus = start + pct * span;
+        const range = currentRange();
+        const fullSpan = Math.max(1, range.end - range.start);
+        const minSpan = Math.min(fullSpan, Math.max(1, TIMELINE_MIN_VIEW_SPAN));
+        let newSpan = span * Math.exp(e.deltaY * 0.0015);
+        newSpan = Math.max(minSpan, Math.min(fullSpan, newSpan));
+        start = focus - pct * newSpan;
+        end = start + newSpan;
+      }
+      if (Math.abs(e.deltaX) > 0.01){
+        handled = true;
+        const panFrames = (e.deltaX / overlayRect.width) * span;
+        start += panFrames;
+        end += panFrames;
+      }
+      if (!handled) return;
+      e.preventDefault();
+      const updated = setTimelineViewRange(start, end);
+      if (Math.abs(updated.start - prevStart) > 1e-3 || Math.abs(updated.end - prevEnd) > 1e-3){
+        drawTimeline();
+      }
+    }, { passive: false });
 
     playheadHandle.addEventListener("pointerdown", e=>{
       e.preventDefault();
