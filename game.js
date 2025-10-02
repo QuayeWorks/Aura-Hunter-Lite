@@ -3271,7 +3271,12 @@
    }
 
    function ensureTerrainMaterial(scene) {
-      if (terrainTextureState.material && !terrainTextureState.material.isDisposed()) {
+      const existingMaterial = terrainTextureState.material;
+      const isExistingDisposed = typeof existingMaterial?.isDisposed === "function"
+         ? existingMaterial.isDisposed()
+         : existingMaterial?.isDisposed;
+
+      if (existingMaterial && !isExistingDisposed) {
          environment.terrainMaterial = terrainTextureState.material;
          if (!terrainTextureState.compressedReady && !terrainTextureState.compressedLoading) {
             maybeLoadCompressedTerrainAtlas(scene);
