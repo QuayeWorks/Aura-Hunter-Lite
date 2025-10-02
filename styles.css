@@ -555,16 +555,34 @@ if (c) c.style.pointerEvents = "none";
 }
 .rig-toolbar .btns{ display:flex; g
 
-#hud-control-dock .hud-cosmetic-card {
-  flex: 1 1 220px;
+.hud-cosmetic-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
 }
 
-#hud-control-dock .cosmetic-test-row {
+.hud-cosmetic-card .cosmetic-test-row {
   display: flex;
   flex-wrap: wrap;
   gap: 0.35rem;
 }
 
+#hud-control-dock .hud-cosmetic-card {
+  flex: 1 1 220px;
+}
+
 #hud-control-dock .hud-cosmetic-card button {
   flex: 1 1 120px;
+}
+
+#hud-dev-panel .hud-cosmetic-card {
+  width: 100%;
+}
+
+#hud-dev-panel .cosmetic-test-row {
+  flex-direction: column;
+}
+
+#hud-dev-panel .hud-cosmetic-card button {
+  width: 100%;
 }

@@ -315,7 +315,7 @@
     return { face: "", hair: "", outfit: { top: "", bottom: "", full: null }, shoes: "", accessories: [] };
   }
 
-  function buildCosmeticTester({ dock, cardStyle, makeButton }) {
+  function buildCosmeticTester({ dock, cardStyle, makeButton, cardMinWidth = 220 }) {
     const config = getCosmeticConfig();
     if (!dock || !config) return null;
 
@@ -345,7 +345,13 @@
     const card = document.createElement("div");
     cardStyle(card);
     card.classList.add("hud-cosmetic-card");
-    card.style.minWidth = "220px";
+    if (typeof cardMinWidth === "number") {
+      card.style.minWidth = cardMinWidth > 0 ? `${cardMinWidth}px` : "0";
+    } else if (typeof cardMinWidth === "string" && cardMinWidth) {
+      card.style.minWidth = cardMinWidth;
+    } else {
+      card.style.minWidth = "220px";
+    }
 
     const title = document.createElement("strong");
     title.textContent = "Cosmetics (Test)";
@@ -1084,11 +1090,11 @@
       dock.innerHTML = "";
     }
     dock.style.display = "flex";
-    dock.style.gap = "0.4rem";
+    dock.style.gap = "0.5rem";
     dock.style.flexWrap = "wrap";
-    dock.style.justifyContent = "flex-end";
+    dock.style.justifyContent = "flex-start";
     dock.style.pointerEvents = "auto";
-    dock.style.alignItems = "stretch";
+    dock.style.alignItems = "center";
 
     const makeButton = (label) => {
       const btn = document.createElement("button");
@@ -1114,17 +1120,23 @@
       return btn;
     };
 
-    const cardStyle = (el) => {
-      el.style.display = "flex";
-      el.style.flexDirection = "column";
-      el.style.gap = "0.35rem";
-      el.style.padding = "0.45rem 0.65rem";
-      el.style.background = "rgba(12, 22, 34, 0.78)";
-      el.style.borderRadius = "12px";
-      el.style.border = "1px solid rgba(110, 190, 255, 0.18)";
-      el.style.backdropFilter = "blur(6px)";
-      el.style.minWidth = "180px";
-    };
+    const cluster = document.createElement("div");
+    cluster.style.display = "flex";
+    cluster.style.flexWrap = "wrap";
+    cluster.style.alignItems = "center";
+    cluster.style.gap = "0.4rem";
+
+    const qualityBadge = document.createElement("span");
+    qualityBadge.style.padding = "0.35rem 0.7rem";
+    qualityBadge.style.borderRadius = "999px";
+    qualityBadge.style.border = "1px solid rgba(120, 200, 255, 0.32)";
+    qualityBadge.style.background = "rgba(16, 28, 44, 0.8)";
+    qualityBadge.style.color = "#e0f3ff";
+    qualityBadge.style.fontSize = "0.68rem";
+    qualityBadge.style.letterSpacing = "0.06em";
+    qualityBadge.style.textTransform = "uppercase";
+    qualityBadge.textContent = `Quality: ${adaptiveQualityLabel}`;
+    cluster.appendChild(qualityBadge);
 
     const btnWrap = document.createElement("div");
     btnWrap.style.display = "flex";
@@ -1149,149 +1161,17 @@
     btnUnlock.addEventListener("click", () => openRigUnlockConsole());
     btnWrap.appendChild(btnUnlock);
 
-    dock.appendChild(btnWrap);
-
-    const perfCard = document.createElement("div");
-    cardStyle(perfCard);
-    const perfHeader = document.createElement("div");
-    perfHeader.style.display = "flex";
-    perfHeader.style.alignItems = "center";
-    perfHeader.style.justifyContent = "space-between";
-
-    const perfLabel = document.createElement("span");
-    perfLabel.textContent = "Performance Target";
-    perfLabel.style.fontSize = "0.68rem";
-    perfLabel.style.textTransform = "uppercase";
-    perfLabel.style.letterSpacing = "0.08em";
-    perfLabel.style.opacity = "0.78";
-
-    const perfValue = document.createElement("span");
-    perfValue.style.fontSize = "0.72rem";
-    perfValue.style.fontWeight = "600";
-
-    perfHeader.appendChild(perfLabel);
-    perfHeader.appendChild(perfValue);
-
-    const perfSlider = document.createElement("input");
-    perfSlider.type = "range";
-    perfSlider.min = "30";
-    perfSlider.max = "120";
-    perfSlider.step = "5";
-    perfSlider.value = String(performanceTargetValue);
-    perfSlider.style.width = "160px";
-    perfSlider.style.cursor = "pointer";
-    perfSlider.addEventListener("input", () => {
-      const value = setPerformanceTarget(perfSlider.value, { emit: true });
-      perfValue.textContent = `${value} FPS`;
-    });
-
-    perfCard.appendChild(perfHeader);
-    perfCard.appendChild(perfSlider);
-    dock.appendChild(perfCard);
-
-    const dynCard = document.createElement("div");
-    cardStyle(dynCard);
-    const dynHeader = document.createElement("div");
-    dynHeader.style.display = "flex";
-    dynHeader.style.alignItems = "center";
-    dynHeader.style.justifyContent = "space-between";
-
-    const dynToggleLabel = document.createElement("label");
-    dynToggleLabel.style.display = "flex";
-    dynToggleLabel.style.alignItems = "center";
-    dynToggleLabel.style.gap = "0.4rem";
-    dynToggleLabel.style.fontSize = "0.68rem";
-    dynToggleLabel.style.textTransform = "uppercase";
-    dynToggleLabel.style.letterSpacing = "0.08em";
-    dynToggleLabel.style.opacity = "0.8";
-
-    const dynToggle = document.createElement("input");
-    dynToggle.type = "checkbox";
-    dynToggle.checked = !!dynamicResolutionState.enabled;
-    dynToggle.style.width = "16px";
-    dynToggle.style.height = "16px";
-    dynToggle.style.cursor = "pointer";
-    dynToggle.addEventListener("change", () => {
-      setDynamicResolutionUI({ enabled: dynToggle.checked }, { emit: true });
-    });
-
-    const dynLabelText = document.createElement("span");
-    dynLabelText.textContent = "Dynamic Resolution";
-
-    dynToggleLabel.appendChild(dynToggle);
-    dynToggleLabel.appendChild(dynLabelText);
-
-    const dynCurrent = document.createElement("span");
-    dynCurrent.style.fontSize = "0.7rem";
-    dynCurrent.style.opacity = "0.82";
-
-    dynHeader.appendChild(dynToggleLabel);
-    dynHeader.appendChild(dynCurrent);
-
-    const dynSliderRow = document.createElement("div");
-    dynSliderRow.style.display = "flex";
-    dynSliderRow.style.alignItems = "center";
-    dynSliderRow.style.gap = "0.4rem";
-
-    const dynSlider = document.createElement("input");
-    dynSlider.type = "range";
-    dynSlider.min = "0.5";
-    dynSlider.max = "1";
-    dynSlider.step = "0.05";
-    dynSlider.value = dynamicResolutionState.minScale.toFixed(2);
-    dynSlider.disabled = !dynamicResolutionState.enabled;
-    dynSlider.style.width = "140px";
-    dynSlider.style.cursor = "pointer";
-    dynSlider.addEventListener("input", () => {
-      setDynamicResolutionUI({ minScale: Number(dynSlider.value) }, { emit: true });
-    });
-
-    const dynValue = document.createElement("span");
-    dynValue.style.fontSize = "0.68rem";
-    dynValue.style.opacity = "0.8";
-
-    dynSliderRow.appendChild(dynSlider);
-    dynSliderRow.appendChild(dynValue);
-
-    dynCard.appendChild(dynHeader);
-    dynCard.appendChild(dynSliderRow);
-    dock.appendChild(dynCard);
-
-    const cosmeticTester = buildCosmeticTester({ dock, cardStyle, makeButton });
-
-    const qualityBadge = document.createElement("span");
-    qualityBadge.style.padding = "0.35rem 0.7rem";
-    qualityBadge.style.borderRadius = "999px";
-    qualityBadge.style.border = "1px solid rgba(120, 200, 255, 0.32)";
-    qualityBadge.style.background = "rgba(16, 28, 44, 0.8)";
-    qualityBadge.style.color = "#e0f3ff";
-    qualityBadge.style.fontSize = "0.68rem";
-    qualityBadge.style.letterSpacing = "0.06em";
-    qualityBadge.style.textTransform = "uppercase";
-    qualityBadge.textContent = `Quality: ${adaptiveQualityLabel}`;
-    dock.appendChild(qualityBadge);
+    cluster.appendChild(btnWrap);
+    dock.appendChild(cluster);
 
     controlDockCache = {
       root: dock,
       btnHelp,
       btnLog,
       rigUnlockButton: btnUnlock,
-      perfSlider,
-      perfValue,
-      dynToggle,
-      dynSlider,
-      dynValue,
-      dynCurrent,
-      qualityBadge,
-      cosmeticTester
+      qualityBadge
     };
 
-    setPerformanceTarget(performanceTargetValue);
-    setDynamicResolutionUI({
-      enabled: dynamicResolutionState.enabled,
-      minScale: dynamicResolutionState.minScale,
-      currentScale: dynamicResolutionState.currentScale
-    });
     setAdaptiveQualityStatus({
       qualityLabel: adaptiveQualityLabel,
       dynamicScale: dynamicResolutionState.currentScale,
@@ -1316,8 +1196,8 @@
     if (!Number.isFinite(numeric)) return performanceTargetValue;
     const clamped = clamp(Math.round(numeric), 30, 120);
     performanceTargetValue = clamped;
-    if (controlDockCache?.perfSlider) controlDockCache.perfSlider.value = String(clamped);
-    if (controlDockCache?.perfValue) controlDockCache.perfValue.textContent = `${clamped} FPS`;
+    if (devPanelCache?.perfSlider) devPanelCache.perfSlider.value = String(clamped);
+    if (devPanelCache?.perfValue) devPanelCache.perfValue.textContent = `${clamped} FPS`;
     if (emit) notifyPerformanceTargetChange(clamped);
     return clamped;
   }
@@ -1352,13 +1232,13 @@
       state.currentScale = state.minScale;
     }
     dynamicResolutionState = state;
-    if (controlDockCache?.dynToggle) controlDockCache.dynToggle.checked = state.enabled;
-    if (controlDockCache?.dynSlider) {
-      controlDockCache.dynSlider.disabled = !state.enabled;
-      controlDockCache.dynSlider.value = state.minScale.toFixed(2);
+    if (devPanelCache?.dynToggle) devPanelCache.dynToggle.checked = state.enabled;
+    if (devPanelCache?.dynSlider) {
+      devPanelCache.dynSlider.disabled = !state.enabled;
+      devPanelCache.dynSlider.value = state.minScale.toFixed(2);
     }
-    if (controlDockCache?.dynValue) controlDockCache.dynValue.textContent = `Min ${Math.round(state.minScale * 100)}%`;
-    if (controlDockCache?.dynCurrent) controlDockCache.dynCurrent.textContent = `Current: ${Math.round(state.currentScale * 100)}%`;
+    if (devPanelCache?.dynValue) devPanelCache.dynValue.textContent = `Min ${Math.round(state.minScale * 100)}%`;
+    if (devPanelCache?.dynCurrent) devPanelCache.dynCurrent.textContent = `Current: ${Math.round(state.currentScale * 100)}%`;
     if (emit) notifyDynamicResolutionChange(state);
     return state;
   }
@@ -1812,8 +1692,190 @@
     actions.appendChild(makeActionButton("Spawn Trio", () => devPanelHandlers.spawnDummy?.(3)));
     panel.appendChild(actions);
 
+    const qaCards = document.createElement("div");
+    qaCards.style.display = "flex";
+    qaCards.style.flexDirection = "column";
+    qaCards.style.gap = "0.55rem";
+
+    const applyCardStyle = (el) => {
+      el.style.display = "flex";
+      el.style.flexDirection = "column";
+      el.style.gap = "0.4rem";
+      el.style.padding = "0.55rem 0.6rem";
+      el.style.width = "100%";
+      el.style.background = "rgba(14, 24, 36, 0.82)";
+      el.style.border = "1px solid rgba(110, 190, 255, 0.24)";
+      el.style.borderRadius = "12px";
+      el.style.boxShadow = "0 10px 24px rgba(0, 0, 0, 0.35)";
+    };
+
+    const perfCard = document.createElement("div");
+    applyCardStyle(perfCard);
+    const perfHeader = document.createElement("div");
+    perfHeader.style.display = "flex";
+    perfHeader.style.alignItems = "center";
+    perfHeader.style.justifyContent = "space-between";
+
+    const perfLabel = document.createElement("span");
+    perfLabel.textContent = "Performance Target";
+    perfLabel.style.fontSize = "0.7rem";
+    perfLabel.style.textTransform = "uppercase";
+    perfLabel.style.letterSpacing = "0.08em";
+    perfLabel.style.opacity = "0.78";
+
+    const perfValue = document.createElement("span");
+    perfValue.style.fontSize = "0.74rem";
+    perfValue.style.fontWeight = "600";
+
+    perfHeader.appendChild(perfLabel);
+    perfHeader.appendChild(perfValue);
+
+    const perfSlider = document.createElement("input");
+    perfSlider.type = "range";
+    perfSlider.min = "30";
+    perfSlider.max = "120";
+    perfSlider.step = "5";
+    perfSlider.value = String(performanceTargetValue);
+    perfSlider.style.width = "100%";
+    perfSlider.style.cursor = "pointer";
+    perfSlider.addEventListener("input", () => {
+      const value = setPerformanceTarget(perfSlider.value, { emit: true });
+      perfValue.textContent = `${value} FPS`;
+    });
+
+    perfCard.appendChild(perfHeader);
+    perfCard.appendChild(perfSlider);
+    qaCards.appendChild(perfCard);
+
+    const dynCard = document.createElement("div");
+    applyCardStyle(dynCard);
+    const dynHeader = document.createElement("div");
+    dynHeader.style.display = "flex";
+    dynHeader.style.alignItems = "center";
+    dynHeader.style.justifyContent = "space-between";
+
+    const dynToggleLabel = document.createElement("label");
+    dynToggleLabel.style.display = "flex";
+    dynToggleLabel.style.alignItems = "center";
+    dynToggleLabel.style.gap = "0.45rem";
+    dynToggleLabel.style.fontSize = "0.7rem";
+    dynToggleLabel.style.textTransform = "uppercase";
+    dynToggleLabel.style.letterSpacing = "0.08em";
+    dynToggleLabel.style.opacity = "0.8";
+
+    const dynToggle = document.createElement("input");
+    dynToggle.type = "checkbox";
+    dynToggle.checked = !!dynamicResolutionState.enabled;
+    dynToggle.style.width = "16px";
+    dynToggle.style.height = "16px";
+    dynToggle.style.cursor = "pointer";
+    dynToggle.addEventListener("change", () => {
+      setDynamicResolutionUI({ enabled: dynToggle.checked }, { emit: true });
+    });
+
+    const dynLabelText = document.createElement("span");
+    dynLabelText.textContent = "Dynamic Resolution";
+
+    dynToggleLabel.appendChild(dynToggle);
+    dynToggleLabel.appendChild(dynLabelText);
+
+    const dynCurrent = document.createElement("span");
+    dynCurrent.style.fontSize = "0.72rem";
+    dynCurrent.style.opacity = "0.82";
+
+    dynHeader.appendChild(dynToggleLabel);
+    dynHeader.appendChild(dynCurrent);
+
+    const dynSliderRow = document.createElement("div");
+    dynSliderRow.style.display = "flex";
+    dynSliderRow.style.alignItems = "center";
+    dynSliderRow.style.gap = "0.45rem";
+
+    const dynSlider = document.createElement("input");
+    dynSlider.type = "range";
+    dynSlider.min = "0.5";
+    dynSlider.max = "1";
+    dynSlider.step = "0.05";
+    dynSlider.value = dynamicResolutionState.minScale.toFixed(2);
+    dynSlider.disabled = !dynamicResolutionState.enabled;
+    dynSlider.style.flex = "1";
+    dynSlider.style.cursor = "pointer";
+    dynSlider.addEventListener("input", () => {
+      setDynamicResolutionUI({ minScale: Number(dynSlider.value) }, { emit: true });
+    });
+
+    const dynValue = document.createElement("span");
+    dynValue.style.fontSize = "0.7rem";
+    dynValue.style.opacity = "0.8";
+    dynValue.style.minWidth = "5ch";
+
+    dynSliderRow.appendChild(dynSlider);
+    dynSliderRow.appendChild(dynValue);
+
+    dynCard.appendChild(dynHeader);
+    dynCard.appendChild(dynSliderRow);
+    qaCards.appendChild(dynCard);
+
+    const makeCosmeticButton = (label) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = label;
+      btn.style.padding = "0.4rem 0.55rem";
+      btn.style.borderRadius = "8px";
+      btn.style.border = "1px solid rgba(120, 200, 255, 0.28)";
+      btn.style.background = "rgba(24, 38, 58, 0.78)";
+      btn.style.color = "#e8f6ff";
+      btn.style.fontSize = "0.7rem";
+      btn.style.cursor = "pointer";
+      btn.style.display = "flex";
+      btn.style.justifyContent = "center";
+      btn.style.alignItems = "center";
+      btn.style.width = "100%";
+      btn.style.transition = "background-color 0.16s ease, border-color 0.16s ease";
+      btn.addEventListener("mouseenter", () => {
+        btn.style.background = "rgba(44, 70, 102, 0.9)";
+        btn.style.borderColor = "rgba(170, 230, 255, 0.48)";
+      });
+      btn.addEventListener("mouseleave", () => {
+        btn.style.background = "rgba(24, 38, 58, 0.78)";
+        btn.style.borderColor = "rgba(120, 200, 255, 0.28)";
+      });
+      return btn;
+    };
+
+    const cosmeticTester = buildCosmeticTester({
+      dock: qaCards,
+      cardStyle: applyCardStyle,
+      makeButton: makeCosmeticButton,
+      cardMinWidth: 0
+    });
+
+    panel.appendChild(qaCards);
+
     root.appendChild(panel);
-    devPanelCache = { root: panel, toggles: toggleInputs, enSlider, enValue, btnHide, setRearViewButtonState, rearViewButton: rearToggle, rearViewActive };
+    devPanelCache = {
+      root: panel,
+      toggles: toggleInputs,
+      enSlider,
+      enValue,
+      btnHide,
+      setRearViewButtonState,
+      rearViewButton: rearToggle,
+      rearViewActive,
+      perfSlider,
+      perfValue,
+      dynToggle,
+      dynSlider,
+      dynValue,
+      dynCurrent,
+      cosmeticTester
+    };
+    setPerformanceTarget(performanceTargetValue);
+    setDynamicResolutionUI({
+      enabled: dynamicResolutionState.enabled,
+      minScale: dynamicResolutionState.minScale,
+      currentScale: dynamicResolutionState.currentScale
+    });
     setRearViewButtonState(false);
     return devPanelCache;
   }
