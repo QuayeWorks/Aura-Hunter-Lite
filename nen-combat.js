@@ -238,6 +238,7 @@ export function applyOutgoingDamage(src, limb, baseDamage) {
   let result = working;
   let vowMeta = null;
   const playerState = H.state;
+  let wasKoFlag = false;
   if (src && playerState && src === playerState) {
     working = applyShuDamage(playerState, limb, working);
     working = applyBoundSigilBuff(playerState, working);
@@ -254,7 +255,6 @@ export function applyOutgoingDamage(src, limb, baseDamage) {
     }
     result = working;
     const strike = playerState.koStrike;
-    let wasKoFlag = false;
     if (strike) {
       const advanced = typeof window !== "undefined" ? window.NenAdvanced : null;
       if (advanced && typeof advanced.onKoStrike === "function") {
