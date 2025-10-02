@@ -319,9 +319,82 @@
     return paramsObj;
   }
 
+  function legacyRigToParams(legacy, keys = PART_KEYS, definition = currentRigDefinition()) {
+    const base = ensureRigParamsStructure(createDefaultParamsForType(definition?.id || rigTypeId), keys, definition);
+    if (!legacy || typeof legacy !== "object") return base;
+
+    if (typeof legacy.color === "string") {
+      base.color = legacy.color;
+    }
+    if (typeof legacy.rigType === "string") {
+      base.rigType = legacy.rigType;
+    }
+
+    const assignSegment = (partKey, dims) => {
+      if (!dims || typeof dims !== "object") return;
+      const seg = base.segments?.[partKey];
+      if (!seg) return;
+      const w = Number(dims.w);
+      const h = Number(dims.h);
+      const d = Number(dims.d);
+      if (Number.isFinite(w)) seg.w = w;
+      if (Number.isFinite(h)) seg.h = h;
+      if (Number.isFinite(d)) seg.d = d;
+    };
+
+    assignSegment("pelvis", legacy.pelvis);
+    assignSegment("torsoLower", legacy.torsoLower);
+    assignSegment("torsoUpper", legacy.torsoUpper);
+    assignSegment("neck", legacy.neck);
+    assignSegment("head", legacy.head);
+
+    const arm = legacy.arm || {};
+    const upperDims = { w: arm.upperW, h: arm.upperLen, d: arm.upperD };
+    const foreDims = { w: arm.foreW, h: arm.foreLen, d: arm.foreD };
+    const handDims = { w: arm.foreW, h: arm.handLen, d: arm.foreD };
+    assignSegment("armL_upper", upperDims);
+    assignSegment("armR_upper", upperDims);
+    assignSegment("armL_fore", foreDims);
+    assignSegment("armR_fore", foreDims);
+    assignSegment("armL_hand", handDims);
+    assignSegment("armR_hand", handDims);
+
+    const leg = legacy.leg || {};
+    assignSegment("legL_thigh", { w: leg.thighW, h: leg.thighLen, d: leg.thighD });
+    assignSegment("legR_thigh", { w: leg.thighW, h: leg.thighLen, d: leg.thighD });
+    assignSegment("legL_shin", { w: leg.shinW, h: leg.shinLen, d: leg.shinD });
+    assignSegment("legR_shin", { w: leg.shinW, h: leg.shinLen, d: leg.shinD });
+    assignSegment("legL_foot", { w: leg.footW, h: leg.footH, d: leg.footLen });
+    assignSegment("legR_foot", { w: leg.footW, h: leg.footH, d: leg.footLen });
+
+    const transforms = legacy.transforms && typeof legacy.transforms === "object" ? legacy.transforms : {};
+    ensureTransformMap(base, keys);
+    keys.forEach(key => {
+      const src = transforms[key];
+      if (!src || typeof src !== "object") return;
+      const dst = base.transforms[key] || t0();
+      if (!base.transforms[key]) base.transforms[key] = dst;
+      if (src.pos && typeof src.pos === "object") {
+        const { x, y, z } = src.pos;
+        if (Number.isFinite(Number(x))) dst.pos.x = Number(x);
+        if (Number.isFinite(Number(y))) dst.pos.y = Number(y);
+        if (Number.isFinite(Number(z))) dst.pos.z = Number(z);
+      }
+      if (src.rot && typeof src.rot === "object") {
+        const { x, y, z } = src.rot;
+        if (Number.isFinite(Number(x))) dst.rot.x = Number(x);
+        if (Number.isFinite(Number(y))) dst.rot.y = Number(y);
+        if (Number.isFinite(Number(z))) dst.rot.z = Number(z);
+      }
+    });
+
+    return base;
+  }
+
   const rigParamCache = new Map();
   let rigTypeSelectEl = null;
   let partSelectorEl = null;
+  let sessionContext = null;
 
   function updateRigTypeSelectUI() {
     if (!rigTypeSelectEl) return;
@@ -2121,21 +2194,67 @@
     if (booted){ refresh(); return; }
     booted = true;
 
-    // load params (browser) or defaults, then normalize
+    const hx = typeof window !== "undefined" ? window.HXH : null;
+    let session = null;
+    if (hx && typeof hx.consumeRigEditorSession === "function") {
+      try { session = hx.consumeRigEditorSession(); }
+      catch (err) { session = null; }
+    }
+    sessionContext = session;
+
+    let initialParams = null;
+    let inferredType = null;
+    let rawSessionParams = null;
+    let rawLegacyRig = null;
+    if (session && typeof session === "object") {
+      if (session.params && typeof session.params === "object") {
+        inferredType = typeof session.params.rigType === "string" ? session.params.rigType : (typeof session.rigType === "string" ? session.rigType : null);
+        rawSessionParams = deepClone(session.params);
+      } else if (session.rig && typeof session.rig === "object") {
+        inferredType = typeof session.rig.rigType === "string" ? session.rig.rigType : (typeof session.rigType === "string" ? session.rigType : null);
+        rawLegacyRig = session.rig;
+      }
+    }
+
+    if (inferredType && rigTypeMap.has(inferredType) && inferredType !== rigTypeId) {
+      rigTypeId = inferredType;
+      activeRigDef = rigTypeMap.get(inferredType) || activeRigDef;
+      PART_KEYS = activeRigDef ? activeRigDef.partKeys.slice() : PART_KEYS;
+      if (window.RigDefinitions) {
+        window.RigDefinitions.PART_KEYS = PART_KEYS.slice();
+      }
+    }
+
     let storedParams = null;
-    try { storedParams = JSON.parse(localStorage.getItem("hxh.rig.params")||"null"); } catch { storedParams=null; }
-    if (storedParams && typeof storedParams === "object") {
-      const storedType = typeof storedParams.rigType === "string" ? storedParams.rigType : null;
-      if (storedType && rigTypeMap.has(storedType)) {
-        rigTypeId = storedType;
-        activeRigDef = rigTypeMap.get(storedType) || activeRigDef;
-        PART_KEYS = activeRigDef ? activeRigDef.partKeys.slice() : PART_KEYS;
-        if (window.RigDefinitions) {
-          window.RigDefinitions.PART_KEYS = PART_KEYS.slice();
+    if (!initialParams) {
+      try { storedParams = JSON.parse(localStorage.getItem("hxh.rig.params")||"null"); }
+      catch { storedParams = null; }
+      if (storedParams && typeof storedParams === "object") {
+        const storedType = typeof storedParams.rigType === "string" ? storedParams.rigType : null;
+        if (storedType && rigTypeMap.has(storedType) && !inferredType) {
+          rigTypeId = storedType;
+          activeRigDef = rigTypeMap.get(storedType) || activeRigDef;
+          PART_KEYS = activeRigDef ? activeRigDef.partKeys.slice() : PART_KEYS;
+          if (window.RigDefinitions) {
+            window.RigDefinitions.PART_KEYS = PART_KEYS.slice();
+          }
         }
       }
     }
-    params = ensureRigParamsStructure(storedParams ? deepClone(storedParams) : createDefaultParamsForType(rigTypeId), PART_KEYS, activeRigDef);
+
+    const baseDefinition = activeRigDef;
+    if (!initialParams) {
+      if (rawSessionParams) {
+        initialParams = ensureRigParamsStructure(rawSessionParams, PART_KEYS, baseDefinition);
+      } else if (rawLegacyRig) {
+        initialParams = legacyRigToParams(rawLegacyRig, PART_KEYS, baseDefinition);
+      }
+    }
+    if (initialParams) {
+      params = ensureRigParamsStructure(initialParams, PART_KEYS, baseDefinition);
+    } else {
+      params = ensureRigParamsStructure(storedParams ? deepClone(storedParams) : createDefaultParamsForType(rigTypeId), PART_KEYS, baseDefinition);
+    }
     if (!params.color) {
       params.color = getRigColor();
     }
@@ -2474,8 +2593,33 @@
     q("rig-export")?.addEventListener("click", ()=>{ exportXML(); });
 
     q("rig-exit")?.addEventListener("click", ()=>{
-      document.querySelectorAll(".screen").forEach(s=> s.classList.remove("visible"));
-      document.getElementById("screen--menu")?.classList.add("visible");
+      try { syncParamsFromScene(); } catch (err) { /* ignore */ }
+      let handled = false;
+      const hx = typeof window !== "undefined" ? window.HXH : null;
+      if (hx && typeof hx.finalizeRigEditorSession === "function" && sessionContext) {
+        try {
+          handled = !!hx.finalizeRigEditorSession({
+            rig: deepClone(params),
+            rigType: rigTypeId,
+            cosmetics: sessionContext.cosmetics || null,
+            source: sessionContext.source || null,
+            meta: sessionContext.meta || null,
+            reason: "exit"
+          });
+        } catch (err) {
+          console.warn("[RigEditor] Failed to finalize session", err);
+        }
+      }
+      sessionContext = null;
+      anim.playing = false;
+      if (timelineControls.btnPlay) timelineControls.btnPlay.textContent = "▶";
+      if (animationBinding?.group) {
+        try { animationBinding.group.pause(); } catch (err) { /* ignore */ }
+      }
+      if (!handled) {
+        document.querySelectorAll(".screen").forEach(s=> s.classList.remove("visible"));
+        document.getElementById("screen--menu")?.classList.add("visible");
+      }
     });
 
     // Import (uses hidden #rig-file in HTML)

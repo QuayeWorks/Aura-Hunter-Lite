@@ -6127,6 +6127,12 @@
          out.color = r.color;
       }
 
+      if (typeof r.rigType === "string" && r.rigType.trim()) {
+         out.rigType = r.rigType.trim();
+      } else if (typeof out.rigType !== "string") {
+         out.rigType = "anthro-biped";
+      }
+
       // copy sizes if present
       ["pelvis", "torsoLower", "torsoUpper", "neck", "head"].forEach(k => {
          if (r[k]) Object.assign(out[k], r[k]);
@@ -6311,6 +6317,77 @@
 
       RIG = deepClone(DEFAULT_RIG);
    })();
+
+   const rigEditorBridge = {
+      pending: null,
+      active: null,
+      callback: null
+   };
+
+   function cloneRigForSession(rig) {
+      if (!rig || typeof rig !== "object") return null;
+      try {
+         return JSON.parse(JSON.stringify(rig));
+      } catch (err) {
+         if (Array.isArray(rig)) return rig.slice();
+         return { ...rig };
+      }
+   }
+
+   function prepareRigEditorSession(options = {}) {
+      const hxRig = options && typeof options === "object" && options.rig ? options.rig : RIG;
+      const sourceRig = ensureRig(hxRig);
+      const cosmeticsSource = options && typeof options === "object" && options.cosmetics
+         ? options.cosmetics
+         : getCosmeticSelection();
+      const selection = normalizeCosmetics(cosmeticsSource, cosmeticSelection);
+      const session = {
+         rig: cloneRigForSession(sourceRig),
+         rigType: typeof options.rigType === "string" && options.rigType.trim()
+            ? options.rigType.trim()
+            : (typeof sourceRig?.rigType === "string" ? sourceRig.rigType : null),
+         cosmetics: deepClone(selection),
+         source: typeof options.source === "string" ? options.source : null,
+         meta: options.meta && typeof options.meta === "object" ? deepClone(options.meta) : null
+      };
+      rigEditorBridge.pending = session;
+      rigEditorBridge.callback = typeof options.onReturn === "function" ? options.onReturn : null;
+      return deepClone(session);
+   }
+
+   function consumeRigEditorSession() {
+      const session = rigEditorBridge.pending;
+      rigEditorBridge.pending = null;
+      rigEditorBridge.active = session ? deepClone(session) : null;
+      return session ? deepClone(session) : null;
+   }
+
+   function getActiveRigEditorSession() {
+      return rigEditorBridge.active ? deepClone(rigEditorBridge.active) : null;
+   }
+
+   function finalizeRigEditorSession(result = {}) {
+      const session = rigEditorBridge.active;
+      rigEditorBridge.active = null;
+      rigEditorBridge.pending = null;
+      const callback = rigEditorBridge.callback;
+      rigEditorBridge.callback = null;
+      if (!session) return false;
+      if (typeof callback === "function") {
+         try {
+            callback(result || {}, session);
+         } catch (err) {
+            console.warn("[HXH] Rig editor return handler failed", err);
+         }
+      }
+      return true;
+   }
+
+   function cancelRigEditorSession() {
+      rigEditorBridge.pending = null;
+      rigEditorBridge.active = null;
+      rigEditorBridge.callback = null;
+   }
 
    // ------- Game state -------
    const state = {
@@ -10157,7 +10234,12 @@
       setHair,
       setOutfit,
       setShoes,
-      setAccessories
+      setAccessories,
+      prepareRigEditorSession,
+      consumeRigEditorSession,
+      getActiveRigEditorSession,
+      finalizeRigEditorSession,
+      cancelRigEditorSession
    };
 // === Added: expose subsystems so auxiliary files can reuse them ===
 try {

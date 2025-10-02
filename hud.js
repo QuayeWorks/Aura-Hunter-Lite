@@ -3875,8 +3875,75 @@
     preview: null,
     observer: null,
     listenersBound: false,
-    accessoryInputs: []
+    accessoryInputs: [],
+    rigButton: null
   };
+
+  function openRigEditorFromCreator() {
+    const rigApi = window.RigEditor;
+    if (!rigApi || typeof rigApi.boot !== "function") {
+      alert("Rig Editor is not available in this build.");
+      return;
+    }
+    const hx = window.HXH || {};
+    const currentSelection = (() => {
+      try {
+        const raw = typeof hx.getCosmeticSelection === "function"
+          ? hx.getCosmeticSelection()
+          : null;
+        if (raw && state.baseSelection) {
+          return mergeSelection(state.baseSelection, raw);
+        }
+        if (raw) return deepClone(raw);
+      } catch (err) {
+        console.warn("[Creator] Failed to read cosmetics before opening rig editor", err);
+      }
+      if (state.selection) return deepClone(state.selection);
+      if (state.baseSelection) return deepClone(state.baseSelection);
+      ensureConfig();
+      return state.baseSelection ? deepClone(state.baseSelection) : null;
+    })();
+    const sessionRig = (() => {
+      try {
+        return typeof hx.getRig === "function" ? hx.getRig() : null;
+      } catch (err) {
+        console.warn("[Creator] Failed to read rig before opening editor", err);
+        return null;
+      }
+    })();
+
+    const onReturn = () => {
+      const dom = ensureDom();
+      document.querySelectorAll(".screen").forEach(s => s.classList.remove("visible"));
+      if (dom?.screen) {
+        dom.screen.classList.add("visible");
+      }
+      open();
+    };
+
+    try {
+      hx.cancelRigEditorSession?.();
+    } catch (err) {
+      console.warn("[Creator] Failed to clear previous rig session", err);
+    }
+
+    try {
+      hx.prepareRigEditorSession?.({
+        source: "creator",
+        cosmetics: currentSelection,
+        rig: sessionRig,
+        onReturn,
+        meta: { screenId: SCREEN_ID }
+      });
+    } catch (err) {
+      console.warn("[Creator] Failed to prepare rig editor session", err);
+    }
+
+    close();
+    document.querySelectorAll(".screen").forEach(s => s.classList.remove("visible"));
+    document.getElementById("screen--rig")?.classList.add("visible");
+    rigApi.boot();
+  }
 
   function deepClone(value) {
     if (value == null || typeof value !== "object") return value;
@@ -4116,6 +4183,26 @@
     cancel?.addEventListener("click", () => {
       setTimeout(close, 0);
     });
+
+    if (form) {
+      const actionRow = form.querySelector(".row-right");
+      if (actionRow) {
+        let btn = document.getElementById("creator-edit-rig");
+        if (!btn) {
+          btn = document.createElement("button");
+          btn.type = "button";
+          btn.id = "creator-edit-rig";
+          btn.className = "secondary";
+          btn.textContent = "Edit in Rig Editor";
+          actionRow.insertBefore(btn, cancel || actionRow.firstChild);
+        }
+        if (state.rigButton !== btn) {
+          state.rigButton?.removeEventListener("click", openRigEditorFromCreator);
+          btn.addEventListener("click", openRigEditorFromCreator);
+          state.rigButton = btn;
+        }
+      }
+    }
 
     return state.dom;
   }
