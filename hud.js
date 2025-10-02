@@ -3916,7 +3916,34 @@
       }
     })();
 
-    const onReturn = () => {
+    const onReturn = (result = {}) => {
+      const hx = window.HXH || {};
+      if (result && typeof result === "object") {
+        const { rig: nextRig, cosmetics: nextCosmetics } = result;
+        const rigType = typeof result.rigType === "string" ? result.rigType : null;
+        const wantsRigUpdate = nextRig != null || rigType;
+        if (wantsRigUpdate && typeof hx.setRig === "function") {
+          let payload = nextRig != null && typeof nextRig === "object" ? deepClone(nextRig) : {};
+          if (rigType && typeof payload === "object" && payload) {
+            payload = { ...payload, rigType };
+          }
+          try {
+            hx.setRig(payload);
+          } catch (err) {
+            console.warn("[Creator] Failed to apply rig from editor", err);
+          }
+        }
+        if (nextCosmetics && typeof hx.applyCosmeticLoadout === "function") {
+          try {
+            const applied = hx.applyCosmeticLoadout(deepClone(nextCosmetics), { persist: true });
+            if (applied && typeof applied === "object") {
+              state.selection = deepClone(applied);
+            }
+          } catch (err) {
+            console.warn("[Creator] Failed to apply cosmetics from editor", err);
+          }
+        }
+      }
       const dom = ensureDom();
       document.querySelectorAll(".screen").forEach(s => s.classList.remove("visible"));
       if (dom?.screen) {
