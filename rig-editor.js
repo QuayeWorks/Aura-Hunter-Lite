@@ -2202,7 +2202,6 @@
       });
 
       const range = currentRange();
-      const total = Math.max(1, range.end - range.start);
 
       if (!jointNames.length){
         const empty = document.createElement("div");
