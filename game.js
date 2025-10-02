@@ -6346,6 +6346,21 @@
       return getCosmeticSelection();
    }
 
+   function setRigParameters(nextRig = undefined, { persist = true } = {}) {
+      const source = (typeof nextRig === "undefined") ? RIG : nextRig;
+      const normalized = ensureRig(source);
+      RIG = normalized;
+      if (persist && typeof localStorage !== "undefined") {
+         try {
+            localStorage.setItem(RIG_KEY, JSON.stringify(RIG));
+         } catch (err) {}
+      }
+      try {
+         window.CharacterCreator?.refresh?.();
+      } catch (err) {}
+      return deepClone(RIG);
+   }
+
    // ensure transforms exist and are numeric
    function ensureRig(rig) {
       const r = rig && typeof rig === "object" ? rig : {};
@@ -10488,6 +10503,7 @@
       setOutfit,
       setShoes,
       setAccessories,
+      setRig: setRigParameters,
       getSavedCosmeticLoadout,
       saveCosmeticLoadout,
       applyCosmeticLoadout,
@@ -10589,6 +10605,7 @@ try {
     setOutfit,
     setShoes,
     setAccessories,
+    setRig: setRigParameters,
   });
   // share rig definitions for the editor if available
   window.RigDefinitions = {
