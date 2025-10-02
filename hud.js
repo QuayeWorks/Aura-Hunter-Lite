@@ -16,7 +16,6 @@
   let trainingMenuCache = null;
   let trainingGameState = null;
   let trainingButtonCache = null;
-  let statusTrayCache = null;
   let grudgeWidgetCache = null;
   let grudgeStyleInjected = false;
   let controlDockCache = null;
@@ -763,101 +762,85 @@
     return hotbarCache;
   }
 
-  function ensureStatusStyles() {
+  function ensureGrudgeStyles() {
     if (grudgeStyleInjected) return;
     const css = `
-      #hud .hud-status-tray {
+      #hud .hud-grudge-wrap {
         display: flex;
         flex-direction: column;
-        gap: 0.45rem;
-        margin-top: 0.4rem;
+        gap: 0.3rem;
+        margin-top: 0.1rem;
         pointer-events: auto;
-        width: 100%;
       }
-      #hud .hud-grudge-widget {
-        display: flex;
-        flex-direction: column;
-        gap: 0.35rem;
-        background: rgba(16, 24, 40, 0.78);
-        border: 1px solid rgba(152, 120, 255, 0.35);
-        border-radius: 12px;
-        padding: 0.55rem 0.65rem;
-        box-shadow: 0 4px 18px rgba(6, 12, 20, 0.28);
-        width: 100%;
-      }
-      #hud .hud-grudge-widget.full {
-        border-color: rgba(210, 140, 255, 0.65);
-        box-shadow: 0 6px 24px rgba(165, 92, 255, 0.25);
-      }
-      #hud .hud-grudge-widget.cursed {
-        border-color: rgba(255, 112, 192, 0.6);
-        box-shadow: 0 6px 24px rgba(255, 92, 184, 0.28);
-      }
-      #hud .hud-grudge-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: baseline;
-        gap: 0.5rem;
-        font-size: 0.82rem;
-        font-weight: 600;
-        letter-spacing: 0.05em;
-        text-transform: uppercase;
-      }
-      #hud .hud-grudge-value {
-        font-size: 0.9rem;
-        letter-spacing: 0.04em;
-      }
-      #hud .hud-grudge-bar {
+      #hud .hud-grudge-wrap .bar.grudge {
         position: relative;
-        width: 100%;
-        height: 12px;
-        border-radius: 999px;
-        background: rgba(255,255,255,0.12);
-        overflow: hidden;
+        background: #1a2744;
       }
-      #hud .hud-grudge-fill {
-        position: absolute;
-        inset: 0;
+      #hud .hud-grudge-wrap .bar.grudge > span {
+        display: block;
         width: 0%;
-        background: linear-gradient(90deg, #8f6bff, #d35aff);
+        height: 100%;
+        background: linear-gradient(90deg, #3f2256 0%, #6a3f76 55%, #a07aa9 100%);
+        box-shadow: 0 0 14px rgba(150, 96, 196, 0.35);
         transition: width 140ms ease;
       }
-      #hud .hud-grudge-footer {
+      #hud .hud-grudge-wrap.full .bar.grudge > span {
+        box-shadow: 0 0 18px rgba(198, 146, 255, 0.55);
+      }
+      #hud .hud-grudge-wrap.cursed .bar.grudge > span {
+        background: linear-gradient(90deg, #4c285f 0%, #86448f 55%, #d4a0dc 100%);
+      }
+      #hud .hud-grudge-meta {
         display: flex;
-        flex-wrap: wrap;
-        align-items: center;
         justify-content: space-between;
-        gap: 0.4rem;
-        font-size: 0.76rem;
+        align-items: center;
+        font-size: 0.72rem;
+        letter-spacing: 0.05em;
+        color: rgba(220, 208, 255, 0.72);
+      }
+      #hud .hud-grudge-label {
+        opacity: 0.82;
+        font-weight: 500;
+      }
+      #hud .hud-grudge-value {
+        font-size: 0.78rem;
+        font-weight: 600;
+        color: #f4eaff;
+      }
+      #hud .hud-grudge-status {
+        display: none;
+        align-items: center;
+        gap: 0.45rem;
+        flex-wrap: wrap;
+        font-size: 0.68rem;
+        color: rgba(235, 222, 255, 0.82);
+      }
+      #hud .hud-grudge-wrap.show-action .hud-grudge-status {
+        display: flex;
       }
       #hud .hud-grudge-curse {
         display: none;
         align-items: center;
         gap: 0.3rem;
-        padding: 0.1rem 0.35rem;
+        padding: 0.12rem 0.45rem;
         border-radius: 999px;
-        background: rgba(255, 132, 210, 0.22);
-        border: 1px solid rgba(255, 132, 210, 0.45);
+        border: 1px solid rgba(198, 146, 255, 0.55);
+        background: rgba(110, 70, 150, 0.35);
+        color: #f5ecff;
+        font-size: 0.66rem;
+        letter-spacing: 0.05em;
       }
-      #hud .hud-grudge-quest {
-        display: none;
-        font-size: 0.7rem;
-        opacity: 0.82;
-      }
-      #hud .hud-grudge-widget.cursed .hud-grudge-curse {
+      #hud .hud-grudge-wrap.cursed .hud-grudge-curse {
         display: inline-flex;
       }
-      #hud .hud-grudge-widget.cursed .hud-grudge-quest {
-        display: inline;
-      }
       #hud .hud-grudge-action {
-        padding: 0.25rem 0.6rem;
-        border-radius: 6px;
-        border: 1px solid rgba(164, 132, 255, 0.55);
-        background: rgba(28, 32, 60, 0.7);
-        color: #e6d9ff;
-        font-size: 0.72rem;
-        letter-spacing: 0.04em;
+        padding: 0.25rem 0.65rem;
+        border-radius: 999px;
+        border: 1px solid rgba(186, 142, 255, 0.45);
+        background: rgba(32, 20, 52, 0.78);
+        color: #efe2ff;
+        font-size: 0.68rem;
+        letter-spacing: 0.05em;
         text-transform: uppercase;
         cursor: pointer;
         transition: background-color 120ms ease, border-color 140ms ease, opacity 120ms ease;
@@ -867,86 +850,100 @@
         opacity: 0.55;
         border-color: rgba(255,255,255,0.16);
       }
+      #hud .hud-grudge-hint {
+        display: none;
+        font-size: 0.68rem;
+        letter-spacing: 0.03em;
+        color: rgba(227, 215, 255, 0.68);
+        line-height: 1.3;
+      }
+      #hud .hud-grudge-wrap.has-hint .hud-grudge-hint {
+        display: block;
+      }
     `;
     const style = document.createElement("style");
-    style.id = "hud-status-style";
+    style.id = "hud-grudge-style";
     style.textContent = css;
     ensureHead()?.appendChild(style);
     grudgeStyleInjected = true;
   }
 
-  function ensureStatusTray() {
-    const root = document.querySelector?.("#hud .hud-right") || ensureHudRoot();
-    if (!root) return null;
-    ensureStatusStyles();
-    if (statusTrayCache && statusTrayCache.isConnected && root.contains(statusTrayCache)) {
-      return statusTrayCache;
-    }
-    let tray = root.querySelector?.("#hud-status-tray") || null;
-    if (!tray) {
-      tray = document.createElement("div");
-      tray.id = "hud-status-tray";
-      tray.className = "hud-status-tray";
-      tray.style.pointerEvents = "auto";
-      root.appendChild(tray);
-    }
-    statusTrayCache = tray;
-    return tray;
-  }
-
   function ensureGrudgeWidget() {
-    const tray = ensureStatusTray();
-    if (!tray) return null;
-    if (grudgeWidgetCache && grudgeWidgetCache.root && tray.contains(grudgeWidgetCache.root)) {
+    ensureGrudgeStyles();
+    const hudRoot = ensureHudRoot();
+    const hudRight = hudRoot?.querySelector?.(".hud-right") || document.querySelector?.("#hud .hud-right") || null;
+    if (!hudRight) return null;
+    if (grudgeWidgetCache && grudgeWidgetCache.root && hudRight.contains(grudgeWidgetCache.root)) {
       return grudgeWidgetCache;
     }
-    const widget = document.createElement("div");
-    widget.className = "hud-grudge-widget";
 
-    const header = document.createElement("div");
-    header.className = "hud-grudge-header";
-    const label = document.createElement("span");
-    label.textContent = "Grudge";
-    const value = document.createElement("strong");
-    value.className = "hud-grudge-value";
-    value.textContent = "0%";
-    header.appendChild(label);
-    header.appendChild(value);
+    let widget = document.getElementById("hud-grudge");
+    if (!widget || !hudRight.contains(widget)) {
+      widget = document.createElement("div");
+      widget.id = "hud-grudge";
+      widget.className = "hud-grudge-wrap";
 
-    const bar = document.createElement("div");
-    bar.className = "hud-grudge-bar";
-    const fill = document.createElement("div");
-    fill.className = "hud-grudge-fill";
-    bar.appendChild(fill);
+      const bar = document.createElement("div");
+      bar.className = "bar grudge hud-grudge-bar";
+      const fill = document.createElement("span");
+      fill.style.width = "0%";
+      bar.appendChild(fill);
 
-    const footer = document.createElement("div");
-    footer.className = "hud-grudge-footer";
-    const curse = document.createElement("span");
-    curse.className = "hud-grudge-curse";
-    curse.textContent = "";
-    const quest = document.createElement("span");
-    quest.className = "hud-grudge-quest";
-    quest.textContent = "";
-    const action = document.createElement("button");
-    action.type = "button";
-    action.className = "hud-grudge-action";
-    action.textContent = "Exorcise";
-    action.disabled = true;
-    footer.appendChild(curse);
-    footer.appendChild(quest);
-    footer.appendChild(action);
+      const meta = document.createElement("div");
+      meta.className = "hud-grudge-meta";
+      const label = document.createElement("span");
+      label.className = "hud-grudge-label";
+      label.textContent = "Grudge Bar";
+      const value = document.createElement("strong");
+      value.className = "hud-grudge-value";
+      value.textContent = "0%";
+      meta.appendChild(label);
+      meta.appendChild(value);
 
-    widget.appendChild(header);
-    widget.appendChild(bar);
-    widget.appendChild(footer);
-    tray.appendChild(widget);
+      const status = document.createElement("div");
+      status.className = "hud-grudge-status";
+      const curse = document.createElement("span");
+      curse.className = "hud-grudge-curse";
+      curse.textContent = "";
+      const action = document.createElement("button");
+      action.type = "button";
+      action.className = "hud-grudge-action";
+      action.textContent = "Exorcise";
+      action.disabled = true;
+      status.appendChild(curse);
+      status.appendChild(action);
+
+      const hint = document.createElement("div");
+      hint.className = "hud-grudge-hint";
+      hint.textContent = "";
+
+      widget.appendChild(bar);
+      widget.appendChild(meta);
+      widget.appendChild(status);
+      widget.appendChild(hint);
+      hudRight.appendChild(widget);
+    }
+
+    const fill = widget.querySelector?.(".hud-grudge-bar > span");
+    const value = widget.querySelector?.(".hud-grudge-value");
+    const curse = widget.querySelector?.(".hud-grudge-curse");
+    const action = widget.querySelector?.(".hud-grudge-action");
+    const hint = widget.querySelector?.(".hud-grudge-hint");
+    const status = widget.querySelector?.(".hud-grudge-status");
+    if (!fill || !value || !curse || !action || !hint || !status) {
+      return null;
+    }
+
+    if (!fill.style.width) {
+      fill.style.width = "0%";
+    }
 
     grudgeWidgetCache = {
       root: widget,
       valueEl: value,
       fillEl: fill,
       curseEl: curse,
-      questEl: quest,
+      questEl: hint,
       button: action,
       last: null
     };
@@ -985,7 +982,10 @@
     if (!widget.last || widget.last.questText !== questText) {
       widget.questEl.textContent = questText;
     }
+    widget.root.classList.toggle("has-hint", !!questText);
     const hasCharges = Number.isFinite(charges) && charges > 0;
+    const showAction = !!cursed || hasCharges;
+    widget.root.classList.toggle("show-action", showAction);
     const btnLabel = hasCharges ? `Exorcise (${Math.round(charges)})` : "Exorcise";
     if (!widget.last || widget.last.btnLabel !== btnLabel) {
       widget.button.textContent = btnLabel;
@@ -1003,6 +1003,8 @@
       questText,
       btnLabel,
       charges,
+      showAction,
+      hasHint: !!questText,
       cursed,
       full,
       slowPct
