@@ -3858,6 +3858,8 @@
     }
   };
 
+  const loadoutStatusTimers = new WeakMap();
+
   const state = {
     dom: null,
     engine: null,
@@ -3876,7 +3878,9 @@
     observer: null,
     listenersBound: false,
     accessoryInputs: [],
-    rigButton: null
+    rigButton: null,
+    saveLoadoutButton: null,
+    loadLoadoutButton: null
   };
 
   function openRigEditorFromCreator() {
@@ -3985,6 +3989,125 @@
     if (typeof override.shoes === "string") result.shoes = override.shoes;
     if (Array.isArray(override.accessories)) result.accessories = override.accessories.slice();
     return result;
+  }
+
+  function flashLoadoutButton(button, message, { revertDelay = 1600 } = {}) {
+    if (!button) return;
+    const original = button.dataset.defaultLabel || button.textContent;
+    if (!button.dataset.defaultLabel) {
+      button.dataset.defaultLabel = original;
+    }
+    button.textContent = message;
+    button.disabled = true;
+    const prevTimer = loadoutStatusTimers.get(button);
+    if (prevTimer) clearTimeout(prevTimer);
+    const timer = setTimeout(() => {
+      button.textContent = button.dataset.defaultLabel || original;
+      button.disabled = false;
+      loadoutStatusTimers.delete(button);
+    }, Math.max(400, revertDelay));
+    loadoutStatusTimers.set(button, timer);
+  }
+
+  function getCosmeticStorageKey() {
+    return (window.RigDefinitions && window.RigDefinitions.COSMETIC_STORAGE_KEY) || "hxh.cosmetics";
+  }
+
+  function readSavedCosmeticLoadout() {
+    if (typeof localStorage === "undefined") return null;
+    try {
+      const raw = localStorage.getItem(getCosmeticStorageKey());
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object"
+        ? (parsed.selection || parsed.cosmetics || parsed.data || parsed)
+        : null;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  function writeSavedCosmeticLoadout(selection) {
+    if (typeof localStorage === "undefined") return null;
+    try {
+      ensureConfig();
+      const specMaps = state.specMaps || buildSpecMaps(getCosmeticConfig());
+      const base = state.baseSelection || buildDefaultSelection(specMaps);
+      const normalized = normalizeSelection(selection, base, specMaps);
+      localStorage.setItem(getCosmeticStorageKey(), JSON.stringify({ version: 1, selection: normalized }));
+      return normalized;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  function handleSaveLoadout(button) {
+    const hx = window.HXH;
+    let selection = null;
+    try { selection = hx?.getCosmeticSelection?.(); } catch (err) { selection = null; }
+    if (!selection) {
+      selection = state.selection ? deepClone(state.selection) : getCosmeticSelectionSnapshot();
+    }
+    let saved = null;
+    if (hx?.saveCosmeticLoadout) {
+      try { saved = hx.saveCosmeticLoadout(selection); } catch (err) { saved = null; }
+    }
+    if (!saved) {
+      saved = writeSavedCosmeticLoadout(selection);
+    }
+    if (saved) {
+      flashLoadoutButton(button, "Loadout Saved!");
+      refreshFromGame({ fallback: saved });
+    } else {
+      flashLoadoutButton(button, "Save Failed", { revertDelay: 2000 });
+    }
+  }
+
+  function handleLoadLoadout(button) {
+    const hx = window.HXH;
+    let saved = null;
+    if (hx?.getSavedCosmeticLoadout) {
+      try { saved = hx.getSavedCosmeticLoadout(); } catch (err) { saved = null; }
+    }
+    if (!saved) {
+      const raw = readSavedCosmeticLoadout();
+      if (raw) {
+        ensureConfig();
+        const specMaps = state.specMaps || buildSpecMaps(getCosmeticConfig());
+        const base = state.baseSelection || buildDefaultSelection(specMaps);
+        saved = normalizeSelection(raw, base, specMaps);
+      }
+    }
+    if (!saved) {
+      flashLoadoutButton(button, "No Loadout", { revertDelay: 1600 });
+      return;
+    }
+    let applied = null;
+    if (hx?.applyCosmeticLoadout) {
+      try { applied = hx.applyCosmeticLoadout(saved); } catch (err) { applied = null; }
+    }
+    if (!applied) {
+      if (hx) {
+        try { hx.setFace?.(saved.face); } catch (err) {}
+        try { hx.setHair?.(saved.hair); } catch (err) {}
+        try { hx.setOutfit?.(saved.outfit); } catch (err) {}
+        try { hx.setShoes?.(saved.shoes); } catch (err) {}
+        try { hx.setAccessories?.(saved.accessories); } catch (err) {}
+      }
+      applied = saved;
+    }
+    refreshFromGame({ fallback: applied });
+    flashLoadoutButton(button, "Loadout Loaded!");
+  }
+
+  function onSaveLoadoutClick(event) {
+    event?.preventDefault();
+    handleSaveLoadout(event?.currentTarget || state.saveLoadoutButton);
+  }
+
+  function onLoadLoadoutClick(event) {
+    event?.preventDefault();
+    handleLoadLoadout(event?.currentTarget || state.loadLoadoutButton);
   }
 
   function getCosmeticConfig() {
@@ -4200,6 +4323,36 @@
           state.rigButton?.removeEventListener("click", openRigEditorFromCreator);
           btn.addEventListener("click", openRigEditorFromCreator);
           state.rigButton = btn;
+        }
+
+        let saveBtn = document.getElementById("creator-save-loadout");
+        if (!saveBtn) {
+          saveBtn = document.createElement("button");
+          saveBtn.type = "button";
+          saveBtn.id = "creator-save-loadout";
+          saveBtn.className = "secondary";
+          saveBtn.textContent = "Save Loadout";
+          actionRow.insertBefore(saveBtn, cancel || actionRow.firstChild);
+        }
+        if (state.saveLoadoutButton !== saveBtn) {
+          state.saveLoadoutButton?.removeEventListener("click", onSaveLoadoutClick);
+          saveBtn.addEventListener("click", onSaveLoadoutClick);
+          state.saveLoadoutButton = saveBtn;
+        }
+
+        let loadBtn = document.getElementById("creator-load-loadout");
+        if (!loadBtn) {
+          loadBtn = document.createElement("button");
+          loadBtn.type = "button";
+          loadBtn.id = "creator-load-loadout";
+          loadBtn.className = "secondary";
+          loadBtn.textContent = "Load Loadout";
+          actionRow.insertBefore(loadBtn, cancel || actionRow.firstChild);
+        }
+        if (state.loadLoadoutButton !== loadBtn) {
+          state.loadLoadoutButton?.removeEventListener("click", onLoadLoadoutClick);
+          loadBtn.addEventListener("click", onLoadLoadoutClick);
+          state.loadLoadoutButton = loadBtn;
         }
       }
     }
