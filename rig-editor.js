@@ -5,6 +5,7 @@
   // ---------- Rig type catalog ----------
   const deepClone = o => JSON.parse(JSON.stringify(o));
   const RIG_TYPE_STORAGE_KEY = "hxh.rig.type";
+  const ANIMATION_STORAGE_KEY = (window.RigDefinitions && window.RigDefinitions.ANIMATION_STORAGE_KEY) || "hxh.anim.clips";
 
   const FALLBACK_RIG_TYPES = (() => {
     const humanoid = {
@@ -562,6 +563,13 @@
     }
   }
 
+  let animationsHydrated = false;
+  const ANIMATION_AUTOSAVE_DELAY = 700;
+  let animationAutosaveTimer = null;
+  let lastAnimationSnapshotJSON = null;
+  let unloadAnimationSaveHandler = null;
+  let visibilityAnimationSaveHandler = null;
+
   const CHANNEL_ALIAS = {
     pos: "position",
     position: "position",
@@ -616,6 +624,354 @@
     const fps = Number(anim.fps);
     anim.fps = (!Number.isFinite(fps) || fps <= 0) ? 30 : Math.max(1, Math.min(480, fps));
     return anim.fps;
+  }
+
+  // ---------- Animation persistence helpers ----------
+  function sanitizeAnimationKeyframeSnapshot(entry) {
+    if (!entry || typeof entry !== "object") return null;
+    const frame = Math.round(Number(entry.frame));
+    if (!Number.isFinite(frame)) return null;
+    const ease = typeof entry.ease === "string" && entry.ease.trim() ? entry.ease.trim() : "linear";
+    const valueSource = entry.value;
+    let value;
+    if (valueSource && typeof valueSource === "object") {
+      const x = Number(valueSource.x);
+      const y = Number(valueSource.y);
+      const z = Number(valueSource.z);
+      value = {
+        x: Number.isFinite(x) ? x : 0,
+        y: Number.isFinite(y) ? y : 0,
+        z: Number.isFinite(z) ? z : 0
+      };
+    } else {
+      const num = Number(valueSource);
+      value = Number.isFinite(num) ? num : 0;
+    }
+    return { frame, value, ease };
+  }
+
+  function sanitizeAnimationClipSnapshot(name, clip) {
+    if (!clip || typeof clip !== "object") return null;
+    const rawName = typeof clip.name === "string" && clip.name.trim()
+      ? clip.name.trim()
+      : (typeof name === "string" && name.trim() ? name.trim() : null);
+    if (!rawName) return null;
+    const fpsNum = Number(clip.fps);
+    const fps = Number.isFinite(fpsNum) && fpsNum > 0 ? Math.max(1, Math.min(480, Math.round(fpsNum))) : 30;
+    const rangeSource = Array.isArray(clip.range)
+      ? { start: clip.range[0], end: clip.range[1] }
+      : (clip.range && typeof clip.range === "object" ? clip.range : {});
+    let start = Number(rangeSource.start);
+    let end = Number(rangeSource.end);
+    if (!Number.isFinite(start)) start = 0;
+    start = Math.max(0, Math.round(start));
+    if (!Number.isFinite(end)) end = start + fps;
+    end = Math.max(start + 1, Math.round(end));
+    const joints = {};
+    const sourceJoints = clip.joints && typeof clip.joints === "object" ? clip.joints : {};
+    Object.keys(sourceJoints).forEach(joint => {
+      const jointData = sourceJoints[joint];
+      if (!jointData || typeof jointData !== "object") return;
+      const sanitizedChannels = {};
+      const channelDefs = [
+        { key: "position", aliases: ["position", "pos"] },
+        { key: "rotation", aliases: ["rotation", "rot"] },
+        { key: "scale", aliases: ["scale", "scl"] }
+      ];
+      channelDefs.forEach(({ key, aliases }) => {
+        let channelSource = null;
+        for (const alias of aliases) {
+          if (Array.isArray(jointData[alias])) {
+            channelSource = jointData[alias];
+            break;
+          }
+        }
+        if (!channelSource) return;
+        const map = new Map();
+        channelSource.forEach(entry => {
+          const sanitized = sanitizeAnimationKeyframeSnapshot(entry);
+          if (!sanitized) return;
+          map.set(sanitized.frame, sanitized);
+        });
+        if (!map.size) return;
+        const keys = Array.from(map.values()).sort((a, b) => a.frame - b.frame);
+        sanitizedChannels[key] = keys;
+      });
+      if (Object.keys(sanitizedChannels).length) {
+        joints[joint] = sanitizedChannels;
+      }
+    });
+    return {
+      name: rawName,
+      fps,
+      range: { start, end },
+      joints
+    };
+  }
+
+  function sanitizeAnimationLibrarySnapshot(snapshot) {
+    const result = { version: 1, active: null, clips: {} };
+    if (!snapshot || typeof snapshot !== "object") return result;
+    const pushClip = (name, data) => {
+      const sanitized = sanitizeAnimationClipSnapshot(name, data);
+      if (!sanitized) return;
+      if (!result.clips[sanitized.name]) {
+        result.clips[sanitized.name] = sanitized;
+      }
+    };
+    if (Array.isArray(snapshot)) {
+      snapshot.forEach(entry => pushClip(entry?.name, entry));
+    }
+    if (Array.isArray(snapshot?.clips)) {
+      snapshot.clips.forEach(entry => pushClip(entry?.name, entry));
+    }
+    if (snapshot?.clips && typeof snapshot.clips === "object" && !Array.isArray(snapshot.clips)) {
+      Object.entries(snapshot.clips).forEach(([name, data]) => pushClip(name, data));
+    }
+    if (snapshot?.animations && typeof snapshot.animations === "object") {
+      Object.entries(snapshot.animations).forEach(([name, data]) => pushClip(name, data));
+    }
+    if (!Array.isArray(snapshot) && typeof snapshot === "object") {
+      Object.entries(snapshot).forEach(([name, data]) => {
+        if (["clips", "animations", "active", "activeName", "current", "version"].includes(name)) return;
+        if (data && typeof data === "object" && (data.joints || data.range || data.fps)) {
+          pushClip(name, data);
+        }
+      });
+    }
+    const activeCandidates = [snapshot.active, snapshot.activeName, snapshot.current]
+      .filter(value => typeof value === "string" && value);
+    for (const candidate of activeCandidates) {
+      if (result.clips[candidate]) {
+        result.active = candidate;
+        break;
+      }
+    }
+    if (!result.active) {
+      const names = Object.keys(result.clips);
+      if (names.length) {
+        result.active = names.includes("Base") ? "Base" : names[0];
+      }
+    }
+    return result;
+  }
+
+  function buildAnimationLibrarySnapshot() {
+    const clips = {};
+    const names = AnimationStore.listAnimations();
+    names.forEach(name => {
+      const anim = AnimationStore.getAnimation(name);
+      if (!anim) return;
+      const rawClip = {
+        name: anim.name || name,
+        fps: anim.fps,
+        range: anim.range,
+        joints: anim.joints
+      };
+      const sanitized = sanitizeAnimationClipSnapshot(name, rawClip);
+      if (sanitized) {
+        clips[sanitized.name] = sanitized;
+      }
+    });
+    const snapshot = { version: 1, active: null, clips };
+    const activeName = typeof AnimationStore.getActiveName === "function" ? AnimationStore.getActiveName() : null;
+    if (activeName && clips[activeName]) {
+      snapshot.active = activeName;
+    } else {
+      const clipNames = Object.keys(clips);
+      if (clipNames.length) {
+        snapshot.active = clipNames.includes("Base") ? "Base" : clipNames[0];
+      }
+    }
+    return snapshot;
+  }
+
+  function loadSavedAnimationLibrary() {
+    const hx = window.HXH;
+    if (hx && typeof hx.getAnimationLibrary === "function") {
+      try {
+        const lib = hx.getAnimationLibrary();
+        if (lib) return sanitizeAnimationLibrarySnapshot(lib);
+      } catch (err) {}
+    }
+    if (typeof localStorage !== "undefined") {
+      try {
+        const raw = localStorage.getItem(ANIMATION_STORAGE_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          return sanitizeAnimationLibrarySnapshot(parsed);
+        }
+      } catch (err) {}
+    }
+    return null;
+  }
+
+  function persistAnimationLibrarySnapshot(snapshot) {
+    const sanitized = sanitizeAnimationLibrarySnapshot(snapshot);
+    let stored = null;
+    const hx = window.HXH;
+    if (hx && typeof hx.saveAnimationLibrary === "function") {
+      try {
+        const result = hx.saveAnimationLibrary(sanitized);
+        if (result) stored = sanitizeAnimationLibrarySnapshot(result);
+      } catch (err) { stored = null; }
+    }
+    if (!stored && typeof localStorage !== "undefined") {
+      try {
+        if (Object.keys(sanitized.clips).length) {
+          localStorage.setItem(ANIMATION_STORAGE_KEY, JSON.stringify(sanitized));
+        } else {
+          localStorage.removeItem(ANIMATION_STORAGE_KEY);
+        }
+        stored = sanitized;
+      } catch (err) {}
+    }
+    if (stored) {
+      lastAnimationSnapshotJSON = JSON.stringify(stored);
+      return true;
+    }
+    return false;
+  }
+
+  function persistAnimationLibrarySnapshotIfChanged(force = false) {
+    const snapshot = buildAnimationLibrarySnapshot();
+    const serialized = JSON.stringify(snapshot);
+    if (!force && serialized === lastAnimationSnapshotJSON) return false;
+    return persistAnimationLibrarySnapshot(snapshot);
+  }
+
+  function scheduleAnimationAutosave() {
+    if (animationAutosaveTimer) {
+      clearTimeout(animationAutosaveTimer);
+    }
+    animationAutosaveTimer = setTimeout(() => {
+      animationAutosaveTimer = null;
+      persistAnimationLibrarySnapshotIfChanged();
+    }, ANIMATION_AUTOSAVE_DELAY);
+  }
+
+  function flushAnimationAutosave({ force = false } = {}) {
+    if (animationAutosaveTimer) {
+      clearTimeout(animationAutosaveTimer);
+      animationAutosaveTimer = null;
+    }
+    persistAnimationLibrarySnapshotIfChanged(force);
+  }
+
+  function ensureAnimationLibraryHydrated() {
+    if (animationsHydrated) return;
+    animationsHydrated = true;
+    const saved = loadSavedAnimationLibrary();
+    if (saved && Object.keys(saved.clips || {}).length) {
+      applyAnimationLibrarySnapshot(saved, { silent: true });
+      lastAnimationSnapshotJSON = JSON.stringify(saved);
+    } else {
+      const current = buildAnimationLibrarySnapshot();
+      lastAnimationSnapshotJSON = JSON.stringify(current);
+    }
+  }
+
+  function applyAnimationLibrarySnapshot(snapshot, { silent = false } = {}) {
+    const sanitized = sanitizeAnimationLibrarySnapshot(snapshot);
+    const clips = sanitized.clips || {};
+    const existing = AnimationStore.listAnimations();
+    existing.forEach(name => {
+      try { AnimationStore.deleteAnimation(name); } catch (err) {}
+    });
+    const createdNames = [];
+    Object.keys(clips).forEach(name => {
+      const clip = clips[name];
+      if (!clip) return;
+      const fps = Math.max(1, Math.min(480, Math.round(Number(clip.fps) || 30)));
+      const start = Math.max(0, Math.round(Number(clip.range?.start) || 0));
+      let end = Math.round(Number(clip.range?.end));
+      if (!Number.isFinite(end) || end <= start) end = start + fps;
+      let created = null;
+      try {
+        created = AnimationStore.createAnimation(clip.name || name, fps, [start, end]);
+      } catch (err) {
+        const fallback = `${clip.name || name}-${Math.random().toString(36).slice(2, 6)}`;
+        try { created = AnimationStore.createAnimation(fallback, fps, [start, end]); } catch (err2) { created = null; }
+      }
+      if (!created) return;
+      const createdName = created.name || clip.name || name;
+      createdNames.push(createdName);
+      if (typeof AnimationStore.setActive === "function") {
+        try { AnimationStore.setActive(createdName); } catch (err) {}
+      }
+      const joints = clip.joints && typeof clip.joints === "object" ? clip.joints : {};
+      Object.keys(joints).forEach(jointKey => {
+        const channels = joints[jointKey] && typeof joints[jointKey] === "object" ? joints[jointKey] : {};
+        ["position", "rotation", "scale"].forEach(channelName => {
+          const keys = Array.isArray(channels[channelName]) ? channels[channelName] : [];
+          keys.forEach(key => {
+            const frame = Math.round(Number(key.frame) || 0);
+            const ease = typeof key.ease === "string" && key.ease.trim() ? key.ease.trim() : "linear";
+            const value = key.value && typeof key.value === "object"
+              ? {
+                x: Number(key.value.x) || 0,
+                y: Number(key.value.y) || 0,
+                z: Number(key.value.z) || 0
+              }
+              : Number(key.value) || 0;
+            AnimationStore.addKey(jointKey, channelName, frame, value, { ease, tolerance: 0.5 });
+          });
+        });
+      });
+    });
+    if (!createdNames.length) {
+      if (AnimationStore.listAnimations().length === 0) {
+        const base = AnimationStore.createAnimation("Base", 30, [0, 30]);
+        if (base) createdNames.push(base.name || "Base");
+      }
+    }
+    const activeTarget = sanitized.active && createdNames.includes(sanitized.active)
+      ? sanitized.active
+      : (createdNames.includes("Base") ? "Base" : createdNames[0]);
+    if (activeTarget && typeof AnimationStore.setActive === "function") {
+      try { AnimationStore.setActive(activeTarget); } catch (err) {}
+    }
+    if (!silent && typeof AnimationStore.touch === "function") {
+      try { AnimationStore.touch(activeTarget || createdNames[0] || null); } catch (err) {}
+    }
+    markAnimationGroupDirty();
+    refreshDopeSheet?.();
+    return true;
+  }
+
+  function exportAnimationLibrary() {
+    try {
+      const snapshot = sanitizeAnimationLibrarySnapshot(buildAnimationLibrarySnapshot());
+      const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      const baseName = snapshot.active || "animations";
+      const safeName = baseName.toLowerCase().replace(/[^a-z0-9_-]+/g, "-") || "animations";
+      a.download = `${safeName}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+    } catch (err) {
+      console.warn("[RigEditor] Failed to export animations", err);
+      alert("Failed to export animations.");
+    }
+  }
+
+  async function importAnimationLibraryFromFile(file) {
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      const sanitized = sanitizeAnimationLibrarySnapshot(parsed);
+      applyAnimationLibrarySnapshot(sanitized);
+      persistAnimationLibrarySnapshot(sanitized);
+      alert("Animation clips imported.");
+    } catch (err) {
+      console.warn("[RigEditor] Failed to import animation JSON", err);
+      alert("Failed to import animation JSON.");
+    }
   }
 
   function totalFrames() {
@@ -1243,6 +1599,7 @@
   if (typeof AnimationStore.onChange === "function") {
     AnimationStore.onChange(() => {
       markAnimationGroupDirty();
+      scheduleAnimationAutosave();
     });
   }
 
@@ -2415,6 +2772,22 @@
     if (booted){ refresh(); return; }
     booted = true;
 
+    ensureAnimationLibraryHydrated();
+    if (!unloadAnimationSaveHandler && typeof window !== "undefined") {
+      unloadAnimationSaveHandler = () => {
+        try { flushAnimationAutosave({ force: true }); } catch (err) {}
+      };
+      window.addEventListener("beforeunload", unloadAnimationSaveHandler);
+    }
+    if (!visibilityAnimationSaveHandler && typeof document !== "undefined") {
+      visibilityAnimationSaveHandler = () => {
+        if (document.visibilityState === "hidden") {
+          try { flushAnimationAutosave(); } catch (err) {}
+        }
+      };
+      document.addEventListener("visibilitychange", visibilityAnimationSaveHandler);
+    }
+
     const hx = typeof window !== "undefined" ? window.HXH : null;
     let session = null;
     if (hx && typeof hx.consumeRigEditorSession === "function") {
@@ -2815,6 +3188,7 @@
 
     q("rig-exit")?.addEventListener("click", ()=>{
       try { syncParamsFromScene(); } catch (err) { /* ignore */ }
+      flushAnimationAutosave({ force: true });
       let handled = false;
       const hx = typeof window !== "undefined" ? window.HXH : null;
       if (hx && typeof hx.finalizeRigEditorSession === "function" && sessionContext) {
@@ -2863,6 +3237,47 @@
       }catch(err){ console.error(err); alert("Failed to import XML."); }
       finally { e.target.value=""; }
     });
+
+    const actionsRow = document.querySelector("#rig-toolbar .actions");
+    if (actionsRow) {
+      let animExportBtn = document.getElementById("anim-export-json");
+      if (!animExportBtn) {
+        animExportBtn = document.createElement("button");
+        animExportBtn.type = "button";
+        animExportBtn.id = "anim-export-json";
+        animExportBtn.className = "secondary";
+        animExportBtn.textContent = "Export Anim JSON";
+        animExportBtn.title = "Download animation clips as JSON";
+        actionsRow.insertBefore(animExportBtn, q("rig-exit") || null);
+      }
+      let animImportBtn = document.getElementById("anim-import-json");
+      if (!animImportBtn) {
+        animImportBtn = document.createElement("button");
+        animImportBtn.type = "button";
+        animImportBtn.id = "anim-import-json";
+        animImportBtn.className = "secondary";
+        animImportBtn.textContent = "Import Anim JSON";
+        animImportBtn.title = "Load animation clips from JSON";
+        actionsRow.insertBefore(animImportBtn, q("rig-exit") || null);
+      }
+      let animFileInput = document.getElementById("anim-json-file");
+      if (!animFileInput) {
+        animFileInput = document.createElement("input");
+        animFileInput.type = "file";
+        animFileInput.id = "anim-json-file";
+        animFileInput.accept = ".json,application/json";
+        animFileInput.hidden = true;
+        actionsRow.appendChild(animFileInput);
+      }
+      animExportBtn.onclick = () => exportAnimationLibrary();
+      animImportBtn.onclick = () => animFileInput?.click();
+      animFileInput.onchange = async (event) => {
+        const file = event?.target?.files?.[0];
+        if (!file) return;
+        await importAnimationLibraryFromFile(file);
+        if (event?.target) event.target.value = "";
+      };
+    }
   }
 
   // ---- Picking (left-click selects; right-drag pans) ----

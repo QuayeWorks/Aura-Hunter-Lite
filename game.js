@@ -5084,6 +5084,177 @@
    let devHotkeyHandler = null;
    let regionChangeUnsub = null;
 
+   const EMPTY_ANIMATION_LIBRARY = { version: 1, active: null, clips: {} };
+   let cachedAnimationLibrary = null;
+
+   function sanitizeAnimationKeyframe(entry) {
+      if (!entry || typeof entry !== "object") return null;
+      const frame = Math.round(Number(entry.frame));
+      if (!Number.isFinite(frame)) return null;
+      const ease = typeof entry.ease === "string" && entry.ease.trim() ? entry.ease.trim() : "linear";
+      const valueSource = entry.value;
+      let value;
+      if (valueSource && typeof valueSource === "object") {
+         const x = Number(valueSource.x);
+         const y = Number(valueSource.y);
+         const z = Number(valueSource.z);
+         value = {
+            x: Number.isFinite(x) ? x : 0,
+            y: Number.isFinite(y) ? y : 0,
+            z: Number.isFinite(z) ? z : 0
+         };
+      } else {
+         const num = Number(valueSource);
+         value = Number.isFinite(num) ? num : 0;
+      }
+      return { frame, value, ease };
+   }
+
+   function sanitizeAnimationClipSnapshot(name, clip) {
+      if (!clip || typeof clip !== "object") return null;
+      const rawName = typeof clip.name === "string" && clip.name.trim()
+         ? clip.name.trim()
+         : (typeof name === "string" && name.trim() ? name.trim() : null);
+      if (!rawName) return null;
+      const fpsNum = Number(clip.fps);
+      const fps = Number.isFinite(fpsNum) && fpsNum > 0 ? Math.max(1, Math.min(480, Math.round(fpsNum))) : 30;
+      const rangeSource = Array.isArray(clip.range)
+         ? { start: clip.range[0], end: clip.range[1] }
+         : (clip.range && typeof clip.range === "object" ? clip.range : {});
+      let start = Number(rangeSource.start);
+      let end = Number(rangeSource.end);
+      if (!Number.isFinite(start)) start = 0;
+      start = Math.max(0, Math.round(start));
+      if (!Number.isFinite(end)) end = start + fps;
+      end = Math.max(start + 1, Math.round(end));
+      const joints = {};
+      const sourceJoints = clip.joints && typeof clip.joints === "object" ? clip.joints : {};
+      Object.keys(sourceJoints).forEach(joint => {
+         const jointData = sourceJoints[joint];
+         if (!jointData || typeof jointData !== "object") return;
+         const sanitizedChannels = {};
+         const channelDefs = [
+            { key: "position", aliases: ["position", "pos"] },
+            { key: "rotation", aliases: ["rotation", "rot"] },
+            { key: "scale", aliases: ["scale", "scl"] }
+         ];
+         channelDefs.forEach(({ key, aliases }) => {
+            let channelSource = null;
+            for (const alias of aliases) {
+               if (Array.isArray(jointData[alias])) {
+                  channelSource = jointData[alias];
+                  break;
+               }
+            }
+            if (!channelSource) return;
+            const map = new Map();
+            channelSource.forEach(entry => {
+               const sanitized = sanitizeAnimationKeyframe(entry);
+               if (!sanitized) return;
+               map.set(sanitized.frame, sanitized);
+            });
+            if (!map.size) return;
+            const keys = Array.from(map.values()).sort((a, b) => a.frame - b.frame);
+            sanitizedChannels[key] = keys;
+         });
+         if (Object.keys(sanitizedChannels).length) {
+            joints[joint] = sanitizedChannels;
+         }
+      });
+      return {
+         name: rawName,
+         fps,
+         range: { start, end },
+         joints
+      };
+   }
+
+   function sanitizeAnimationLibrarySnapshot(snapshot) {
+      const result = { version: 1, active: null, clips: {} };
+      if (!snapshot || typeof snapshot !== "object") return result;
+      const pushClip = (name, data) => {
+         const sanitized = sanitizeAnimationClipSnapshot(name, data);
+         if (!sanitized) return;
+         if (!result.clips[sanitized.name]) {
+            result.clips[sanitized.name] = sanitized;
+         }
+      };
+      if (Array.isArray(snapshot)) {
+         snapshot.forEach(entry => pushClip(entry?.name, entry));
+      }
+      if (Array.isArray(snapshot?.clips)) {
+         snapshot.clips.forEach(entry => pushClip(entry?.name, entry));
+      }
+      if (snapshot?.clips && typeof snapshot.clips === "object" && !Array.isArray(snapshot.clips)) {
+         Object.entries(snapshot.clips).forEach(([name, data]) => pushClip(name, data));
+      }
+      if (snapshot?.animations && typeof snapshot.animations === "object") {
+         Object.entries(snapshot.animations).forEach(([name, data]) => pushClip(name, data));
+      }
+      if (!Array.isArray(snapshot) && typeof snapshot === "object") {
+         Object.entries(snapshot).forEach(([name, data]) => {
+            if (["clips", "animations", "active", "activeName", "current", "version"].includes(name)) return;
+            if (data && typeof data === "object" && (data.joints || data.range || data.fps)) {
+               pushClip(name, data);
+            }
+         });
+      }
+      const activeCandidates = [snapshot.active, snapshot.activeName, snapshot.current]
+         .filter(value => typeof value === "string" && value);
+      for (const candidate of activeCandidates) {
+         if (result.clips[candidate]) {
+            result.active = candidate;
+            break;
+         }
+      }
+      if (!result.active) {
+         const names = Object.keys(result.clips);
+         if (names.length) {
+            result.active = names.includes("Base") ? "Base" : names[0];
+         }
+      }
+      return result;
+   }
+
+   function loadStoredAnimationLibrary() {
+      if (typeof localStorage === "undefined") return null;
+      try {
+         const raw = localStorage.getItem(ANIMATION_STORAGE_KEY);
+         if (!raw) return null;
+         const parsed = JSON.parse(raw);
+         return sanitizeAnimationLibrarySnapshot(parsed);
+      } catch (err) {
+         return null;
+      }
+   }
+
+   function getAnimationLibrarySnapshot() {
+      if (!cachedAnimationLibrary) {
+         const stored = loadStoredAnimationLibrary();
+         cachedAnimationLibrary = stored
+            ? sanitizeAnimationLibrarySnapshot(stored)
+            : JSON.parse(JSON.stringify(EMPTY_ANIMATION_LIBRARY));
+      }
+      return JSON.parse(JSON.stringify(cachedAnimationLibrary));
+   }
+
+   function saveAnimationLibrarySnapshot(snapshot, options = {}) {
+      const { emit = true } = options;
+      const sanitized = sanitizeAnimationLibrarySnapshot(snapshot || EMPTY_ANIMATION_LIBRARY);
+      cachedAnimationLibrary = JSON.parse(JSON.stringify(sanitized));
+      if (typeof localStorage !== "undefined") {
+         try {
+            if (Object.keys(sanitized.clips).length) {
+               localStorage.setItem(ANIMATION_STORAGE_KEY, JSON.stringify(cachedAnimationLibrary));
+            } else {
+               localStorage.removeItem(ANIMATION_STORAGE_KEY);
+            }
+         } catch (err) {}
+      }
+      if (emit) scheduleRuntimeSave();
+      return getAnimationLibrarySnapshot();
+   }
+
    function hasSave() {
       try {
          return !!localStorage.getItem(SAVE_KEYS.character);
@@ -5683,6 +5854,8 @@
 
    // ===== Rig loader (shared with the Rig Editor) =====
    const RIG_KEY = "hxh.rig.params";
+   const ANIMATION_STORAGE_KEY = "hxh.anim.clips";
+   const COSMETIC_STORAGE_KEY = "hxh.cosmetics";
    const d2r = (d) => d * Math.PI / 180;
    const t0 = () => ({
       pos: {
@@ -6107,7 +6280,12 @@
    }
 
    const DEFAULT_COSMETIC_SELECTION = normalizeCosmetics((window.RigDefinitions && window.RigDefinitions.DEFAULT_COSMETICS) || FALLBACK_COSMETIC_SELECTION, FALLBACK_COSMETIC_SELECTION);
-   let cosmeticSelection = deepClone(DEFAULT_COSMETIC_SELECTION);
+   let cachedCosmeticStorage = null;
+   const storedCosmetics = loadSavedCosmeticSelection();
+   let cosmeticSelection = storedCosmetics ? deepClone(storedCosmetics) : deepClone(DEFAULT_COSMETIC_SELECTION);
+   if (!cachedCosmeticStorage) {
+      cachedCosmeticStorage = deepClone(cosmeticSelection);
+   }
    let playerCosmeticController = null;
 
    const FACE_MATERIAL_CACHE = new Map();
@@ -6116,6 +6294,56 @@
 
    function deepClone(o) {
       return JSON.parse(JSON.stringify(o));
+   }
+
+   function loadSavedCosmeticSelection() {
+      if (cachedCosmeticStorage) {
+         return deepClone(cachedCosmeticStorage);
+      }
+      if (typeof localStorage === "undefined") return null;
+      try {
+         const raw = localStorage.getItem(COSMETIC_STORAGE_KEY);
+         if (!raw) return null;
+         const parsed = JSON.parse(raw);
+         const payload = parsed && typeof parsed === "object"
+            ? (parsed.selection || parsed.cosmetics || parsed.data || parsed)
+            : null;
+         if (!payload) return null;
+         const normalized = normalizeCosmetics(payload, DEFAULT_COSMETIC_SELECTION);
+         cachedCosmeticStorage = deepClone(normalized);
+         return deepClone(normalized);
+      } catch (err) {
+         return null;
+      }
+   }
+
+   function persistCosmeticsSelection({ selection = null, emit = true } = {}) {
+      const target = normalizeCosmetics(selection || getCosmeticSelection(), DEFAULT_COSMETIC_SELECTION);
+      cachedCosmeticStorage = deepClone(target);
+      if (typeof localStorage !== "undefined") {
+         try {
+            localStorage.setItem(COSMETIC_STORAGE_KEY, JSON.stringify({ version: 1, selection: target }));
+         } catch (err) {}
+      }
+      if (emit) scheduleRuntimeSave();
+      return deepClone(target);
+   }
+
+   function getSavedCosmeticLoadout() {
+      const saved = loadSavedCosmeticSelection();
+      return saved ? deepClone(saved) : deepClone(DEFAULT_COSMETIC_SELECTION);
+   }
+
+   function saveCosmeticLoadout(selection = null) {
+      return persistCosmeticsSelection({ selection, emit: true });
+   }
+
+   function applyCosmeticLoadout(selection = null, { persist = true } = {}) {
+      const normalized = normalizeCosmetics(selection || getSavedCosmeticLoadout(), DEFAULT_COSMETIC_SELECTION);
+      cosmeticSelection = deepClone(normalized);
+      applyCosmeticsToPlayer();
+      persistCosmeticsSelection({ selection: normalized, emit: !!persist });
+      return getCosmeticSelection();
    }
 
    // ensure transforms exist and are numeric
@@ -6670,6 +6898,13 @@
       const Items = getItemsModule();
       const rawInventory = Items?.inventory?.toJSON?.() || null;
       const inventory = rawInventory ? sanitizeInventorySnapshot(rawInventory) : null;
+      const cosmeticsSnapshot = getCosmeticSelection();
+      const animationLibrary = (() => {
+         const snapshot = getAnimationLibrarySnapshot();
+         if (!snapshot || typeof snapshot !== "object") return null;
+         const clipCount = Object.keys(snapshot.clips || {}).length;
+         return clipCount ? snapshot : null;
+      })();
       const vows = Array.isArray(state.vows)
          ? state.vows.map(entry => ({
             ruleId: entry?.ruleId || null,
@@ -6695,6 +6930,8 @@
          version: 2,
          timestamp: Date.now(),
          inventory,
+         cosmetics: cosmeticsSnapshot,
+         animations: animationLibrary,
          vows,
          nenType,
          statCaps: state.trainingCaps ? { ...state.trainingCaps } : null,
@@ -6768,6 +7005,16 @@
          if (snapshot.aura.en && typeof snapshot.aura.en === "object") {
             aura.en = { ...aura.en, ...snapshot.aura.en };
          }
+         applied = true;
+      }
+
+      if (snapshot.cosmetics && typeof snapshot.cosmetics === "object") {
+         applyCosmeticLoadout(snapshot.cosmetics, { persist: false });
+         applied = true;
+      }
+
+      if (snapshot.animations && typeof snapshot.animations === "object") {
+         saveAnimationLibrarySnapshot(snapshot.animations, { emit: false });
          applied = true;
       }
 
@@ -7733,6 +7980,7 @@
       basePlayerMeta.cosmetics = playerCosmeticController?.getState?.() || getCosmeticSelection();
       player.metadata = basePlayerMeta;
       applyCosmeticsToPlayer();
+      persistCosmeticsSelection({ emit: false });
       updateTerrainStreaming(playerRoot.position, 0, true);
       window.RegionManager?.updateSpatialState?.(playerRoot.position, { silent: true });
 
@@ -8795,6 +9043,7 @@
          if (typeof applied === "string") cosmeticSelection.face = applied;
       }
       updatePlayerCosmeticState();
+      persistCosmeticsSelection();
       return cosmeticSelection.face;
    }
 
@@ -8806,6 +9055,7 @@
          if (typeof applied === "string") cosmeticSelection.hair = applied;
       }
       updatePlayerCosmeticState();
+      persistCosmeticsSelection();
       return cosmeticSelection.hair;
    }
 
@@ -8817,6 +9067,7 @@
          if (applied) cosmeticSelection.outfit = deepClone(applied);
       }
       updatePlayerCosmeticState();
+      persistCosmeticsSelection();
       return deepClone(cosmeticSelection.outfit);
    }
 
@@ -8828,6 +9079,7 @@
          if (typeof applied === "string") cosmeticSelection.shoes = applied;
       }
       updatePlayerCosmeticState();
+      persistCosmeticsSelection();
       return cosmeticSelection.shoes;
    }
 
@@ -8838,6 +9090,7 @@
          if (Array.isArray(applied)) cosmeticSelection.accessories = applied.slice();
       }
       updatePlayerCosmeticState();
+      persistCosmeticsSelection();
       return cosmeticSelection.accessories.slice();
    }
 
@@ -10235,6 +10488,11 @@
       setOutfit,
       setShoes,
       setAccessories,
+      getSavedCosmeticLoadout,
+      saveCosmeticLoadout,
+      applyCosmeticLoadout,
+      getAnimationLibrary: () => getAnimationLibrarySnapshot(),
+      saveAnimationLibrary: (snapshot, opts) => saveAnimationLibrarySnapshot(snapshot, opts || {}),
       prepareRigEditorSession,
       consumeRigEditorSession,
       getActiveRigEditorSession,
@@ -10334,7 +10592,16 @@ try {
   });
   // share rig definitions for the editor if available
   window.RigDefinitions = {
-    RIG_KEY, PART_KEYS, DEFAULT_RIG, ensureRig, parseRigXML, deepClone, d2r, t0
+    RIG_KEY,
+    PART_KEYS,
+    DEFAULT_RIG,
+    ensureRig,
+    parseRigXML,
+    deepClone,
+    d2r,
+    t0,
+    ANIMATION_STORAGE_KEY,
+    COSMETIC_STORAGE_KEY
   };
   // Ensure GameSettings is globally accessible
   window.GameSettings = window.GameSettings || GameSettings;
