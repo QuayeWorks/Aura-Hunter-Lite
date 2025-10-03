@@ -6301,6 +6301,12 @@
       return JSON.parse(JSON.stringify(o));
    }
 
+   const COSMETIC_ANCHOR_STORAGE_KEY = (window.RigDefinitions && window.RigDefinitions.COSMETIC_ANCHOR_STORAGE_KEY) || "hxh.cosmeticAnchors";
+   const FALLBACK_COSMETIC_ANCHORS = { faces: {}, hair: {} };
+   const BASE_COSMETIC_ANCHORS = normalizeAnchorMap((window.RigDefinitions && window.RigDefinitions.COSMETIC_ANCHORS) || FALLBACK_COSMETIC_ANCHORS, { base: true });
+   let cachedCosmeticAnchorStorage = null;
+   let cosmeticAnchorOverrides = loadSavedCosmeticAnchors();
+
    function loadSavedCosmeticSelection() {
       if (cachedCosmeticStorage) {
          return deepClone(cachedCosmeticStorage);
@@ -6332,6 +6338,380 @@
       }
       if (emit) scheduleRuntimeSave();
       return deepClone(target);
+   }
+
+   function normalizeAnchorMap(source, { base = false } = {}) {
+      const buckets = { faces: {}, hair: {} };
+      if (!source || typeof source !== "object") return buckets;
+      const keys = ["faces", "hair"];
+      keys.forEach(bucketKey => {
+         const src = source[bucketKey];
+         if (!src || typeof src !== "object") return;
+         const dest = {};
+         Object.keys(src).forEach(id => {
+            const spec = src[id];
+            if (!spec || typeof spec !== "object") return;
+            if (base) {
+               dest[id] = normalizeAnchorBaseSpec(spec);
+            } else {
+               const normalized = normalizeAnchorOverrideSpec(spec);
+               const trimmed = trimAnchorOverride(normalized);
+               if (trimmed) dest[id] = trimmed;
+            }
+         });
+         buckets[bucketKey] = dest;
+      });
+      return buckets;
+   }
+
+   function normalizeAnchorBaseSpec(spec) {
+      const localPos = spec?.localPos || {};
+      const localRot = spec?.localRot || {};
+      const localScale = spec?.localScale || {};
+      return {
+         headSocket: (typeof spec?.headSocket === "string" && spec.headSocket.trim()) ? spec.headSocket.trim() : null,
+         localPos: {
+            x: Number(localPos.x) || 0,
+            y: Number(localPos.y) || 0,
+            z: Number(localPos.z) || 0
+         },
+         localRot: {
+            x: Number(localRot.x) || 0,
+            y: Number(localRot.y) || 0,
+            z: Number(localRot.z) || 0
+         },
+         localScale: {
+            x: Number.isFinite(Number(localScale.x)) ? Number(localScale.x) : 1,
+            y: Number.isFinite(Number(localScale.y)) ? Number(localScale.y) : 1,
+            z: Number.isFinite(Number(localScale.z)) ? Number(localScale.z) : 1
+         }
+      };
+   }
+
+   function normalizeAnchorOverrideSpec(spec) {
+      const localPos = spec?.localPos || {};
+      const localRot = spec?.localRot || {};
+      const localScale = spec?.localScale || {};
+      return {
+         headSocket: (typeof spec?.headSocket === "string" && spec.headSocket.trim()) ? spec.headSocket.trim() : null,
+         localPos: {
+            x: Number(localPos.x) || 0,
+            y: Number(localPos.y) || 0,
+            z: Number(localPos.z) || 0
+         },
+         localRot: {
+            x: Number(localRot.x) || 0,
+            y: Number(localRot.y) || 0,
+            z: Number(localRot.z) || 0
+         },
+         localScale: {
+            x: Number(localScale.x) || 0,
+            y: Number(localScale.y) || 0,
+            z: Number(localScale.z) || 0
+         }
+      };
+   }
+
+   function trimAnchorOverride(entry) {
+      if (!entry) return null;
+      const out = { headSocket: entry.headSocket || null };
+
+      function pruneVec(source, { epsilon = 1e-5 } = {}) {
+         if (!source || typeof source !== "object") return null;
+         const result = {};
+         let any = false;
+         ["x", "y", "z"].forEach(axis => {
+            const num = Number(source[axis]) || 0;
+            if (Math.abs(num) > epsilon) {
+               result[axis] = num;
+               any = true;
+            }
+         });
+         return any ? result : null;
+      }
+
+      const pos = pruneVec(entry.localPos || {});
+      const rot = pruneVec(entry.localRot || {});
+      const scl = pruneVec(entry.localScale || {});
+
+      if (pos) out.localPos = pos;
+      if (rot) out.localRot = rot;
+      if (scl) out.localScale = scl;
+
+      if (!out.headSocket && !out.localPos && !out.localRot && !out.localScale) return null;
+      return out;
+   }
+
+   function loadSavedCosmeticAnchors() {
+      if (cachedCosmeticAnchorStorage) {
+         return normalizeAnchorMap(cachedCosmeticAnchorStorage, { base: false });
+      }
+      if (typeof localStorage === "undefined") {
+         return normalizeAnchorMap({}, { base: false });
+      }
+      try {
+         const raw = localStorage.getItem(COSMETIC_ANCHOR_STORAGE_KEY);
+         if (!raw) return normalizeAnchorMap({}, { base: false });
+         const parsed = JSON.parse(raw);
+         const payload = parsed && typeof parsed === "object"
+            ? (parsed.overrides || parsed.anchors || parsed.data || parsed)
+            : null;
+         if (!payload) return normalizeAnchorMap({}, { base: false });
+         cachedCosmeticAnchorStorage = normalizeAnchorMap(payload, { base: false });
+         return normalizeAnchorMap(cachedCosmeticAnchorStorage, { base: false });
+      } catch (err) {
+         cachedCosmeticAnchorStorage = null;
+         return normalizeAnchorMap({}, { base: false });
+      }
+   }
+
+   function getCosmeticAnchorOverridesSnapshot() {
+      return normalizeAnchorMap(cosmeticAnchorOverrides, { base: false });
+   }
+
+   function persistCosmeticAnchors({ overrides = null, emit = true } = {}) {
+      if (overrides) {
+         cosmeticAnchorOverrides = normalizeAnchorMap(overrides, { base: false });
+      }
+      cachedCosmeticAnchorStorage = normalizeAnchorMap(cosmeticAnchorOverrides, { base: false });
+      if (typeof localStorage !== "undefined") {
+         try {
+            localStorage.setItem(COSMETIC_ANCHOR_STORAGE_KEY, JSON.stringify({ version: 1, overrides: cachedCosmeticAnchorStorage }));
+         } catch (err) {}
+      }
+      if (emit) scheduleRuntimeSave();
+      return getCosmeticAnchorOverridesSnapshot();
+   }
+
+   function normalizeAnchorKind(kind) {
+      if (typeof kind !== "string") return null;
+      const key = kind.toLowerCase();
+      if (key === "face" || key === "faces") return "face";
+      if (key === "hair" || key === "hairs") return "hair";
+      return null;
+   }
+
+   function getAnchorBaseSpec(kind, id) {
+      const normalized = normalizeAnchorKind(kind);
+      if (!normalized) return null;
+      const bucketKey = normalized === "face" ? "faces" : "hair";
+      const bucket = BASE_COSMETIC_ANCHORS[bucketKey] || {};
+      const spec = bucket[id] || {};
+      const normalizedSpec = normalizeAnchorBaseSpec(spec);
+      if (!normalizedSpec.headSocket) {
+         normalizedSpec.headSocket = normalized === "face" ? "face" : "crown";
+      }
+      return normalizedSpec;
+   }
+
+   function getAnchorOverrideSpec(kind, id) {
+      const normalized = normalizeAnchorKind(kind);
+      if (!normalized) return normalizeAnchorOverrideSpec({});
+      const bucketKey = normalized === "face" ? "faces" : "hair";
+      const bucket = cosmeticAnchorOverrides[bucketKey] || {};
+      const spec = bucket[id] || {};
+      return normalizeAnchorOverrideSpec(spec);
+   }
+
+   function ensureHeadSegment(segments) {
+      const headSource = segments && typeof segments === "object"
+         ? (segments.head || segments)
+         : null;
+      const base = headSource && typeof headSource === "object" ? headSource : (RIG && RIG.head) || DEFAULT_RIG.head;
+      return {
+         w: Number(base?.w) || Number(DEFAULT_RIG.head.w) || 0.52,
+         h: Number(base?.h) || Number(DEFAULT_RIG.head.h) || 0.52,
+         d: Number(base?.d) || Number(DEFAULT_RIG.head.d) || 0.52
+      };
+   }
+
+   function computeSocketTransform(socketKey, segments) {
+      const head = ensureHeadSegment(segments);
+      const transform = {
+         pos: { x: 0, y: 0, z: 0 },
+         rot: { x: 0, y: 0, z: 0 },
+         scale: { x: 1, y: 1, z: 1 }
+      };
+      switch (socketKey) {
+         case "face":
+            transform.pos.y = head.h * 0.1;
+            transform.pos.z = (head.d * 0.5) + 0.01;
+            break;
+         case "brow":
+            transform.pos.y = head.h * 0.22;
+            transform.pos.z = head.d * 0.38;
+            break;
+         case "visor":
+            transform.pos.y = head.h * 0.18;
+            transform.pos.z = head.d * 0.52;
+            break;
+         case "crown":
+            transform.pos.y = head.h * 0.5;
+            break;
+         case "chin":
+            transform.pos.y = -head.h * 0.25;
+            transform.pos.z = head.d * 0.22;
+            break;
+         case "back":
+            transform.pos.y = head.h * 0.12;
+            transform.pos.z = -head.d * 0.45;
+            break;
+         default:
+            break;
+      }
+      return transform;
+   }
+
+   function combineAnchorVector(base = {}, delta = {}) {
+      return {
+         x: (Number(base?.x) || 0) + (Number(delta?.x) || 0),
+         y: (Number(base?.y) || 0) + (Number(delta?.y) || 0),
+         z: (Number(base?.z) || 0) + (Number(delta?.z) || 0)
+      };
+   }
+
+   function combineAnchorScale(base = {}, delta = {}) {
+      return {
+         x: Math.max(0.01, (Number(base?.x) || 1) + (Number(delta?.x) || 0)),
+         y: Math.max(0.01, (Number(base?.y) || 1) + (Number(delta?.y) || 0)),
+         z: Math.max(0.01, (Number(base?.z) || 1) + (Number(delta?.z) || 0))
+      };
+   }
+
+   function resolveCosmeticAnchor(kind, id, segments) {
+      const normalized = normalizeAnchorKind(kind);
+      if (!normalized) return null;
+      const baseSpec = getAnchorBaseSpec(normalized, id);
+      const overrideSpec = getAnchorOverrideSpec(normalized, id);
+      const headSocket = overrideSpec.headSocket || baseSpec.headSocket || (normalized === "face" ? "face" : "crown");
+      const socket = computeSocketTransform(headSocket, segments);
+      const localPos = combineAnchorVector(baseSpec.localPos, overrideSpec.localPos);
+      const localRot = combineAnchorVector(baseSpec.localRot, overrideSpec.localRot);
+      const localScale = combineAnchorScale(baseSpec.localScale, overrideSpec.localScale);
+      const resolved = {
+         position: {
+            x: socket.pos.x + localPos.x,
+            y: socket.pos.y + localPos.y,
+            z: socket.pos.z + localPos.z
+         },
+         rotationDeg: {
+            x: socket.rot.x + localRot.x,
+            y: socket.rot.y + localRot.y,
+            z: socket.rot.z + localRot.z
+         },
+         scale: {
+            x: socket.scale.x * localScale.x,
+            y: socket.scale.y * localScale.y,
+            z: socket.scale.z * localScale.z
+         }
+      };
+      return {
+         kind: normalized,
+         id,
+         headSocket,
+         socket,
+         base: baseSpec,
+         override: overrideSpec,
+         local: {
+            position: localPos,
+            rotationDeg: localRot,
+            scale: localScale
+         },
+         resolved
+      };
+   }
+
+   function refreshAnchorsFor(kind, id) {
+      if (!playerCosmeticController || typeof playerCosmeticController.refreshAnchor !== "function") return null;
+      try {
+         return playerCosmeticController.refreshAnchor(kind, id);
+      } catch (err) {
+         return null;
+      }
+   }
+
+   function mergeAnchorDelta(current, delta = {}) {
+      const base = normalizeAnchorOverrideSpec(current || {});
+      let dirty = false;
+      if (delta && typeof delta === "object") {
+         if (typeof delta.headSocket === "string" && delta.headSocket.trim()) {
+            base.headSocket = delta.headSocket.trim();
+            dirty = true;
+         }
+         if (delta.localPos && typeof delta.localPos === "object") {
+            base.localPos = base.localPos || { x: 0, y: 0, z: 0 };
+            ["x", "y", "z"].forEach(axis => {
+               if (Number.isFinite(Number(delta.localPos[axis]))) {
+                  base.localPos[axis] = (base.localPos[axis] || 0) + Number(delta.localPos[axis]);
+                  dirty = true;
+               }
+            });
+         }
+         if (delta.localRot && typeof delta.localRot === "object") {
+            base.localRot = base.localRot || { x: 0, y: 0, z: 0 };
+            ["x", "y", "z"].forEach(axis => {
+               if (Number.isFinite(Number(delta.localRot[axis]))) {
+                  base.localRot[axis] = (base.localRot[axis] || 0) + Number(delta.localRot[axis]);
+                  dirty = true;
+               }
+            });
+         }
+         if (delta.localScale && typeof delta.localScale === "object") {
+            base.localScale = base.localScale || { x: 0, y: 0, z: 0 };
+            ["x", "y", "z"].forEach(axis => {
+               if (Number.isFinite(Number(delta.localScale[axis]))) {
+                  base.localScale[axis] = (base.localScale[axis] || 0) + Number(delta.localScale[axis]);
+                  dirty = true;
+               }
+            });
+         }
+      }
+      if (!dirty && !base.headSocket) return null;
+      return trimAnchorOverride(base);
+   }
+
+   function adjustCosmeticAnchor(kind, id, delta = {}, { persist = true } = {}) {
+      const normalized = normalizeAnchorKind(kind);
+      if (!normalized || typeof id !== "string" || !id) {
+         return getCosmeticAnchorSnapshot(kind, id);
+      }
+      const bucketKey = normalized === "face" ? "faces" : "hair";
+      cosmeticAnchorOverrides[bucketKey] = cosmeticAnchorOverrides[bucketKey] || {};
+      const current = cosmeticAnchorOverrides[bucketKey][id] || {};
+      const merged = mergeAnchorDelta(current, delta);
+      if (merged) {
+         cosmeticAnchorOverrides[bucketKey][id] = merged;
+      } else {
+         delete cosmeticAnchorOverrides[bucketKey][id];
+      }
+      if (persist) persistCosmeticAnchors({ overrides: cosmeticAnchorOverrides, emit: true });
+      refreshAnchorsFor(normalized, id);
+      return getCosmeticAnchorSnapshot(normalized, id);
+   }
+
+   function resetCosmeticAnchor(kind, id, { persist = true } = {}) {
+      const normalized = normalizeAnchorKind(kind);
+      if (!normalized || typeof id !== "string" || !id) {
+         return getCosmeticAnchorSnapshot(kind, id);
+      }
+      const bucketKey = normalized === "face" ? "faces" : "hair";
+      if (cosmeticAnchorOverrides[bucketKey]) {
+         delete cosmeticAnchorOverrides[bucketKey][id];
+      }
+      if (persist) persistCosmeticAnchors({ overrides: cosmeticAnchorOverrides, emit: true });
+      refreshAnchorsFor(normalized, id);
+      return getCosmeticAnchorSnapshot(normalized, id);
+   }
+
+   function getCosmeticAnchorSnapshot(kind, id) {
+      const normalized = normalizeAnchorKind(kind);
+      if (!normalized) return null;
+      const targetId = typeof id === "string" && id
+         ? id
+         : (normalized === "face" ? cosmeticSelection.face : cosmeticSelection.hair);
+      const segments = playerCosmeticController?.segments || RIG;
+      const resolved = resolveCosmeticAnchor(normalized, targetId, segments);
+      return resolved ? deepClone(resolved) : null;
    }
 
    function getSavedCosmeticLoadout() {
@@ -8369,22 +8749,61 @@
       headM.parent = headPivot;
       headM.position.y = s.head.h * 0.5;
 
+      const faceAnchor = new BABYLON.TransformNode("faceAnchor", scene);
+      faceAnchor.parent = headPivot;
+      faceAnchor.rotationQuaternion = null;
+
       const facePlane = BABYLON.MeshBuilder.CreatePlane("face", {
          width: s.head.w * 0.92,
          height: s.head.h * 0.92
       }, scene);
-      facePlane.parent = headPivot;
-      facePlane.position.y = s.head.h * 0.1;
-      facePlane.position.z = (s.head.d * 0.5) + 0.01;
+      facePlane.parent = faceAnchor;
+      facePlane.position.set(0, 0, 0);
       facePlane.isPickable = false;
 
       const hairRoot = new BABYLON.TransformNode("hairRoot", scene);
       hairRoot.parent = headPivot;
-      hairRoot.position.y = s.head.h * 0.5;
+      hairRoot.rotationQuaternion = null;
 
       const accessoryRoot = new BABYLON.TransformNode("accessoryRoot", scene);
       accessoryRoot.parent = headPivot;
       accessoryRoot.position.y = s.head.h * 0.1;
+
+      function applyAnchorTransform(node, anchor) {
+         if (!node || !anchor) return;
+         const resolved = anchor.resolved || {};
+         const position = resolved.position || { x: 0, y: 0, z: 0 };
+         const rotationDeg = resolved.rotationDeg || { x: 0, y: 0, z: 0 };
+         const scale = resolved.scale || { x: 1, y: 1, z: 1 };
+         node.position.set(position.x || 0, position.y || 0, position.z || 0);
+         node.rotationQuaternion = null;
+         node.rotation.x = (rotationDeg.x || 0) * DEG2RAD;
+         node.rotation.y = (rotationDeg.y || 0) * DEG2RAD;
+         node.rotation.z = (rotationDeg.z || 0) * DEG2RAD;
+         node.scaling.set(scale.x || 1, scale.y || 1, scale.z || 1);
+      }
+
+      function refreshAnchor(kind, targetId) {
+         const normalized = normalizeAnchorKind(kind);
+         if (!normalized) return null;
+         if (normalized === "face") {
+            const id = (typeof targetId === "string" && FACE_SPEC_MAP.has(targetId))
+               ? targetId
+               : (FACE_SPEC_MAP.has(cosmeticState.face) ? cosmeticState.face : DEFAULT_FACE_ID);
+            const anchor = resolveCosmeticAnchor("face", id, s);
+            if (anchor) applyAnchorTransform(faceAnchor, anchor);
+            return anchor;
+         }
+         if (normalized === "hair") {
+            const id = (typeof targetId === "string" && HAIR_SPEC_MAP.has(targetId))
+               ? targetId
+               : (HAIR_SPEC_MAP.has(cosmeticState.hair) ? cosmeticState.hair : DEFAULT_HAIR_ID);
+            const anchor = resolveCosmeticAnchor("hair", id, s);
+            if (anchor) applyAnchorTransform(hairRoot, anchor);
+            return anchor;
+         }
+         return null;
+      }
 
       // shoulders (anchors)
       const shoulderL = new BABYLON.TransformNode("shoulderL", scene);
@@ -8878,6 +9297,7 @@
       function applyFace(id) {
          const spec = FACE_SPEC_MAP.has(id) ? FACE_SPEC_MAP.get(id) : FACE_SPEC_MAP.get(DEFAULT_FACE_ID) || FACE_SPECS[0];
          if (!spec) return cosmeticState.face;
+         refreshAnchor("face", spec.id);
          const material = ensureFaceMaterial(spec.id);
          facePlane.material = material;
          cosmeticState.face = spec.id;
@@ -8886,6 +9306,7 @@
 
       function applyHair(id) {
          const spec = HAIR_SPEC_MAP.has(id) ? HAIR_SPEC_MAP.get(id) : HAIR_SPEC_MAP.get(DEFAULT_HAIR_ID) || HAIR_SPECS[0];
+         refreshAnchor("hair", spec?.id || DEFAULT_HAIR_ID);
          disposeNodes(activeHair.nodes);
          activeHair.nodes = instantiateHair(spec);
          activeHair.id = spec?.id || DEFAULT_HAIR_ID;
@@ -8975,11 +9396,30 @@
       }
 
       const cosmetics = {
+         segments: s,
          applyFace,
          applyHair,
          applyOutfit,
          applyShoes,
          applyAccessories,
+         refreshAnchor,
+         getAnchor(kind, id) {
+            const normalized = normalizeAnchorKind(kind);
+            if (!normalized) return null;
+            if (normalized === "face") {
+               const target = (typeof id === "string" && FACE_SPEC_MAP.has(id))
+                  ? id
+                  : (FACE_SPEC_MAP.has(cosmeticState.face) ? cosmeticState.face : DEFAULT_FACE_ID);
+               return resolveCosmeticAnchor("face", target, s);
+            }
+            if (normalized === "hair") {
+               const target = (typeof id === "string" && HAIR_SPEC_MAP.has(id))
+                  ? id
+                  : (HAIR_SPEC_MAP.has(cosmeticState.hair) ? cosmeticState.hair : DEFAULT_HAIR_ID);
+               return resolveCosmeticAnchor("hair", target, s);
+            }
+            return null;
+         },
          applyAll(selection) {
             const normalized = normalizeCosmetics(selection, cosmeticState);
             const applied = {
@@ -10513,6 +10953,9 @@
       setOutfit,
       setShoes,
       setAccessories,
+      getCosmeticAnchor: (kind, id) => getCosmeticAnchorSnapshot(kind, id),
+      adjustCosmeticAnchor: (kind, id, delta, opts) => adjustCosmeticAnchor(kind, id, delta || {}, opts || {}),
+      resetCosmeticAnchor: (kind, id, opts) => resetCosmeticAnchor(kind, id, opts || {}),
       setRig: setRigParameters,
       getSavedCosmeticLoadout,
       saveCosmeticLoadout,
