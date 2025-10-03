@@ -8355,11 +8355,16 @@
       const headPivot = new BABYLON.TransformNode("head_pivot", scene);
       headPivot.parent = neck.pivot;
       nodes["head"] = headPivot;
-      const headM = BABYLON.MeshBuilder.CreateBox("head", {
-         width: s.head.w,
-         height: s.head.h,
-         depth: s.head.d
-      }, scene);
+      const headM = BABYLON.MeshBuilder.CreateSphere(
+         "head",
+         {
+            diameterX: s.head.w,
+            diameterY: s.head.h,
+            diameterZ: s.head.d,
+            segments: 32
+         },
+         scene
+      );
       headM.material = mat(color.scale(0.8));
       headM.parent = headPivot;
       headM.position.y = s.head.h * 0.5;
@@ -8375,7 +8380,7 @@
 
       const hairRoot = new BABYLON.TransformNode("hairRoot", scene);
       hairRoot.parent = headPivot;
-      hairRoot.position.y = s.head.h * 0.45;
+      hairRoot.position.y = s.head.h * 0.5;
 
       const accessoryRoot = new BABYLON.TransformNode("accessoryRoot", scene);
       accessoryRoot.parent = headPivot;

@@ -3886,7 +3886,7 @@
     torsoLower: { w: 0.900, h: 0.450, d: 0.550 },
     torsoUpper: { w: 0.950, h: 0.710, d: 0.550 },
     neck: { w: 0.250, h: 0.250, d: 0.250 },
-    head: { w: 0.450, h: 0.500, d: 0.450 },
+    head: { w: 0.520, h: 0.520, d: 0.520 },
     arm: {
       upperW: 0.340, upperD: 0.340, upperLen: 0.750,
       foreW: 0.300, foreD: 0.270, foreLen: 0.700,
@@ -4746,7 +4746,7 @@
     const torsoLowerSize = segmentSize("torsoLower", { w: 0.9, h: 0.45, d: 0.55 });
     const torsoUpperSize = segmentSize("torsoUpper", { w: 0.95, h: 0.71, d: 0.55 });
     const neckSize = segmentSize("neck", { w: 0.25, h: 0.25, d: 0.25 });
-    const headSize = segmentSize("head", { w: 0.45, h: 0.5, d: 0.45 });
+    const headSize = segmentSize("head", { w: 0.52, h: 0.52, d: 0.52 });
 
     const armSource = rig?.arm || {};
     const armFallback = fallback?.arm || {};
@@ -4831,7 +4831,11 @@
     neck.pivot.position.y = 0.55;
     const headPivot = register("head", new BABYLON.TransformNode("creator-head_pivot", scene));
     headPivot.parent = neck.pivot;
-    const headMesh = BABYLON.MeshBuilder.CreateBox("creator-head", { width: headSize.w, height: headSize.h, depth: headSize.d }, scene);
+    const headMesh = BABYLON.MeshBuilder.CreateSphere(
+      "creator-head",
+      { diameterX: headSize.w, diameterY: headSize.h, diameterZ: headSize.d, segments: 32 },
+      scene
+    );
     headMesh.parent = headPivot;
     headMesh.position.y = headSize.h * 0.5;
     headMesh.material = makeBodyMat(0.8);
@@ -4845,7 +4849,7 @@
 
     const hairRoot = new BABYLON.TransformNode("creator-hair-root", scene);
     hairRoot.parent = headPivot;
-    hairRoot.position.y = headSize.h * 0.45;
+    hairRoot.position.y = headSize.h * 0.5;
 
     const accessoryRoot = new BABYLON.TransformNode("creator-accessory-root", scene);
     accessoryRoot.parent = headPivot;
