@@ -98,6 +98,51 @@
     accessories: []
   };
 
+  const defaultCosmeticAnchors = {
+    faces: {
+      neutral: {
+        headSocket: "face",
+        localPos: { x: 0, y: 0, z: 0 },
+        localRot: { x: 0, y: 0, z: 0 },
+        localScale: { x: 1, y: 1, z: 1 }
+      },
+      grin: {
+        headSocket: "face",
+        localPos: { x: 0, y: 0, z: 0 },
+        localRot: { x: 0, y: 0, z: 0 },
+        localScale: { x: 1, y: 1, z: 1 }
+      },
+      focused: {
+        headSocket: "face",
+        localPos: { x: 0, y: 0, z: 0 },
+        localRot: { x: 0, y: 0, z: 0 },
+        localScale: { x: 1, y: 1, z: 1 }
+      }
+    },
+    hair: {
+      buzz: {
+        headSocket: "crown",
+        localPos: { x: 0, y: 0, z: 0 },
+        localRot: { x: 0, y: 0, z: 0 },
+        localScale: { x: 1, y: 1, z: 1 }
+      },
+      windswept: {
+        headSocket: "crown",
+        localPos: { x: 0, y: 0, z: 0 },
+        localRot: { x: 0, y: 0, z: 0 },
+        localScale: { x: 1, y: 1, z: 1 }
+      },
+      scout_hat: {
+        headSocket: "crown",
+        localPos: { x: 0, y: 0, z: 0 },
+        localRot: { x: 0, y: 0, z: 0 },
+        localScale: { x: 1, y: 1, z: 1 }
+      }
+    }
+  };
+
+  const defaultCosmeticAnchorStorageKey = "hxh.cosmeticAnchors";
+
   function cloneTransforms(source = {}) {
     const out = {};
     Object.keys(source).forEach(key => {
@@ -238,6 +283,12 @@
   }
   if (!RigDefinitions.DEFAULT_COSMETICS) {
     RigDefinitions.DEFAULT_COSMETICS = fallbackDefaultCosmetics;
+  }
+  if (!RigDefinitions.COSMETIC_ANCHORS) {
+    RigDefinitions.COSMETIC_ANCHORS = defaultCosmeticAnchors;
+  }
+  if (!RigDefinitions.COSMETIC_ANCHOR_STORAGE_KEY) {
+    RigDefinitions.COSMETIC_ANCHOR_STORAGE_KEY = defaultCosmeticAnchorStorageKey;
   }
 
   if (!RigDefinitions.RIG_TYPES) {

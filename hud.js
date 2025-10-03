@@ -365,6 +365,17 @@
     row.className = "cosmetic-test-row";
     card.appendChild(row);
 
+    let currentSelection = getCosmeticSelectionSnapshot();
+    const supportsAnchorNudge = typeof window.HXH?.getCosmeticAnchor === "function"
+      && typeof window.HXH?.adjustCosmeticAnchor === "function"
+      && typeof window.HXH?.resetCosmeticAnchor === "function";
+    let nudgeKind = faces.length ? "face" : (hair.length ? "hair" : "");
+    const nudgeButtons = [];
+    let nudgeCard = null;
+    let nudgeStatus = null;
+    let nudgeItemLabel = null;
+    let nudgeTargetSelect = null;
+
     const faceIds = faces.map(spec => spec.id);
     const faceMap = new Map(faces.map(spec => [spec.id, spec]));
     const hairIds = hair.map(spec => spec.id);
@@ -418,6 +429,152 @@
       return spec?.label || fallback;
     }
 
+    function getItemLabel(kind, id) {
+      if (!id) return "Default";
+      if (kind === "face") return labelFromMap(faceMap, id, id);
+      if (kind === "hair") return labelFromMap(hairMap, id, id);
+      return id;
+    }
+
+    function getActiveId(kind) {
+      if (kind === "face") {
+        const selected = typeof currentSelection?.face === "string" ? currentSelection.face : "";
+        if (selected && faceMap.has(selected)) return selected;
+        return faceIds[faceIndex] || "";
+      }
+      if (kind === "hair") {
+        const selected = typeof currentSelection?.hair === "string" ? currentSelection.hair : "";
+        if (selected && hairMap.has(selected)) return selected;
+        return hairIds[hairIndex] || "";
+      }
+      return "";
+    }
+
+    function formatDelta(value, decimals = 2) {
+      const num = Number(value);
+      if (!Number.isFinite(num)) return (0).toFixed(decimals);
+      return num.toFixed(decimals);
+    }
+
+    function handleAnchorNudge(targetKey, axis, step) {
+      if (!nudgeKind) return;
+      const id = getActiveId(nudgeKind);
+      if (!id) return;
+      const payload = { [targetKey]: { [axis]: step } };
+      callHx("adjustCosmeticAnchor", nudgeKind, id, payload);
+      updateNudgeState();
+    }
+
+    function handleAnchorReset() {
+      if (!nudgeKind) return;
+      const id = getActiveId(nudgeKind);
+      if (!id) return;
+      callHx("resetCosmeticAnchor", nudgeKind, id);
+      updateNudgeState();
+    }
+
+    function makeAxisControls({ label, step, targetKey, unit = "" }) {
+      const wrap = document.createElement("div");
+      wrap.style.display = "flex";
+      wrap.style.flexDirection = "column";
+      wrap.style.gap = "0.3rem";
+
+      const title = document.createElement("span");
+      title.textContent = label;
+      title.style.fontSize = "0.68rem";
+      title.style.opacity = "0.8";
+      wrap.appendChild(title);
+
+      const axes = [
+        { key: "x", label: "X" },
+        { key: "y", label: "Y" },
+        { key: "z", label: "Z" }
+      ];
+
+      axes.forEach(axis => {
+        const rowEl = document.createElement("div");
+        rowEl.style.display = "flex";
+        rowEl.style.alignItems = "center";
+        rowEl.style.gap = "0.35rem";
+
+        const axisLabel = document.createElement("span");
+        axisLabel.textContent = axis.label;
+        axisLabel.style.width = "1.2rem";
+        axisLabel.style.opacity = "0.72";
+        rowEl.appendChild(axisLabel);
+
+        const minus = document.createElement("button");
+        minus.type = "button";
+        minus.textContent = "−";
+        minus.style.width = "26px";
+        minus.style.height = "26px";
+        minus.style.lineHeight = "1";
+        minus.title = `-${step}${unit ? ` ${unit}` : ""}`;
+        minus.addEventListener("click", () => handleAnchorNudge(targetKey, axis.key, -step));
+        rowEl.appendChild(minus);
+        nudgeButtons.push(minus);
+
+        const plus = document.createElement("button");
+        plus.type = "button";
+        plus.textContent = "+";
+        plus.style.width = "26px";
+        plus.style.height = "26px";
+        plus.style.lineHeight = "1";
+        plus.title = `+${step}${unit ? ` ${unit}` : ""}`;
+        plus.addEventListener("click", () => handleAnchorNudge(targetKey, axis.key, step));
+        rowEl.appendChild(plus);
+        nudgeButtons.push(plus);
+
+        wrap.appendChild(rowEl);
+      });
+
+      return wrap;
+    }
+
+    function updateNudgeState() {
+      if (!nudgeCard) return;
+      if (nudgeKind === "face" && !faces.length) {
+        nudgeKind = hair.length ? "hair" : "";
+      }
+      if (nudgeKind === "hair" && !hair.length) {
+        nudgeKind = faces.length ? "face" : "";
+      }
+      if (nudgeTargetSelect) {
+        nudgeTargetSelect.value = nudgeKind || "";
+      }
+      const id = nudgeKind ? getActiveId(nudgeKind) : "";
+      const hasTarget = Boolean(nudgeKind && id);
+      nudgeButtons.forEach(btn => { btn.disabled = !hasTarget; });
+      if (nudgeItemLabel) {
+        if (hasTarget) {
+          const kindLabel = nudgeKind === "face" ? "Face" : "Hair";
+          nudgeItemLabel.textContent = `${kindLabel}: ${getItemLabel(nudgeKind, id)}`;
+        } else {
+          nudgeItemLabel.textContent = "Adjust: —";
+        }
+      }
+      if (!hasTarget) {
+        if (nudgeStatus) nudgeStatus.textContent = "Select a face or hair item to adjust.";
+        return;
+      }
+      const snapshot = callHx("getCosmeticAnchor", nudgeKind, id);
+      if (!snapshot || typeof snapshot !== "object") {
+        if (nudgeStatus) nudgeStatus.textContent = "Anchor data unavailable.";
+        return;
+      }
+      const override = snapshot.override || {};
+      const pos = override.localPos || {};
+      const rot = override.localRot || {};
+      const scale = override.localScale || {};
+      const socket = snapshot.headSocket || override.headSocket || snapshot.base?.headSocket || "origin";
+      const posText = `(${formatDelta(pos.x)}, ${formatDelta(pos.y)}, ${formatDelta(pos.z)})`;
+      const rotText = `(${formatDelta(rot.x, 1)}, ${formatDelta(rot.y, 1)}, ${formatDelta(rot.z, 1)})`;
+      const scaleText = `(${formatDelta(scale.x)}, ${formatDelta(scale.y)}, ${formatDelta(scale.z)})`;
+      if (nudgeStatus) {
+        nudgeStatus.textContent = `Socket: ${socket}\nΔPos ${posText}\nΔRot ${rotText}\nΔScale ${scaleText}`;
+      }
+    }
+
     function formatAccessories(ids = []) {
       if (!ids.length) return "None";
       const names = ids.map(id => labelFromMap(accessoryMap, id, id));
@@ -452,6 +609,7 @@
       const selection = selectionOverride && typeof selectionOverride === "object"
         ? selectionOverride
         : getCosmeticSelectionSnapshot();
+      currentSelection = selection ? cloneValue(selection) : currentSelection;
       syncIndices(selection);
 
       if (faceBtn) faceBtn.textContent = `Face: ${labelFromMap(faceMap, faceIds[faceIndex], "Default")}`;
@@ -467,6 +625,7 @@
           ? "Accessories: Mixed"
           : `Accessories: ${formatAccessories(accessoryCombos[accIndex] || [])}`;
       }
+      updateNudgeState();
     }
 
     if (faceBtn && faceIds.length) {
@@ -512,6 +671,111 @@
         callHx("setAccessories", combo.slice());
         update();
       });
+    }
+
+    if (supportsAnchorNudge && (faceIds.length || hairIds.length)) {
+      nudgeCard = document.createElement("div");
+      nudgeCard.style.display = "flex";
+      nudgeCard.style.flexDirection = "column";
+      nudgeCard.style.gap = "0.5rem";
+      nudgeCard.style.marginTop = "0.6rem";
+      nudgeCard.style.padding = "0.6rem";
+      nudgeCard.style.background = "rgba(10, 18, 30, 0.6)";
+      nudgeCard.style.border = "1px solid rgba(110, 190, 255, 0.2)";
+      nudgeCard.style.borderRadius = "10px";
+
+      const nudgeTitle = document.createElement("strong");
+      nudgeTitle.textContent = "Anchor Nudge";
+      nudgeTitle.style.fontSize = "0.66rem";
+      nudgeTitle.style.letterSpacing = "0.08em";
+      nudgeTitle.style.textTransform = "uppercase";
+      nudgeTitle.style.opacity = "0.8";
+      nudgeCard.appendChild(nudgeTitle);
+
+      const targetRow = document.createElement("div");
+      targetRow.style.display = "flex";
+      targetRow.style.alignItems = "center";
+      targetRow.style.gap = "0.4rem";
+
+      const targetLabel = document.createElement("span");
+      targetLabel.textContent = "Target";
+      targetLabel.style.fontSize = "0.68rem";
+      targetLabel.style.opacity = "0.78";
+      targetRow.appendChild(targetLabel);
+
+      nudgeTargetSelect = document.createElement("select");
+      nudgeTargetSelect.style.flex = "1";
+      nudgeTargetSelect.style.padding = "0.25rem 0.35rem";
+      nudgeTargetSelect.style.background = "rgba(18, 28, 44, 0.85)";
+      nudgeTargetSelect.style.border = "1px solid rgba(110, 190, 255, 0.25)";
+      nudgeTargetSelect.style.borderRadius = "6px";
+      nudgeTargetSelect.style.color = "#e6f4ff";
+      nudgeTargetSelect.style.fontSize = "0.68rem";
+      nudgeTargetSelect.style.cursor = "pointer";
+
+      if (faces.length) {
+        const option = document.createElement("option");
+        option.value = "face";
+        option.textContent = "Face";
+        nudgeTargetSelect.appendChild(option);
+      }
+      if (hair.length) {
+        const option = document.createElement("option");
+        option.value = "hair";
+        option.textContent = "Hair";
+        nudgeTargetSelect.appendChild(option);
+      }
+      if (!nudgeKind) {
+        nudgeKind = faces.length ? "face" : (hair.length ? "hair" : "");
+      }
+      nudgeTargetSelect.value = nudgeKind || (faces.length ? "face" : "hair");
+      nudgeTargetSelect.addEventListener("change", () => {
+        nudgeKind = nudgeTargetSelect.value;
+        updateNudgeState();
+      });
+
+      targetRow.appendChild(nudgeTargetSelect);
+      nudgeCard.appendChild(targetRow);
+
+      nudgeItemLabel = document.createElement("div");
+      nudgeItemLabel.style.fontSize = "0.7rem";
+      nudgeItemLabel.style.opacity = "0.82";
+      nudgeCard.appendChild(nudgeItemLabel);
+
+      const controlGrid = document.createElement("div");
+      controlGrid.style.display = "grid";
+      controlGrid.style.gridTemplateColumns = "repeat(auto-fit, minmax(120px, 1fr))";
+      controlGrid.style.gap = "0.5rem";
+
+      controlGrid.appendChild(makeAxisControls({ label: "Position Δ (m)", step: 0.01, targetKey: "localPos" }));
+      controlGrid.appendChild(makeAxisControls({ label: "Rotation Δ (°)", step: 1, targetKey: "localRot", unit: "deg" }));
+      controlGrid.appendChild(makeAxisControls({ label: "Scale Δ", step: 0.05, targetKey: "localScale" }));
+
+      nudgeCard.appendChild(controlGrid);
+
+      const resetRow = document.createElement("div");
+      resetRow.style.display = "flex";
+      resetRow.style.justifyContent = "flex-start";
+
+      const resetBtn = document.createElement("button");
+      resetBtn.type = "button";
+      resetBtn.textContent = "Reset Offsets";
+      resetBtn.style.padding = "0.35rem 0.6rem";
+      resetBtn.style.fontSize = "0.68rem";
+      resetBtn.style.borderRadius = "6px";
+      resetBtn.addEventListener("click", handleAnchorReset);
+      resetRow.appendChild(resetBtn);
+      nudgeButtons.push(resetBtn);
+
+      nudgeCard.appendChild(resetRow);
+
+      nudgeStatus = document.createElement("div");
+      nudgeStatus.style.fontSize = "0.66rem";
+      nudgeStatus.style.opacity = "0.8";
+      nudgeStatus.style.whiteSpace = "pre-wrap";
+      nudgeCard.appendChild(nudgeStatus);
+
+      card.appendChild(nudgeCard);
     }
 
     dock.appendChild(card);
