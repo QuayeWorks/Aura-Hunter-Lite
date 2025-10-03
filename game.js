@@ -5647,13 +5647,26 @@
 
    function notifyFlowChange({ silent = false } = {}) {
       updateFlowHud();
-      if (flowListeners.size === 0) return;
+      const creatorHandler = window.CharacterCreator && typeof window.CharacterCreator.handleFlowSnapshot === "function"
+         ? window.CharacterCreator.handleFlowSnapshot
+         : null;
+      const hasListeners = flowListeners.size > 0;
+      if (!hasListeners && !creatorHandler) return;
       const snapshot = getFlowSnapshot();
-      for (const listener of flowListeners) {
+      if (hasListeners) {
+         for (const listener of flowListeners) {
+            try {
+               listener(snapshot);
+            } catch (err) {
+               console.error("Flow listener error", err);
+            }
+         }
+      }
+      if (creatorHandler) {
          try {
-            listener(snapshot);
+            creatorHandler(snapshot);
          } catch (err) {
-            console.error("Flow listener error", err);
+            console.warn("[Game] Failed to deliver flow snapshot to CharacterCreator", err);
          }
       }
    }

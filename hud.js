@@ -4131,6 +4131,7 @@
 (() => {
   const SCREEN_ID = "screen--creator";
   const CANVAS_ID = "creator-preview-canvas";
+  const CREATOR_GROUND_Y = -0.25;
   const DEG2RAD = Math.PI / 180;
   const FALLBACK_PART_KEYS = [
     "pelvis","torsoLower","torsoUpper","neck","head",
@@ -4203,6 +4204,8 @@
     baseSelection: null,
     selection: null,
     preview: null,
+    rigSignature: null,
+    stanceKey: null,
     observer: null,
     listenersBound: false,
     accessoryInputs: [],
@@ -4729,6 +4732,7 @@
     if (state.preview) {
       try { state.preview.dispose?.(); } catch (err) {}
       state.preview = null;
+      state.rigSignature = null;
     }
     populateSelectors();
   }
@@ -4976,6 +4980,51 @@
     return deepClone(FALLBACK_RIG);
   }
 
+  function computeRigGroundSignature(rig) {
+    if (!rig || typeof rig !== "object") return "null";
+    const signature = {
+      rigType: typeof rig.rigType === "string" ? rig.rigType : "",
+      leg: rig.leg || null,
+      pelvis: rig.pelvis || null,
+      torsoLower: rig.torsoLower || null,
+      torsoUpper: rig.torsoUpper || null,
+      segments: null,
+      transforms: {}
+    };
+    const segmentKeys = ["pelvis", "torsoLower", "torsoUpper", "neck", "head"];
+    const srcSegments = rig && typeof rig.segments === "object" ? rig.segments : null;
+    if (srcSegments) {
+      signature.segments = {};
+      segmentKeys.forEach(key => {
+        if (srcSegments[key]) signature.segments[key] = srcSegments[key];
+      });
+    }
+    const srcTransforms = rig && typeof rig.transforms === "object" ? rig.transforms : {};
+    const transformKeys = [
+      "pelvis",
+      "hipL",
+      "hipR",
+      "legL_thigh",
+      "legL_shin",
+      "legL_foot",
+      "legR_thigh",
+      "legR_shin",
+      "legR_foot"
+    ];
+    transformKeys.forEach(key => {
+      if (srcTransforms[key]) signature.transforms[key] = srcTransforms[key];
+    });
+    try {
+      return JSON.stringify(signature);
+    } catch (err) {
+      try {
+        return JSON.stringify({ rigType: signature.rigType, leg: signature.leg });
+      } catch (err2) {
+        return `${signature.rigType || ""}:${Date.now()}`;
+      }
+    }
+  }
+
   const FACE_MATERIAL_CACHE = new Map();
 
 
@@ -5164,6 +5213,59 @@
       createShoeOverlay(legL.foot.pivot, "creator-shoeL"),
       createShoeOverlay(legR.foot.pivot, "creator-shoeR")
     ];
+
+    const footMeshes = [
+      legL.foot.mesh,
+      legR.foot.mesh,
+      ...shoeMeshes
+    ].filter(mesh => mesh);
+
+    function recomputeGrounding() {
+      const meshes = footMeshes.length ? footMeshes : root.getChildMeshes(false);
+      if (!Array.isArray(meshes) || !meshes.length) {
+        root.position.y = 0;
+        root.metadata = root.metadata || {};
+        root.metadata.creatorGrounding = {
+          offset: 0,
+          minY: null,
+          method: "none"
+        };
+        return 0;
+      }
+      root.position.y = 0;
+      try { root.computeWorldMatrix(true); } catch (err) {}
+      let minY = Infinity;
+      meshes.forEach(mesh => {
+        if (!mesh) return;
+        if (typeof mesh.isDisposed === "function" && mesh.isDisposed()) return;
+        try { mesh.computeWorldMatrix(true); } catch (err) {}
+        try { mesh.refreshBoundingInfo?.(); } catch (err) {}
+        const info = typeof mesh.getBoundingInfo === "function" ? mesh.getBoundingInfo() : null;
+        if (!info || !info.boundingBox) return;
+        const y = info.boundingBox.minimumWorld?.y;
+        if (Number.isFinite(y) && y < minY) minY = y;
+      });
+      if (!Number.isFinite(minY)) {
+        root.position.y = 0;
+        root.metadata = root.metadata || {};
+        root.metadata.creatorGrounding = {
+          offset: 0,
+          minY: null,
+          method: footMeshes.length ? "feet" : "bounds"
+        };
+        return 0;
+      }
+      const offset = CREATOR_GROUND_Y - minY;
+      root.position.y = offset;
+      try { root.computeWorldMatrix(true); } catch (err) {}
+      root.metadata = root.metadata || {};
+      root.metadata.creatorGrounding = {
+        offset,
+        minY,
+        method: footMeshes.length ? "feet" : "bounds"
+      };
+      return offset;
+    }
 
     const clothingRefs = {
       torso: [torsoLower.mesh, torsoUpper.mesh],
@@ -5625,6 +5727,7 @@
     }
 
     applyAll(selection);
+    recomputeGrounding();
 
     return {
       root,
@@ -5645,6 +5748,7 @@
           };
         }
       },
+      recomputeGrounding,
       dispose() {
         try { root.dispose(); } catch (err) {}
       }
@@ -5680,7 +5784,7 @@
     dir.intensity = 0.8;
 
     const ground = BABYLON.MeshBuilder.CreateGround("creator-ground", { width: 18, height: 18 }, scene);
-    ground.position.y = -0.25;
+    ground.position.y = CREATOR_GROUND_Y;
     ground.isPickable = false;
     const groundMat = new BABYLON.StandardMaterial("creator-ground-mat", scene);
     groundMat.diffuseColor = new BABYLON.Color3(0.05, 0.09, 0.18);
@@ -5705,11 +5809,51 @@
 
   function ensurePreview(selection) {
     if (!state.scene || !state.specMaps) return null;
+    const rig = getRigSpec();
+    const signature = computeRigGroundSignature(rig);
+    if (state.preview && state.rigSignature && state.rigSignature !== signature) {
+      try { state.preview.dispose?.(); } catch (err) {}
+      state.preview = null;
+      state.rigSignature = null;
+    }
     if (!state.preview) {
-      const rig = getRigSpec();
       state.preview = createPreviewRig(state.scene, rig, state.specMaps, state.baseSelection, selection || state.baseSelection);
+      state.rigSignature = signature;
+      let snapshot = null;
+      const hx = window.HXH;
+      if (hx && typeof hx.getFlowState === "function") {
+        try { snapshot = hx.getFlowState(); } catch (err) {}
+      }
+      if (!snapshot && state.stanceKey != null) {
+        snapshot = { presetKey: state.stanceKey };
+      }
+      handleFlowSnapshot(snapshot, { force: true });
+    } else if (!state.rigSignature) {
+      state.rigSignature = signature;
     }
     return state.preview;
+  }
+
+  function regroundPreview() {
+    const preview = state.preview;
+    if (!preview || typeof preview.recomputeGrounding !== "function") return;
+    try { preview.recomputeGrounding(); } catch (err) {}
+  }
+
+  function handleFlowSnapshot(snapshot, { force = false } = {}) {
+    let key = state.stanceKey;
+    if (typeof snapshot === "string") {
+      key = snapshot;
+    } else if (snapshot && typeof snapshot === "object") {
+      if (typeof snapshot.presetKey === "string") {
+        key = snapshot.presetKey;
+      } else if (snapshot.presetKey === null) {
+        key = null;
+      }
+    }
+    if (!force && key === state.stanceKey) return;
+    state.stanceKey = key;
+    regroundPreview();
   }
 
   function startRenderLoop() {
@@ -5758,6 +5902,15 @@
     ensureConfig();
     ensureEngine();
     ensurePreview(state.selection || state.baseSelection);
+    const hx = window.HXH;
+    let stanceSnapshot = null;
+    if (hx && typeof hx.getFlowState === "function") {
+      try { stanceSnapshot = hx.getFlowState(); } catch (err) {}
+    }
+    if (!stanceSnapshot && state.stanceKey != null) {
+      stanceSnapshot = { presetKey: state.stanceKey };
+    }
+    handleFlowSnapshot(stanceSnapshot, { force: true });
     refreshFromGame();
     startRenderLoop();
     try { state.engine?.resize(); } catch (err) {}
@@ -5784,6 +5937,7 @@
   window.CharacterCreator = {
     open,
     close,
-    refresh
+    refresh,
+    handleFlowSnapshot
   };
 })();
