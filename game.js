@@ -2847,6 +2847,9 @@
    const VEC3_DOWN = new BABYLON.Vector3(0, -1, 0);
    const GROUND_STICK_THRESHOLD = 0.35;
    const FOOT_CLEARANCE = 0.012;
+   const ROOT_GROUND_SAMPLE_INTERVAL = 6;
+   const ROOT_GROUND_MAX_OFFSET = 0.45;
+   const ROOT_GROUND_LERP = 0.18;
    const IK_POS_EPS = 1e-4;
    const IK_ROT_EPS = 0.0015;
    const IK_IDLE_FRAME_LIMIT = 3;
@@ -3154,6 +3157,38 @@
          distance: distToGround,
          hitPointY: groundY
       };
+   }
+
+   function sampleRootGroundOffset(rootMesh) {
+      if (!scene || !rootMesh) return 0;
+      const meta = rootMesh.metadata;
+      const footIK = meta?.footIK;
+      if (!footIK) return 0;
+      const feet = [footIK.left, footIK.right];
+      let hasSample = false;
+      let maxOffset = -Infinity;
+      let minOffset = Infinity;
+      for (const foot of feet) {
+         if (!foot || !foot.mesh) continue;
+         foot.mesh.computeWorldMatrix(true);
+         const info = foot.mesh.getBoundingInfo();
+         info.update(foot.mesh.getWorldMatrix());
+         const bottom = info.boundingBox.minimumWorld.y;
+         const center = info.boundingBox.centerWorld;
+         const groundY = getTerrainHeight(center.x, center.z);
+         if (groundY === null) continue;
+         const clearance = Number.isFinite(foot.clearance) ? foot.clearance : FOOT_CLEARANCE;
+         const desired = groundY + clearance;
+         const delta = desired - bottom;
+         if (delta > maxOffset) maxOffset = delta;
+         if (delta < minOffset) minOffset = delta;
+         hasSample = true;
+      }
+      if (!hasSample) return 0;
+      const offset = maxOffset > 0 ? maxOffset : minOffset;
+      const clampMin = -ROOT_GROUND_MAX_OFFSET;
+      const clampMax = ROOT_GROUND_MAX_OFFSET;
+      return Math.max(clampMin, Math.min(clampMax, offset));
    }
 
    function applyFootIK(rootMesh, grounded) {
@@ -7092,6 +7127,12 @@
       grounded: false,
       groundNormal: new BABYLON.Vector3(0, 1, 0),
       prevPlayerPos: null,
+      rootGroundOffset: 0,
+      rootGroundOffsetTarget: 0,
+      groundSampleCountdown: 0,
+      groundSampleDirty: true,
+      prevGrounded: false,
+      prevIdle: false,
 
       // Jump charging
       chargingJump: false,
@@ -8384,6 +8425,12 @@
       playerRoot = player = p.root; // collider mesh
       playerRoot.position.copyFrom(startPos);
       state.prevPlayerPos = playerRoot.position.clone();
+      state.rootGroundOffset = 0;
+      state.rootGroundOffsetTarget = 0;
+      state.groundSampleCountdown = 0;
+      state.groundSampleDirty = true;
+      state.prevGrounded = false;
+      state.prevIdle = false;
       player.checkCollisions = true;
       playerCosmeticController = p.cosmetics || null;
       const basePlayerMeta = p.root.metadata || {};
@@ -10414,6 +10461,8 @@
       }
 
       // movement + rotation
+      const prevGrounded = state.prevGrounded;
+      const currentOffset = state.rootGroundOffset;
       const moveDir = playerMoveDir();
       let moveSpeed = 7 + state.eff.agility * 0.6;
       if (state.buffs.berserk) moveSpeed *= 1.35;
@@ -10428,7 +10477,6 @@
       );
       player.moveWithCollisions(TMP_PLAYER_MOTION);
       const lastPos = state.prevPlayerPos;
-      playerRoot.position.copyFrom(player.position);
       state.vel.x *= (1 - Math.min(0.92 * dt, 0.9));
       state.vel.z *= (1 - Math.min(0.92 * dt, 0.9));
       if (moveDir.lengthSquared() > 0.0001) {
@@ -10450,6 +10498,40 @@
       } else {
          state.groundNormal.copyFrom(VEC3_UP);
       }
+
+      if (state.grounded !== prevGrounded) {
+         state.groundSampleDirty = true;
+         if (!state.grounded) {
+            state.rootGroundOffsetTarget = 0;
+            state.groundSampleCountdown = 0;
+         }
+      }
+
+      playerRoot.position.copyFrom(player.position);
+      if (currentOffset !== 0) {
+         playerRoot.position.y += currentOffset;
+      }
+
+      if (state.grounded) {
+         if (state.groundSampleCountdown > 0) state.groundSampleCountdown -= 1;
+         if (state.groundSampleDirty || state.groundSampleCountdown <= 0) {
+            playerRoot.computeWorldMatrix(true);
+            const sampleOffset = sampleRootGroundOffset(playerRoot);
+            if (Number.isFinite(sampleOffset)) {
+               state.rootGroundOffsetTarget = sampleOffset;
+            }
+            state.groundSampleDirty = false;
+            state.groundSampleCountdown = ROOT_GROUND_SAMPLE_INTERVAL;
+         }
+      } else {
+         state.rootGroundOffsetTarget = 0;
+      }
+
+      const offsetLerp = Math.max(0, Math.min(1, ROOT_GROUND_LERP * dt * 60));
+      state.rootGroundOffset += (state.rootGroundOffsetTarget - state.rootGroundOffset) * offsetLerp;
+      if (Math.abs(state.rootGroundOffset) < 1e-4) state.rootGroundOffset = 0;
+      playerRoot.position.y = player.position.y + state.rootGroundOffset;
+      playerRoot.computeWorldMatrix(true);
 
       updateTerrainStreaming(playerRoot.position, dt);
       window.RegionManager?.updateSpatialState?.(playerRoot.position);
@@ -10783,7 +10865,13 @@
       TMP_PLAYER_DELTA.y = 0;
       const playerSpd = TMP_PLAYER_DELTA.length() / Math.max(dt, 1e-4);
       const playerAnimSpeed = playerSpd * 0.12;
-      if (state.grounded && playerAnimSpeed < 0.05 && moveDir.lengthSquared() < 0.01) {
+      const isIdle = state.grounded && playerAnimSpeed < 0.05 && moveDir.lengthSquared() < 0.01;
+      if (isIdle && !state.prevIdle) {
+         state.groundSampleDirty = true;
+      }
+      state.prevIdle = isIdle;
+      state.prevGrounded = state.grounded;
+      if (isIdle) {
          updateIdleAnim(playerRoot, dt, state.attackAnimT);
       } else {
          updateWalkAnim(playerRoot, playerAnimSpeed, state.grounded, dt, state.attackAnimT);
