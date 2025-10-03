@@ -4714,135 +4714,196 @@
 
   const FACE_MATERIAL_CACHE = new Map();
 
+
   function createPreviewRig(scene, rig, specMaps, baseSelection, selection) {
     const root = new BABYLON.TransformNode("creator-root", scene);
+    const fallback = FALLBACK_RIG || {};
+    const rigSegments = (rig && typeof rig.segments === "object") ? rig.segments : null;
+    const fallbackSegments = (fallback && typeof fallback.segments === "object") ? fallback.segments : null;
+    const rigTransforms = (rig && typeof rig.transforms === "object") ? rig.transforms : {};
+    const fallbackTransforms = (fallback && typeof fallback.transforms === "object") ? fallback.transforms : {};
+    const nodes = {};
 
-    const skinMaterial = new BABYLON.StandardMaterial("creator-skin", scene);
-    skinMaterial.diffuseColor = BABYLON.Color3.FromHexString("#f3c8a8");
-    skinMaterial.specularColor = new BABYLON.Color3(0.1, 0.1, 0.1);
-    skinMaterial.emissiveColor = skinMaterial.diffuseColor.scale(0.18);
+    function num(...values) {
+      for (const value of values) {
+        const n = Number(value);
+        if (Number.isFinite(n)) return n;
+      }
+      return 0;
+    }
 
-    const torso = BABYLON.MeshBuilder.CreateBox("creator-torso", {
-      width: 0.72,
-      height: 1.0,
-      depth: 0.38
-    }, scene);
-    torso.parent = root;
-    torso.position.y = 1.35;
-    torso.isPickable = false;
+    function segmentSize(key, defaults = {}) {
+      const src = (rigSegments && rigSegments[key]) || rig?.[key] || {};
+      const fb = (fallbackSegments && fallbackSegments[key]) || fallback?.[key] || defaults || {};
+      return {
+        w: num(src.w, fb.w, defaults.w ?? 0.4),
+        h: num(src.h, fb.h, defaults.h ?? 0.4),
+        d: num(src.d, fb.d, defaults.d ?? 0.4)
+      };
+    }
 
-    const torsoAccent = BABYLON.MeshBuilder.CreateBox("creator-torso-accent", {
-      width: 0.74,
-      height: 0.16,
-      depth: 0.40
-    }, scene);
-    torsoAccent.parent = torso;
-    torsoAccent.position.y = -0.35;
-    torsoAccent.isPickable = false;
+    const pelvisSize = segmentSize("pelvis", { w: 0.85, h: 0.35, d: 0.52 });
+    const torsoLowerSize = segmentSize("torsoLower", { w: 0.9, h: 0.45, d: 0.55 });
+    const torsoUpperSize = segmentSize("torsoUpper", { w: 0.95, h: 0.71, d: 0.55 });
+    const neckSize = segmentSize("neck", { w: 0.25, h: 0.25, d: 0.25 });
+    const headSize = segmentSize("head", { w: 0.45, h: 0.5, d: 0.45 });
 
-    const armL = BABYLON.MeshBuilder.CreateBox("creator-armL", {
-      width: 0.20,
-      height: 0.90,
-      depth: 0.26
-    }, scene);
-    armL.parent = root;
-    armL.position.set(-0.55, 1.35, 0);
-    armL.isPickable = false;
+    const armSource = rig?.arm || {};
+    const armFallback = fallback?.arm || {};
+    const armDims = {
+      upperW: num(armSource.upperW, armFallback.upperW, 0.34),
+      upperD: num(armSource.upperD, armFallback.upperD, 0.34),
+      upperLen: num(armSource.upperLen, armFallback.upperLen, 0.75),
+      foreW: num(armSource.foreW, armFallback.foreW, 0.30),
+      foreD: num(armSource.foreD, armFallback.foreD, 0.27),
+      foreLen: num(armSource.foreLen, armFallback.foreLen, 0.70),
+      handLen: num(armSource.handLen, armFallback.handLen, 0.25)
+    };
 
-    const armR = armL.clone("creator-armR");
-    armR.parent = root;
-    armR.position.x = 0.55;
+    const legSource = rig?.leg || {};
+    const legFallback = fallback?.leg || {};
+    const legDims = {
+      thighW: num(legSource.thighW, legFallback.thighW, 0.45),
+      thighD: num(legSource.thighD, legFallback.thighD, 0.50),
+      thighLen: num(legSource.thighLen, legFallback.thighLen, 1.05),
+      shinW: num(legSource.shinW, legFallback.shinW, 0.33),
+      shinD: num(legSource.shinD, legFallback.shinD, 0.43),
+      shinLen: num(legSource.shinLen, legFallback.shinLen, 0.88),
+      footW: num(legSource.footW, legFallback.footW, 0.32),
+      footH: num(legSource.footH, legFallback.footH, 0.21),
+      footLen: num(legSource.footLen, legFallback.footLen, 0.75)
+    };
 
-    const hipBand = BABYLON.MeshBuilder.CreateBox("creator-hips", {
-      width: 0.78,
-      height: 0.26,
-      depth: 0.36
-    }, scene);
-    hipBand.parent = root;
-    hipBand.position.y = 0.92;
-    hipBand.isPickable = false;
+    function register(key, node) {
+      if (!node) return null;
+      node.rotationQuaternion = null;
+      nodes[key] = node;
+      return node;
+    }
 
-    const thighL = BABYLON.MeshBuilder.CreateBox("creator-thighL", {
-      width: 0.28,
-      height: 0.55,
-      depth: 0.30
-    }, scene);
-    thighL.parent = root;
-    thighL.position.set(-0.2, 0.58, 0);
-    thighL.isPickable = false;
+    const basePivot = new BABYLON.TransformNode("creator-base", scene);
+    basePivot.parent = root;
 
-    const thighR = thighL.clone("creator-thighR");
-    thighR.parent = root;
-    thighR.position.x = 0.2;
+    const baseColorHex = (typeof rig?.color === "string") ? rig.color : (typeof fallback.color === "string" ? fallback.color : "#804a00");
+    const baseColor = colorFromHex(baseColorHex, "#804a00");
 
-    const shinL = BABYLON.MeshBuilder.CreateBox("creator-shinL", {
-      width: 0.24,
-      height: 0.52,
-      depth: 0.28
-    }, scene);
-    shinL.parent = root;
-    shinL.position.set(-0.2, 0.18, 0);
-    shinL.isPickable = false;
+    function makeBodyMat(scale = 1) {
+      const mat = new BABYLON.StandardMaterial(`creator-body-${Math.random().toString(36).slice(2)}`, scene);
+      const col = new BABYLON.Color3(baseColor.r, baseColor.g, baseColor.b);
+      col.scaleInPlace(Math.max(0, scale));
+      mat.diffuseColor = col;
+      const emissive = new BABYLON.Color3(col.r, col.g, col.b);
+      emissive.scaleInPlace(0.18);
+      mat.emissiveColor = emissive;
+      mat.specularColor = new BABYLON.Color3(0.12, 0.12, 0.12);
+      return mat;
+    }
 
-    const shinR = shinL.clone("creator-shinR");
-    shinR.parent = root;
-    shinR.position.x = 0.2;
+    function createSegmentY(parent, key, size, shade) {
+      const pivot = register(key, new BABYLON.TransformNode(`creator-${key}_pivot`, scene));
+      pivot.parent = parent;
+      const mesh = BABYLON.MeshBuilder.CreateBox(`creator-${key}`, { width: size.w, height: size.h, depth: size.d }, scene);
+      mesh.parent = pivot;
+      mesh.position.y = -size.h * 0.5;
+      mesh.material = makeBodyMat(shade);
+      mesh.isPickable = false;
+      return { pivot, mesh };
+    }
 
-    const shoeL = BABYLON.MeshBuilder.CreateBox("creator-shoeL", {
-      width: 0.30,
-      height: 0.20,
-      depth: 0.45
-    }, scene);
-    shoeL.parent = root;
-    shoeL.position.set(-0.2, -0.18, 0.10);
-    shoeL.isPickable = false;
+    function createFoot(parent, key, dims, shade) {
+      const pivot = register(key, new BABYLON.TransformNode(`creator-${key}_pivot`, scene));
+      pivot.parent = parent;
+      const mesh = BABYLON.MeshBuilder.CreateBox(`creator-${key}`, { width: dims.footW, height: dims.footH, depth: dims.footLen }, scene);
+      mesh.parent = pivot;
+      mesh.position.y = -dims.footH * 0.5;
+      mesh.position.z = dims.footLen * 0.5;
+      mesh.material = makeBodyMat(shade);
+      mesh.isPickable = false;
+      return { pivot, mesh };
+    }
 
-    const shoeR = shoeL.clone("creator-shoeR");
-    shoeR.parent = root;
-    shoeR.position.x = 0.2;
+    const pelvis = createSegmentY(basePivot, "pelvis", pelvisSize, 1.0);
+    const torsoLower = createSegmentY(pelvis.pivot, "torsoLower", torsoLowerSize, 1.0);
+    torsoLower.pivot.position.y = 0.30;
+    const torsoUpper = createSegmentY(torsoLower.pivot, "torsoUpper", torsoUpperSize, 0.92);
+    torsoUpper.pivot.position.y = 0.55;
+    const neck = createSegmentY(torsoUpper.pivot, "neck", neckSize, 0.85);
+    neck.pivot.position.y = 0.55;
+    const headPivot = register("head", new BABYLON.TransformNode("creator-head_pivot", scene));
+    headPivot.parent = neck.pivot;
+    const headMesh = BABYLON.MeshBuilder.CreateBox("creator-head", { width: headSize.w, height: headSize.h, depth: headSize.d }, scene);
+    headMesh.parent = headPivot;
+    headMesh.position.y = headSize.h * 0.5;
+    headMesh.material = makeBodyMat(0.8);
+    headMesh.isPickable = false;
 
-    const neck = BABYLON.MeshBuilder.CreateCylinder("creator-neck", {
-      height: 0.22,
-      diameter: 0.18
-    }, scene);
-    neck.parent = root;
-    neck.position.y = 1.88;
-    neck.isPickable = false;
-    neck.material = skinMaterial;
-
-    const head = BABYLON.MeshBuilder.CreateBox("creator-head", {
-      width: 0.55,
-      height: 0.55,
-      depth: 0.55
-    }, scene);
-    head.parent = root;
-    head.position.y = 2.15;
-    head.isPickable = false;
-    head.material = skinMaterial;
-
-    const facePlane = BABYLON.MeshBuilder.CreatePlane("creator-face", {
-      width: 0.5,
-      height: 0.5
-    }, scene);
-    facePlane.parent = head;
-    facePlane.position.z = 0.29;
+    const facePlane = BABYLON.MeshBuilder.CreatePlane("creator-face", { width: headSize.w * 0.92, height: headSize.h * 0.92 }, scene);
+    facePlane.parent = headPivot;
+    facePlane.position.y = headSize.h * 0.1;
+    facePlane.position.z = (headSize.d * 0.5) + 0.01;
     facePlane.isPickable = false;
 
     const hairRoot = new BABYLON.TransformNode("creator-hair-root", scene);
-    hairRoot.parent = head;
-    hairRoot.position.y = 0.32;
+    hairRoot.parent = headPivot;
+    hairRoot.position.y = headSize.h * 0.45;
 
     const accessoryRoot = new BABYLON.TransformNode("creator-accessory-root", scene);
-    accessoryRoot.parent = head;
-    accessoryRoot.position.y = 0.10;
+    accessoryRoot.parent = headPivot;
+    accessoryRoot.position.y = headSize.h * 0.1;
+
+    const shoulderL = register("shoulderL", new BABYLON.TransformNode("creator-shoulderL", scene));
+    shoulderL.parent = torsoUpper.pivot;
+    const shoulderR = register("shoulderR", new BABYLON.TransformNode("creator-shoulderR", scene));
+    shoulderR.parent = torsoUpper.pivot;
+
+    const armL = {};
+    armL.upper = createSegmentY(shoulderL, "armL_upper", { w: armDims.upperW, h: armDims.upperLen, d: armDims.upperD }, 0.9);
+    armL.fore = createSegmentY(armL.upper.pivot, "armL_fore", { w: armDims.foreW, h: armDims.foreLen, d: armDims.foreD }, 0.8);
+    armL.hand = createSegmentY(armL.fore.pivot, "armL_hand", { w: armDims.foreW, h: armDims.handLen, d: armDims.foreD }, 0.75);
+
+    const armR = {};
+    armR.upper = createSegmentY(shoulderR, "armR_upper", { w: armDims.upperW, h: armDims.upperLen, d: armDims.upperD }, 0.9);
+    armR.fore = createSegmentY(armR.upper.pivot, "armR_fore", { w: armDims.foreW, h: armDims.foreLen, d: armDims.foreD }, 0.8);
+    armR.hand = createSegmentY(armR.fore.pivot, "armR_hand", { w: armDims.foreW, h: armDims.handLen, d: armDims.foreD }, 0.75);
+
+    const hipL = register("hipL", new BABYLON.TransformNode("creator-hipL", scene));
+    hipL.parent = pelvis.pivot;
+    const hipR = register("hipR", new BABYLON.TransformNode("creator-hipR", scene));
+    hipR.parent = pelvis.pivot;
+
+    const legL = {};
+    legL.thigh = createSegmentY(hipL, "legL_thigh", { w: legDims.thighW, h: legDims.thighLen, d: legDims.thighD }, 0.85);
+    legL.shin = createSegmentY(legL.thigh.pivot, "legL_shin", { w: legDims.shinW, h: legDims.shinLen, d: legDims.shinD }, 0.8);
+    legL.foot = createFoot(legL.shin.pivot, "legL_foot", legDims, 0.75);
+
+    const legR = {};
+    legR.thigh = createSegmentY(hipR, "legR_thigh", { w: legDims.thighW, h: legDims.thighLen, d: legDims.thighD }, 0.85);
+    legR.shin = createSegmentY(legR.thigh.pivot, "legR_shin", { w: legDims.shinW, h: legDims.shinLen, d: legDims.shinD }, 0.8);
+    legR.foot = createFoot(legR.shin.pivot, "legR_foot", legDims, 0.75);
+
+    function createShoeOverlay(pivot, name) {
+      const mesh = BABYLON.MeshBuilder.CreateBox(name, { width: legDims.footW, height: legDims.footH, depth: legDims.footLen }, scene);
+      mesh.parent = pivot;
+      mesh.position.y = -legDims.footH * 0.5;
+      mesh.position.z = legDims.footLen * 0.5;
+      mesh.scaling = new BABYLON.Vector3(1.08, 1.05, 1.12);
+      mesh.isPickable = false;
+      mesh.setEnabled(true);
+      return mesh;
+    }
+
+    const shoeMeshes = [
+      createShoeOverlay(legL.foot.pivot, "creator-shoeL"),
+      createShoeOverlay(legR.foot.pivot, "creator-shoeR")
+    ];
 
     const clothingRefs = {
-      torso: [torso, armL, armR],
-      torsoAccent,
-      hips: [hipBand],
-      thighs: [thighL, thighR],
-      shins: [shinL, shinR],
-      shoes: [shoeL, shoeR]
+      torso: [torsoLower.mesh, torsoUpper.mesh],
+      sleeves: [armL.upper.mesh, armR.upper.mesh],
+      hips: [pelvis.mesh],
+      thighs: [legL.thigh.mesh, legR.thigh.mesh],
+      shins: [legL.shin.mesh, legR.shin.mesh],
+      shoes: shoeMeshes
     };
 
     const clothMatCache = new Map();
@@ -4853,7 +4914,7 @@
     function clothMat(hex) {
       const key = hex || "#2d3d8f";
       if (clothMatCache.has(key)) return clothMatCache.get(key);
-      const color = colorFromHex(key, "#2d3d8f");
+      const color = colorFromHex(hex || "#2d3d8f", "#2d3d8f");
       const mat = new BABYLON.StandardMaterial(`creator-cloth-${key}`, scene);
       mat.diffuseColor = color;
       mat.emissiveColor = color.scale(0.22);
@@ -4990,134 +5051,184 @@
     }
 
     function instantiateHair(spec) {
-      const nodes = [];
-      if (!spec) return nodes;
+      const nodesList = [];
+      if (!spec) return nodesList;
       const baseMat = hairMat(spec.primaryColor);
       const accentMat = hairMat(spec.secondaryColor || spec.primaryColor);
+      const headW = headSize.w;
+      const headH = headSize.h;
+      const headD = headSize.d;
       switch (spec.id) {
         case "windswept": {
           const crown = BABYLON.MeshBuilder.CreateBox("creator-hair-crown", {
-            width: 0.65,
-            height: 0.28,
-            depth: 0.60
+            width: headW * 1.28,
+            height: headH * 0.48,
+            depth: headD * 1.18
           }, scene);
           crown.parent = hairRoot;
-          crown.position.y = 0.10;
+          crown.position.y = headH * 0.2;
           crown.material = baseMat;
           crown.isPickable = false;
-          nodes.push(crown);
+          nodesList.push(crown);
 
           const fringe = BABYLON.MeshBuilder.CreateBox("creator-hair-fringe", {
-            width: 0.60,
-            height: 0.22,
-            depth: 0.24
+            width: headW * 1.1,
+            height: headH * 0.26,
+            depth: headD * 0.45
           }, scene);
           fringe.parent = hairRoot;
-          fringe.position.set(0.05, -0.08, 0.32);
+          fringe.position.x = headW * 0.05;
+          fringe.position.y = -headH * 0.15;
+          fringe.position.z = headD * 0.6;
           fringe.rotation.y = -5 * DEG2RAD;
           fringe.material = accentMat;
           fringe.isPickable = false;
-          nodes.push(fringe);
+          nodesList.push(fringe);
           break;
         }
         case "scout_hat": {
           const brim = BABYLON.MeshBuilder.CreateCylinder("creator-hat-brim", {
-            diameter: 0.85,
-            height: 0.04
+            diameter: headW * 1.65,
+            height: headH * 0.05
           }, scene);
           brim.parent = hairRoot;
-          brim.position.y = 0.05;
+          brim.position.y = headH * 0.05;
           brim.material = accentMat;
           brim.isPickable = false;
-          nodes.push(brim);
+          nodesList.push(brim);
 
           const crown = BABYLON.MeshBuilder.CreateCylinder("creator-hat-crown", {
-            diameter: 0.52,
-            height: 0.34
+            diameter: headW * 1.0,
+            height: headH * 0.7
           }, scene);
           crown.parent = hairRoot;
-          crown.position.y = 0.30;
+          crown.position.y = headH * 0.45;
           crown.material = baseMat;
           crown.isPickable = false;
-          nodes.push(crown);
+          nodesList.push(crown);
           break;
         }
         default: {
           const cap = BABYLON.MeshBuilder.CreateBox("creator-hair-cap", {
-            width: 0.62,
-            height: 0.26,
-            depth: 0.60
+            width: headW * 1.22,
+            height: headH * 0.42,
+            depth: headD * 1.1
           }, scene);
           cap.parent = hairRoot;
-          cap.position.y = 0.12;
+          cap.position.y = headH * 0.18;
           cap.material = baseMat;
           cap.isPickable = false;
-          nodes.push(cap);
+          nodesList.push(cap);
         }
       }
-      return nodes;
+      return nodesList;
     }
 
     function instantiateAccessory(spec) {
-      const nodes = [];
-      if (!spec) return nodes;
+      const nodesList = [];
+      if (!spec) return nodesList;
       switch (spec.id) {
         case "visor": {
           const visor = BABYLON.MeshBuilder.CreatePlane("creator-acc-visor", {
-            width: 0.6,
-            height: 0.18
+            width: headSize.w * 1.35,
+            height: headSize.h * 0.32
           }, scene);
           visor.parent = accessoryRoot;
-          visor.position.set(0, 0.12, 0.38);
+          visor.position.y = headSize.h * 0.1;
+          visor.position.z = headSize.d * 0.58;
           visor.material = accessoryMat(spec.color);
           visor.isPickable = false;
-          nodes.push(visor);
+          nodesList.push(visor);
           break;
         }
         case "earrings": {
-          const left = BABYLON.MeshBuilder.CreateSphere("creator-acc-earL", { diameter: 0.09 }, scene);
+          const diameter = headSize.w * 0.18;
+          const offsetX = headSize.w * 0.6;
+          const offsetY = -headSize.h * 0.05;
+          const left = BABYLON.MeshBuilder.CreateSphere("creator-acc-earL", { diameter }, scene);
           left.parent = accessoryRoot;
-          left.position.set(-0.32, -0.02, 0);
+          left.position.x = -offsetX;
+          left.position.y = offsetY;
           left.material = accessoryMat(spec.color);
           left.isPickable = false;
-          nodes.push(left);
+          nodesList.push(left);
 
           const right = left.clone("creator-acc-earR");
           right.parent = accessoryRoot;
-          right.position.x = 0.32;
-          nodes.push(right);
+          right.position.x = offsetX;
+          nodesList.push(right);
           break;
         }
         case "scarf": {
-          const scarf = BABYLON.MeshBuilder.CreateTorus("creator-acc-scarf", {
-            diameter: 0.68,
-            thickness: 0.10
+          const ring = BABYLON.MeshBuilder.CreateTorus("creator-acc-scarf", {
+            diameter: Math.max(0.4, (neckSize.w + neckSize.d) * 1.2),
+            thickness: Math.max(0.08, neckSize.h * 0.5)
           }, scene);
-          scarf.parent = neck;
-          scarf.rotation.x = Math.PI / 2;
-          scarf.position.y = -0.08;
-          scarf.material = accessoryMat(spec.color);
-          scarf.isPickable = false;
-          nodes.push(scarf);
+          ring.parent = neck.pivot;
+          ring.rotation.x = Math.PI / 2;
+          ring.position.y = -neckSize.h * 0.35;
+          ring.material = accessoryMat(spec.color);
+          ring.isPickable = false;
+          nodesList.push(ring);
 
           const tail = BABYLON.MeshBuilder.CreateBox("creator-acc-scarf-tail", {
-            width: 0.18,
-            height: 0.40,
-            depth: 0.14
+            width: neckSize.w * 0.6,
+            height: headSize.h * 0.45,
+            depth: neckSize.d * 0.5
           }, scene);
-          tail.parent = neck;
-          tail.position.set(-0.18, -0.28, 0.12);
+          tail.parent = neck.pivot;
+          tail.position.x = -neckSize.w * 0.6;
+          tail.position.y = -neckSize.h * 0.9;
+          tail.position.z = headSize.d * 0.12;
           tail.rotation.z = 18 * DEG2RAD;
           tail.material = accessoryMat(spec.accent || spec.color);
           tail.isPickable = false;
-          nodes.push(tail);
+          nodesList.push(tail);
           break;
         }
         default:
           break;
       }
-      return nodes;
+      return nodesList;
     }
+
+    function getTransform(key) {
+      const src = rigTransforms[key] || {};
+      const fb = fallbackTransforms[key] || {};
+      const posSrc = src.pos || {};
+      const posFb = fb.pos || {};
+      const rotSrc = src.rot || {};
+      const rotFb = fb.rot || {};
+      return {
+        pos: {
+          x: num(posSrc.x, posFb.x, 0),
+          y: num(posSrc.y, posFb.y, 0),
+          z: num(posSrc.z, posFb.z, 0)
+        },
+        rot: {
+          x: num(rotSrc.x, rotFb.x, 0),
+          y: num(rotSrc.y, rotFb.y, 0),
+          z: num(rotSrc.z, rotFb.z, 0)
+        }
+      };
+    }
+
+    function applyRigTransforms() {
+      const keys = new Set([...FALLBACK_PART_KEYS, ...Object.keys(nodes)]);
+      keys.forEach(key => {
+        const node = nodes[key];
+        if (!node) return;
+        const tr = getTransform(key);
+        node.position.x = tr.pos.x;
+        node.position.y = tr.pos.y;
+        node.position.z = tr.pos.z;
+        node.rotation.x = (tr.rot.x || 0) * DEG2RAD;
+        node.rotation.y = (tr.rot.y || 0) * DEG2RAD;
+        node.rotation.z = (tr.rot.z || 0) * DEG2RAD;
+      });
+    }
+
+    applyRigTransforms();
 
     const FACE_SPEC_MAP = new Map(specMaps.faces.map(spec => [spec.id, spec]));
     const HAIR_SPEC_MAP = new Map(specMaps.hair.map(spec => [spec.id, spec]));
@@ -5159,21 +5270,23 @@
       const spec = TOP_SPEC_MAP.has(id) ? TOP_SPEC_MAP.get(id) : TOP_SPEC_MAP.get(DEFAULT_TOP_ID);
       const applied = spec?.id || id || DEFAULT_TOP_ID;
       const torsoMat = clothMat(spec?.body || "#2d3d8f");
-      const sleeveMat = clothMat(spec?.sleeve || spec?.body || "#2d3d8f");
       const accentMat = clothMat(spec?.accent || spec?.body || "#2d3d8f");
-      clothingRefs.torso.forEach(mesh => { mesh.material = torsoMat; });
-      clothingRefs.torsoAccent.material = accentMat;
-      armL.material = sleeveMat;
-      armR.material = sleeveMat;
+      const sleeveMat = clothMat(spec?.sleeve || spec?.body || "#2d3d8f");
+      if (clothingRefs.torso[0]) clothingRefs.torso[0].material = torsoMat;
+      if (clothingRefs.torso[1]) clothingRefs.torso[1].material = accentMat;
+      clothingRefs.sleeves.forEach(mesh => { mesh.material = sleeveMat; });
       return applied;
     }
 
     function applyBottom(id) {
       const spec = BOTTOM_SPEC_MAP.has(id) ? BOTTOM_SPEC_MAP.get(id) : BOTTOM_SPEC_MAP.get(DEFAULT_BOTTOM_ID);
       const applied = spec?.id || id || DEFAULT_BOTTOM_ID;
-      clothingRefs.hips.forEach(mesh => { mesh.material = clothMat(spec?.hips || "#243244"); });
-      clothingRefs.thighs.forEach(mesh => { mesh.material = clothMat(spec?.thigh || spec?.hips || "#243244"); });
-      clothingRefs.shins.forEach(mesh => { mesh.material = clothMat(spec?.shin || spec?.thigh || spec?.hips || "#243244"); });
+      const hipMat = clothMat(spec?.hips || "#243244");
+      const thighMat = clothMat(spec?.thigh || spec?.hips || "#243244");
+      const shinMat = clothMat(spec?.shin || spec?.thigh || spec?.hips || "#243244");
+      clothingRefs.hips.forEach(mesh => { mesh.material = hipMat; });
+      clothingRefs.thighs.forEach(mesh => { mesh.material = thighMat; });
+      clothingRefs.shins.forEach(mesh => { mesh.material = shinMat; });
       return applied;
     }
 
@@ -5181,7 +5294,7 @@
       const spec = SHOE_SPEC_MAP.has(id) ? SHOE_SPEC_MAP.get(id) : SHOE_SPEC_MAP.get(DEFAULT_SHOE_ID);
       const applied = spec?.id || id || DEFAULT_SHOE_ID;
       const mat = shoeMat(spec || { id: applied });
-      clothingRefs.shoes.forEach(mesh => { mesh.material = mat; });
+      clothingRefs.shoes.forEach(mesh => { mesh.material = mat; mesh.setEnabled(true); });
       cosmeticState.shoes = applied;
       return cosmeticState.shoes;
     }

@@ -72,79 +72,81 @@
             </div>
           </div>
           <div class="creator-form-column">
-            <div class="creator-header">
-              <h2>Character Creator</h2>
-              <p class="small">Fine-tune your hunter and see every change instantly in the preview.</p>
-            </div>
-            <div class="creator-selectors" aria-label="Cosmetic selectors">
-              <div class="selector-group">
-                <label class="selector-label" for="creator-face">Face</label>
-                <select id="creator-face"></select>
+            <div class="creator-form-scroll">
+              <div class="creator-header">
+                <h2>Character Creator</h2>
+                <p class="small">Fine-tune your hunter and see every change instantly in the preview.</p>
               </div>
-              <div class="selector-group">
-                <label class="selector-label" for="creator-hair">Hair &amp; Hats</label>
-                <select id="creator-hair"></select>
-              </div>
-              <div class="selector-group">
-                <label class="selector-label" for="creator-outfit-set">Outfit Set</label>
-                <select id="creator-outfit-set"></select>
-              </div>
-              <div class="selector-group selector-group-inline">
-                <div class="selector-field">
-                  <label class="selector-label" for="creator-outfit-top">Top</label>
-                  <select id="creator-outfit-top"></select>
+              <div class="creator-selectors" aria-label="Cosmetic selectors">
+                <div class="selector-group">
+                  <label class="selector-label" for="creator-face">Face</label>
+                  <select id="creator-face"></select>
                 </div>
-                <div class="selector-field">
-                  <label class="selector-label" for="creator-outfit-bottom">Bottom</label>
-                  <select id="creator-outfit-bottom"></select>
+                <div class="selector-group">
+                  <label class="selector-label" for="creator-hair">Hair &amp; Hats</label>
+                  <select id="creator-hair"></select>
+                </div>
+                <div class="selector-group">
+                  <label class="selector-label" for="creator-outfit-set">Outfit Set</label>
+                  <select id="creator-outfit-set"></select>
+                </div>
+                <div class="selector-group selector-group-inline">
+                  <div class="selector-field">
+                    <label class="selector-label" for="creator-outfit-top">Top</label>
+                    <select id="creator-outfit-top"></select>
+                  </div>
+                  <div class="selector-field">
+                    <label class="selector-label" for="creator-outfit-bottom">Bottom</label>
+                    <select id="creator-outfit-bottom"></select>
+                  </div>
+                </div>
+                <div class="selector-group">
+                  <label class="selector-label" for="creator-shoes">Shoes</label>
+                  <select id="creator-shoes"></select>
+                </div>
+                <div class="selector-group selector-group-accessories">
+                  <span class="selector-label">Accessories</span>
+                  <div id="creator-accessories" class="accessory-grid" role="group" aria-label="Accessories"></div>
                 </div>
               </div>
-              <div class="selector-group">
-                <label class="selector-label" for="creator-shoes">Shoes</label>
-                <select id="creator-shoes"></select>
-              </div>
-              <div class="selector-group selector-group-accessories">
-                <span class="selector-label">Accessories</span>
-                <div id="creator-accessories" class="accessory-grid" role="group" aria-label="Accessories"></div>
-              </div>
-            </div>
-            <form id="creator-form">
-              <div class="grid-2">
-                <label>Hunter Name <input required type="text" id="cc-name" maxlength="24" placeholder="Gon, Killua, You..." />
+              <form id="creator-form">
+                <div class="grid-2">
+                  <label>Hunter Name <input required type="text" id="cc-name" maxlength="24" placeholder="Gon, Killua, You..." />
+                  </label>
+                  <label>Clan / Origin <input type="text" id="cc-clan" maxlength="24" placeholder="Whale Island, Phantom..." />
+                  </label>
+                </div>
+                <label> Nen Type <select id="cc-nen">
+                    <option>Enhancer</option>
+                    <option>Emitter</option>
+                    <option>Transmuter</option>
+                    <option>Conjurer</option>
+                    <option>Manipulator</option>
+                    <option>Specialist</option>
+                  </select>
                 </label>
-                <label>Clan / Origin <input type="text" id="cc-clan" maxlength="24" placeholder="Whale Island, Phantom..." />
+                <label> Theme Color <input type="color" id="cc-color" value="#00ffcc" />
                 </label>
-              </div>
-              <label> Nen Type <select id="cc-nen">
-                  <option>Enhancer</option>
-                  <option>Emitter</option>
-                  <option>Transmuter</option>
-                  <option>Conjurer</option>
-                  <option>Manipulator</option>
-                  <option>Specialist</option>
-                </select>
-              </label>
-              <label> Theme Color <input type="color" id="cc-color" value="#00ffcc" />
-              </label>
-              <fieldset>
-                <legend>Distribute 10 Stat Points</legend>
-                <div class="grid-3">
-                  <label>Power <input type="number" id="cc-power" min="0" max="10" value="4">
-                  </label>
-                  <label>Agility <input type="number" id="cc-agility" min="0" max="10" value="3">
-                  </label>
-                  <label>Focus <input type="number" id="cc-focus" min="0" max="10" value="3">
-                  </label>
+                <fieldset>
+                  <legend>Distribute 10 Stat Points</legend>
+                  <div class="grid-3">
+                    <label>Power <input type="number" id="cc-power" min="0" max="10" value="4">
+                    </label>
+                    <label>Agility <input type="number" id="cc-agility" min="0" max="10" value="3">
+                    </label>
+                    <label>Focus <input type="number" id="cc-focus" min="0" max="10" value="3">
+                    </label>
+                  </div>
+                  <p class="small">Power = melee damage; Agility = move speed &amp; dash; Focus = nen damage &amp; cooldowns.</p>
+                  <p id="points-remaining">Points remaining: <b>0</b>
+                  </p>
+                </fieldset>
+                <div class="row-right">
+                  <button type="button" id="btn-cancel" class="secondary">Cancel</button>
+                  <button type="submit" class="primary">Save</button>
                 </div>
-                <p class="small">Power = melee damage; Agility = move speed &amp; dash; Focus = nen damage &amp; cooldowns.</p>
-                <p id="points-remaining">Points remaining: <b>0</b>
-                </p>
-              </fieldset>
-              <div class="row-right">
-                <button type="button" id="btn-cancel" class="secondary">Cancel</button>
-                <button type="submit" class="primary">Save</button>
-              </div>
-            </form>
+              </form>
+            </div>
           </div>
         </div>
       </div>
