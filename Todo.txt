@@ -1,3 +1,189 @@
+VFD driver update.
+Download Firmware. PF755_App_v14_005_253_Secure.dmk
+Run DMK extraction tool on the firmware file.
+Open PLC file
+gather IP Adresses of VFD Drive (Not Armor Start)
+Save PLC Tag Correlation before PLC Download
+Open Drive Executive
+Open the drive using their IP's
+Save The backup with aliase (VFD Drive info + Old)
+open control flash or control flash plus
+Flash the new firmware
+Download (VFD Drive info + Old Backup) to the device port 0.
+Select all parameters for download, PowerFlex 755, 20-HIM-x6, Encoder, Universal Fdbk, etc...
+Turn VFD off..Then Turn VFD On
+Save The backup with aliase (VFD Drive info + New)
+upload powerflex database in the plc from physical device
+Download the New plc program.
+Upload the New PLC program to octoplant
+
+ZJ530M2_CS_SEW_120.17.158.42
+ZJ535M2_CS_SEW_120.17.158.43
+ZJ560M2_CS_SEW_120.17.158.110
+ZJ565M2_CS_SEW_120.17.158.111
+
+ZJ010M2_CS_SEW_120.17.161.48
+ZJ005M2_CS_SEW_120.17.161.57
+ZJ003M2_CS_SEW_120.17.161.61
+
+PAB05 is good
+
+Patched New AMR Logic
 
 
+B940_AMR_HMIConfig Rung 14 Removed Route bits from force release button enable.
 
+
+B121_AMRROuting Rungs 13 & 16 Moved RouteToZA/ZJ bits inside the branch for all Destinations
+lets fix a few issue.
+The grudge bar is moved into the location of all the other bars liek the health, and nen bar. I want the grudge bar to actually look like the health and nen bars. Basically remake the grudge bar the same as the health and nen bars, and have the bar be a sickly purple color instead of the orange on the others. YOu can put the "grudge bar" text underneath it
+
+AMR -> AMRRH
+FromAMR -> FromAMRRH
+FromAMRRHPrev -> FromAMRRHPrev
+
+PA050AMR -> FP060AMRRH
+PrevToAMR -> FP060AMRRHPrevToAMR
+PA050TOAMR -> FP060RHToAMR
+
+ToAMR -> ToAMRRH
+ToAMRPrev -> ToAMRRHPrev
+
+You are modifying a JS game with this file layout:
+world-utils.js, rig-definitions.js, items-and-crafting.js, spawns.js, region-manager.js, nen-core.js, nen-advanced.js, nen-combat.js, hud.js, game.js, enemies.js, rig-editor.js, index.html, styles.css.
+
+Hard rules for code output (follow exactly):
+Before removing any feature, ask if it’s relevant; otherwise do not remove.
+
+Constraints: Do not break existing HUD buttons, attacks, gameplay, or terrain generation. Keep index.html and styles.css working. Use modern, clean JS (no transpile step).
+
+Deliverables per task:
+• The code per the rules above
+• A short “What changed / Why” note
+• Quick manual test steps
+
+Task 56 — Replace Block Head with Rounded Roblox-Style Head (everywhere)
+
+Files: rig-definitions.js, game.js, hud.js
+Prompt:
+Swap the block head for a rounded Robloxian-style head across rig, Character Creator, and game. Ensure skinning/weights/parenting are correct. Re-attach hats/faces via Task 55 anchors. Materials/UVs render face decals cleanly.
+Done check: Rounded head shows everywhere; hats/faces fit; animations unaffected.
+Quick manual test: In creator, orbit head; try hats/faces; enter game—identical look.
+
+Task 55 — Hat & Face Anchor Offsets (fit to rounded head)
+
+Files: rig-definitions.js, game.js, hud.js
+Prompt:
+Correct attachment offsets so hats/faces align: define per-item anchor {headSocket, localPos, localRot, localScale}; add fit-to-head util for rounded head (Task 56) + per-asset overrides. QA nudge UI to adjust +/− XYZ & YPR and save deltas.
+Done check: Default hats/faces align; switching items preserves fit.
+Quick manual test: Equip several hats/faces; verify fit; nudge one, re-equip, confirm persistence.
+
+Task 57 — Grounding Fix in Character Creator (feet on floor)
+
+Files: hud.js, game.js
+Prompt:
+In Character Creator, compute rig AABB or sample foot bones and apply a one-time root Y offset so feet rest on floor. Recompute on rig-type or stance change. No per-frame cost.
+Done check: Feet sit on floor in creator; no lower legs below ground.
+Quick manual test: Open creator for each rig type; swap cosmetics; feet stay grounded.
+
+Task 58 — Lightweight Grounding in Game (low overhead)
+
+Files: game.js
+Prompt:
+Keep feet on terrain in-game with minimal cost: every N frames (config) or on state change (land/jump/idle), sample ground via ray or Terrain.sampleHeight(x,z), then set a root Y offset with slight lerp. Skip when airborne/ladder.
+Done check: Feet align with grass/deformed terrain; negligible CPU impact.
+Quick manual test: Walk across flat & deformed areas; no sinking/hovering; profiling shows tiny overhead.
+
+Task 59 — Menu Background Lifecycle (destroy/unmount on screen change)
+
+Files: game.js, hud.js, index.html
+Prompt:
+On switching modes (in-game, Character Creator, Rig Editor, etc.), fully dispose/unmount menu background: scene nodes, observers/intervals, DOM roots, textures. Add QA “Scene Audit” panel to display node/material/texture counts pre/post transition.
+Done check: No leaked backgrounds; counts stable across transitions.
+Quick manual test: Menu → Game → Creator → Game → Rig Editor; verify background never reappears; counts don’t climb.
+
+Task 60 — Rig Editor Boot Hang: Diagnose & Fix
+
+Files: rig-editor.js, game.js, index.html
+Prompt:
+Fix the Rig Editor hang: add boot logging with timestamps per phase (gate, rig load, timeline, dope sheet, Babylon binding). Guard null refs; defer heavy work until scene ready; convert boot to async stepper; on failure, show non-blocking error toast; keep “QuayeWorks” secret gate intact.
+Done check: Editor opens reliably; timeline/dope sheet visible; no hang; errors surfaced if they occur.
+
+Quick manual test: Enter wrong phrase (locked) → enter QuayeWorks → editor opens; create test animation; close & reopen—no hangs.
+
+Task 49 — Unified Deformable Terrain Mesh (feature-flagged)
+
+Files: world-utils.js, region-manager.js, game.js
+Prompt:
+Replace the current three terrain floorings with a single updatable Babylon Mesh (heightfield/triangulated grid). Add feature flag USE_UNIFIED_TERRAIN = true to A/B test without deleting legacy floors.
+Requirements: updatable position/normal/vertexColor buffers; APIs:
+
+Terrain.init({width, depth, resolution})
+
+Terrain.getMesh()
+
+Terrain.sampleHeight(x,z)
+
+Terrain.worldToVertex(x,z)
+Ensure valid bounding info for frustum culling; preserve movement/attacks/projectiles on new terrain.
+Done check: One visible terrain mesh when flag on; legacy floors hidden; gameplay unchanged.
+Quick manual test: Toggle flag; verify single terrain; walk/jump/attack—no collision/nav regressions.
+
+Task 50 — Terrain Deformation System (damage → local mesh edit)
+
+Files: world-utils.js, game.js, nen-combat.js
+Prompt:
+On terrain damage, deform local vertices and update buffers. API:
+Terrain.applyDamage({worldX, worldZ, radius, strength, falloff:'linear|gauss'}).
+Convert world→vertex region; lower heights by falloff/strength; recompute normals only for touched area; call updateVerticesData for in-frame update; emit onTerrainDeformed event.
+Done check: Hits create visible craters; repeated hits deepen; no frame hitch.
+Quick manual test: Fire test crater; see depression; hit again; walk edge—collision matches visuals.
+
+Task 51 — Depth-Based Color Layers (grass → dirt → clay → bedrock)
+
+Files: world-utils.js, game.js, index.html, styles.css
+Prompt:
+Use vertex colors (or splat) tied to deformation depth. Track originalY per vertex; compute depth = originalY - currentY. Thresholds (configurable):
+
+d≤t1: grass, t1<d≤t2: dirt, t2<d≤t3: clay, d>t3: bedrock.
+Update vertexColors in affected region after deformations; optional soft blend over one-vertex ring.
+Done check: Shallow dents show grass; deeper transitions to dirt→clay→bedrock; persists across edits.
+Quick manual test: Apply small/medium/large damage; confirm color bands change with depth.
+
+Task 52 — Physics/Navigation Sync with Deformed Terrain
+
+Files: game.js, region-manager.js
+Prompt:
+Keep collisions accurate after deformation:
+
+If using Babylon Physics: update/rebuild heightfield/mesh impostor for the edited patch only; throttle if necessary.
+
+If custom collision: update the height sampler for affected vertices.
+Avoid full-mesh rebuilds each frame.
+Done check: Players/projectiles interact with new shape immediately; no sinking/clipping.
+Quick manual test: Make a crater under player; player settles smoothly; projectile hits crater wall correctly.
+
+Task 53 — Dev Tools: Deform Brush, Depth HUD & Perf Guardrails
+
+Files: hud.js, game.js
+Prompt:
+Add a dev-only Deform Brush and Depth HUD:
+
+Brush: radius, strength, falloff, Reset Patch.
+
+HUD: last deform time (ms), verts edited, dominant layer at cursor.
+
+Guardrails: clamp radius/strength; skip empty edits; option to defer normals if frame budget exceeded.
+Done check: QA can paint/deepen/reset terrain live; metrics update; FPS stable.
+Quick manual test: Enable brush; paint; observe metrics; reset; confirm shape and colors restore.
+
+Task 54 — QA Menu: Add Deform Tools & Metrics (plus culling/proxy toggles)
+
+Files: hud.js, game.js
+Prompt:
+Integrate into the QA/Dev menu: toggles for Deform Brush, Culling Overlay, Rear Debug Proxies, Single-Cam Perf Test (from prior perf tasks). Include brush controls and metrics from Task 53. Dev-only; excluded from production.
+Done check: All tools accessible in QA menu; no gameplay UI conflicts.
+Quick manual test: Open QA menu; paint crater; toggle overlays/proxies; metrics reflect changes; close menu—game unaffected.
+
+
+56 → 55 → 57 → 58 → 59 → 60 → 49 → 50 → 51 → 52 → 53 → 54
