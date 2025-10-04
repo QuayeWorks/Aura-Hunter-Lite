@@ -819,6 +819,7 @@
       getMesh() { return null; },
       sampleHeight() { return null; },
       worldToVertex() { return null; },
+      applyDamage() { return false; },
       updateFromColumns() { return false; },
       applyRegionAmbient() {},
       setActiveRegion() {},
@@ -979,6 +980,214 @@
         state.mesh.markAsDirty(BABYLON.VertexBuffer.ColorKind);
         state.colorsDirty = false;
       }
+    }
+
+    function emitTerrainDeformed(detail) {
+      if (!detail) return;
+      const payload = { ...detail };
+      const target = H.onTerrainDeformed;
+      const callSafe = (fn) => {
+        if (typeof fn !== "function") return;
+        try {
+          fn(payload);
+        } catch (err) {
+          console.warn("[Terrain] onTerrainDeformed handler failed", err);
+        }
+      };
+      if (typeof target === "function") {
+        callSafe(target);
+      } else if (Array.isArray(target)) {
+        for (const entry of target) callSafe(entry);
+      } else if (target && typeof target.notifyObservers === "function") {
+        try { target.notifyObservers(payload); } catch (err) { console.warn("[Terrain] onTerrainDeformed notify failed", err); }
+      } else if (target && typeof target.emit === "function") {
+        try { target.emit(payload); } catch (err) { console.warn("[Terrain] onTerrainDeformed emit failed", err); }
+      } else if (target && typeof target.dispatch === "function") {
+        try { target.dispatch(payload); } catch (err) { console.warn("[Terrain] onTerrainDeformed dispatch failed", err); }
+      }
+      const events = H.events;
+      if (events) {
+        const methods = ["emit", "dispatch", "fire", "trigger", "publish"];
+        for (const method of methods) {
+          if (typeof events[method] === "function") {
+            try { events[method]("onTerrainDeformed", payload); } catch (err) { console.warn(`[Terrain] events.${method} failed`, err); }
+          }
+        }
+        if (typeof events.notifyObservers === "function") {
+          try { events.notifyObservers(payload); } catch (err) { console.warn("[Terrain] events.notifyObservers failed", err); }
+        }
+      }
+      if (typeof window !== "undefined" && typeof window.dispatchEvent === "function" && typeof window.CustomEvent === "function") {
+        try { window.dispatchEvent(new window.CustomEvent("onTerrainDeformed", { detail: payload })); } catch (err) {}
+        try { window.dispatchEvent(new window.CustomEvent("terrainDeformed", { detail: payload })); } catch (err) {}
+      }
+    }
+
+    function recomputeNormalsForRegion(minVX, maxVX, minVZ, maxVZ) {
+      if (!state.normals || !state.positions) return null;
+      const rowStride = state.vertexCountX;
+      const startVX = Math.max(0, Math.floor(minVX));
+      const endVX = Math.min(state.vertexCountX - 1, Math.ceil(maxVX));
+      const startVZ = Math.max(0, Math.floor(minVZ));
+      const endVZ = Math.min(state.vertexCountZ - 1, Math.ceil(maxVZ));
+      if (startVX > endVX || startVZ > endVZ) return null;
+      const normals = state.normals;
+      const positions = state.positions;
+      // expand one ring around region for smooth shading
+      const vx0 = Math.max(0, startVX - 1);
+      const vx1 = Math.min(state.vertexCountX - 1, endVX + 1);
+      const vz0 = Math.max(0, startVZ - 1);
+      const vz1 = Math.min(state.vertexCountZ - 1, endVZ + 1);
+      for (let vz = vz0; vz <= vz1; vz++) {
+        for (let vx = vx0; vx <= vx1; vx++) {
+          const idx = vz * rowStride + vx;
+          const nIndex = idx * 3;
+          normals[nIndex] = 0;
+          normals[nIndex + 1] = 0;
+          normals[nIndex + 2] = 0;
+        }
+      }
+      const accumulate = (ia, ib, ic) => {
+        const aIndex = ia * 3;
+        const bIndex = ib * 3;
+        const cIndex = ic * 3;
+        const ax = positions[aIndex];
+        const ay = positions[aIndex + 1];
+        const az = positions[aIndex + 2];
+        const bx = positions[bIndex];
+        const by = positions[bIndex + 1];
+        const bz = positions[bIndex + 2];
+        const cx = positions[cIndex];
+        const cy = positions[cIndex + 1];
+        const cz = positions[cIndex + 2];
+        const abx = bx - ax;
+        const aby = by - ay;
+        const abz = bz - az;
+        const acx = cx - ax;
+        const acy = cy - ay;
+        const acz = cz - az;
+        const nx = aby * acz - abz * acy;
+        const ny = abz * acx - abx * acz;
+        const nz = abx * acy - aby * acx;
+        const addNormal = (index) => {
+          const nIdx = index * 3;
+          normals[nIdx] += nx;
+          normals[nIdx + 1] += ny;
+          normals[nIdx + 2] += nz;
+        };
+        addNormal(ia);
+        addNormal(ib);
+        addNormal(ic);
+      };
+      for (let vz = vz0; vz < vz1; vz++) {
+        for (let vx = vx0; vx < vx1; vx++) {
+          const topLeft = vz * rowStride + vx;
+          const bottomLeft = topLeft + rowStride;
+          const topRight = topLeft + 1;
+          const bottomRight = bottomLeft + 1;
+          accumulate(topLeft, bottomLeft, topRight);
+          accumulate(topRight, bottomLeft, bottomRight);
+        }
+      }
+      for (let vz = vz0; vz <= vz1; vz++) {
+        for (let vx = vx0; vx <= vx1; vx++) {
+          const idx = vz * rowStride + vx;
+          const nIndex = idx * 3;
+          const nx = normals[nIndex];
+          const ny = normals[nIndex + 1];
+          const nz = normals[nIndex + 2];
+          const len = Math.hypot(nx, ny, nz);
+          if (len > 1e-5) {
+            normals[nIndex] = nx / len;
+            normals[nIndex + 1] = ny / len;
+            normals[nIndex + 2] = nz / len;
+          } else {
+            normals[nIndex] = 0;
+            normals[nIndex + 1] = 1;
+            normals[nIndex + 2] = 0;
+          }
+        }
+      }
+      return { minVX: vx0, maxVX: vx1, minVZ: vz0, maxVZ: vz1 };
+    }
+
+    function applyDamage(options = {}) {
+      if (!state.mesh || !state.positions || !state.heights) return false;
+      const worldX = Number(options.worldX);
+      const worldZ = Number(options.worldZ);
+      const radius = Number(options.radius);
+      const strength = Number(options.strength);
+      if (!Number.isFinite(worldX) || !Number.isFinite(worldZ) || !Number.isFinite(radius) || radius <= 0 || !Number.isFinite(strength) || strength <= 0) {
+        return false;
+      }
+      const falloff = options.falloff === "linear" ? "linear" : "gauss";
+      const startX = -state.width * 0.5;
+      const startZ = -state.depth * 0.5;
+      const maxX = startX + state.width;
+      const maxZ = startZ + state.depth;
+      if (worldX < startX - radius || worldX > maxX + radius || worldZ < startZ - radius || worldZ > maxZ + radius) {
+        return false;
+      }
+      const radiusSq = radius * radius;
+      const rowStride = state.vertexCountX;
+      const minWorldX = worldX - radius;
+      const maxWorldX = worldX + radius;
+      const minWorldZ = worldZ - radius;
+      const maxWorldZ = worldZ + radius;
+      const minVX = Math.max(0, Math.floor((minWorldX - startX) / state.stepX));
+      const maxVX = Math.min(state.vertexCountX - 1, Math.ceil((maxWorldX - startX) / state.stepX));
+      const minVZ = Math.max(0, Math.floor((minWorldZ - startZ) / state.stepZ));
+      const maxVZ = Math.min(state.vertexCountZ - 1, Math.ceil((maxWorldZ - startZ) / state.stepZ));
+      if (minVX > maxVX || minVZ > maxVZ) return false;
+      let affected = 0;
+      let lowestY = Number.POSITIVE_INFINITY;
+      for (let vz = minVZ; vz <= maxVZ; vz++) {
+        const worldZv = startZ + vz * state.stepZ;
+        for (let vx = minVX; vx <= maxVX; vx++) {
+          const worldXv = startX + vx * state.stepX;
+          const dx = worldXv - worldX;
+          const dz = worldZv - worldZ;
+          const distSq = dx * dx + dz * dz;
+          if (distSq > radiusSq) continue;
+          const idx = vz * rowStride + vx;
+          const dist = Math.sqrt(distSq);
+          let factor = 0;
+          if (falloff === "linear") {
+            factor = 1 - dist / radius;
+          } else {
+            const sigma = radius * 0.5;
+            const denom = sigma > 0 ? 2 * sigma * sigma : 1;
+            factor = Math.exp(-(distSq) / denom);
+          }
+          if (factor <= 0) continue;
+          const delta = strength * factor;
+          const newHeight = state.heights[idx] - delta;
+          state.heights[idx] = newHeight;
+          state.positions[idx * 3 + 1] = newHeight;
+          if (newHeight < lowestY) lowestY = newHeight;
+          affected++;
+        }
+      }
+      if (!affected) return false;
+      const normalRegion = recomputeNormalsForRegion(minVX, maxVX, minVZ, maxVZ);
+      if (normalRegion && state.normals) {
+        state.mesh.updateVerticesData(BABYLON.VertexBuffer.NormalKind, state.normals, false, false);
+      }
+      state.mesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind, state.positions, false, false);
+      state.mesh.refreshBoundingInfo();
+      state.mesh.markAsDirty(BABYLON.VertexBuffer.PositionKind | BABYLON.VertexBuffer.NormalKind);
+      state.dirty = false;
+      emitTerrainDeformed({
+        worldX,
+        worldZ,
+        radius,
+        strength,
+        falloff,
+        affected,
+        bounds: normalRegion || { minVX, maxVX, minVZ, maxVZ },
+        lowestY,
+      });
+      return true;
     }
 
     function computeVertexHeight(vx, vz, terrain) {
@@ -1260,6 +1469,7 @@
       getMesh,
       sampleHeight,
       worldToVertex,
+      applyDamage,
       updateFromColumns,
       applyRegionAmbient,
       setActiveRegion,

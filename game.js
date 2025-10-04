@@ -3617,6 +3617,11 @@
    function getTerrainHeight(x, z) {
       const terrain = environment.terrain;
       if (!terrain) return null;
+      const terrainApi = getTerrainApi();
+      if (terrainApi && isUnifiedTerrainActive() && typeof terrainApi.sampleHeight === "function") {
+         const unifiedHeight = terrainApi.sampleHeight(x, z);
+         if (Number.isFinite(unifiedHeight)) return unifiedHeight;
+      }
       const idx = terrainColumnIndexFromWorld(x, z);
       if (idx < 0) return null;
       const height = terrain.heights[idx];
@@ -4405,6 +4410,96 @@
       return height;
    }
 
+   function normalizeCraterOptions(options = {}) {
+      const terrain = environment.terrain;
+      const cubeSize = Math.max(terrain?.cubeSize ?? 1, 0.5);
+      const sourceRadius = Number.isFinite(options.radius)
+         ? options.radius
+         : Number.isFinite(options.sourceRadius)
+            ? options.sourceRadius
+            : Number.isFinite(options.scale)
+               ? options.scale * cubeSize
+               : undefined;
+      const radius = Math.max(0.1, sourceRadius ?? cubeSize * 1.8);
+      const baseStrength = Number.isFinite(options.strength)
+         ? options.strength
+         : Number.isFinite(options.sourceStrength)
+            ? options.sourceStrength
+            : radius * (Number.isFinite(options.intensity) ? options.intensity : 0.6);
+      const strength = Math.max(0.05, baseStrength);
+      const falloff = options.falloff === "linear" ? "linear" : "gauss";
+      return { radius, strength, falloff };
+   }
+
+   function syncUnifiedTerrainHeights(worldX, worldZ, radius) {
+      const terrain = environment.terrain;
+      const terrainApi = getTerrainApi();
+      if (!terrain || !terrain.heights || !terrainApi || typeof terrainApi.sampleHeight !== "function") return;
+      const colsX = terrain.colsX | 0;
+      const colsZ = terrain.colsZ | 0;
+      if (colsX <= 0 || colsZ <= 0) return;
+      const cubeSize = Math.max(terrain.cubeSize || 1, 0.5);
+      const minX = Math.max(-terrain.halfX, worldX - radius);
+      const maxX = Math.min(terrain.halfX, worldX + radius);
+      const minZ = Math.max(-terrain.halfZ, worldZ - radius);
+      const maxZ = Math.min(terrain.halfZ, worldZ + radius);
+      const startCX = Math.max(0, Math.floor((minX + terrain.halfX) / cubeSize));
+      const endCX = Math.min(colsX - 1, Math.ceil((maxX + terrain.halfX) / cubeSize));
+      const startCZ = Math.max(0, Math.floor((minZ + terrain.halfZ) / cubeSize));
+      const endCZ = Math.min(colsZ - 1, Math.ceil((maxZ + terrain.halfZ) / cubeSize));
+      for (let cz = startCZ; cz <= endCZ; cz++) {
+         for (let cx = startCX; cx <= endCX; cx++) {
+            const idx = cz * colsX + cx;
+            const sampleX = -terrain.halfX + (cx + 0.5) * cubeSize;
+            const sampleZ = -terrain.halfZ + (cz + 0.5) * cubeSize;
+            const height = terrainApi.sampleHeight(sampleX, sampleZ);
+            if (Number.isFinite(height)) {
+               terrain.heights[idx] = Math.max(0, height - terrain.baseY);
+            }
+         }
+      }
+   }
+
+   function applyUnifiedTerrainDamage(point, options = {}) {
+      if (!point || !isUnifiedTerrainActive()) return false;
+      const terrainApi = getTerrainApi();
+      if (!terrainApi || typeof terrainApi.applyDamage !== "function") return false;
+      const resolved = normalizeCraterOptions(options);
+      try {
+         const success = terrainApi.applyDamage({
+            worldX: point.x,
+            worldZ: point.z,
+            radius: resolved.radius,
+            strength: resolved.strength,
+            falloff: resolved.falloff,
+         });
+         if (success) {
+            syncUnifiedTerrainHeights(point.x, point.z, resolved.radius);
+         }
+         return !!success;
+      } catch (err) {
+         console.warn("[Terrain] Failed to deform unified mesh", err);
+         return false;
+      }
+   }
+
+   function projectileCraterOptions(projectile) {
+      if (!projectile) return {};
+      const opts = {};
+      if (Number.isFinite(projectile.craterRadius)) {
+         opts.radius = projectile.craterRadius;
+      } else if (Number.isFinite(projectile.radius)) {
+         opts.sourceRadius = projectile.radius * 0.9;
+      }
+      if (Number.isFinite(projectile.craterStrength)) {
+         opts.strength = projectile.craterStrength;
+      }
+      if (typeof projectile.craterFalloff === "string") {
+         opts.falloff = projectile.craterFalloff;
+      }
+      return opts;
+   }
+
    function removeTopBlock(columnIndex) {
       const terrain = environment.terrain;
       if (!terrain) return false;
@@ -4436,17 +4531,24 @@
       return false;
    }
 
-   function removeTerrainBlockFromMesh(mesh) {
+   function removeTerrainBlockFromMesh(mesh, options) {
       if (!mesh) return false;
       const meta = mesh.metadata?.terrainBlock;
       if (!meta) return false;
+      const point = typeof mesh.getAbsolutePosition === "function"
+         ? mesh.getAbsolutePosition()
+         : mesh.position;
+      applyUnifiedTerrainDamage(point, options);
       return removeTopBlock(meta.columnIndex);
    }
 
-   function removeTerrainCubeAtPoint(point) {
+   function removeTerrainCubeAtPoint(point, options = {}) {
+      if (!point) return false;
+      const deformed = applyUnifiedTerrainDamage(point, options);
       const idx = terrainColumnIndexFromWorld(point.x, point.z);
-      if (idx < 0) return false;
-      return removeTopBlock(idx);
+      if (idx < 0) return deformed;
+      const removed = removeTopBlock(idx);
+      return removed || deformed;
    }
 
    function clearTrees() {
@@ -10664,11 +10766,15 @@
       // projectiles
       for (let i = projectiles.length - 1; i >= 0; i--) {
          const p = projectiles[i];
+         const craterOpts = projectileCraterOptions(p);
          p.life.t -= dt;
          if (p.life.t <= 0) {
             const groundY = getTerrainHeight(p.mesh.position.x, p.mesh.position.z);
             if (groundY !== null && p.mesh.position.y - groundY < 6) {
-               removeTerrainCubeAtPoint(new BABYLON.Vector3(p.mesh.position.x, groundY, p.mesh.position.z));
+               removeTerrainCubeAtPoint(
+                  new BABYLON.Vector3(p.mesh.position.x, groundY, p.mesh.position.z),
+                  craterOpts
+               );
             }
             p.mesh.dispose();
             projectiles.splice(i, 1);
@@ -10686,11 +10792,11 @@
          }
          if (collision) {
             if (collision.pickedMesh && collision.pickedMesh.metadata?.terrainBlock) {
-               removeTerrainBlockFromMesh(collision.pickedMesh);
+               removeTerrainBlockFromMesh(collision.pickedMesh, craterOpts);
             } else if (collision.pickedMesh && destroyTreeByMesh(collision.pickedMesh)) {
                // tree destroyed
             } else if (collision.pickedPoint) {
-               removeTerrainCubeAtPoint(collision.pickedPoint);
+               removeTerrainCubeAtPoint(collision.pickedPoint, craterOpts);
             }
             p.mesh.dispose();
             projectiles.splice(i, 1);
