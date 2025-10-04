@@ -11399,7 +11399,21 @@ try {
       document.querySelectorAll(".screen").forEach(s => s.classList.remove("visible"));
       document.getElementById("screen--rig").classList.add("visible");
       window.MenuBG && window.MenuBG.stop();
-      window.RigEditor && window.RigEditor.boot();
+      const rigEditor = window.RigEditor;
+      if (rigEditor && typeof rigEditor.boot === "function") {
+         const bootResult = rigEditor.boot();
+         if (bootResult && typeof bootResult.then === "function") {
+            bootResult
+               .then((ok) => {
+                  if (ok === false) {
+                     console.warn("[Menu] Rig Editor boot did not complete successfully.");
+                  }
+               })
+               .catch((err) => {
+                  console.error("[Menu] Rig Editor boot promise rejected", err);
+               });
+         }
+      }
    });
 
    // first load -> decide whether to show Resume
