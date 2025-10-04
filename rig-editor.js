@@ -1328,6 +1328,29 @@
   let params = null;  // working params
   let booted = false;
   let pendingUnlockBoot = null;
+  let bootPromise = null;
+  let renderLoopAttached = false;
+  let resizeHandlerInstalled = false;
+  let contextMenuHandlerInstalled = false;
+  let canvasWheelBinding = null;
+  let activeBootToast = null;
+
+  const BootPhases = {
+    GATE: "gate",
+    RIG_LOAD: "rig-load",
+    TIMELINE: "timeline",
+    DOPE_SHEET: "dope-sheet",
+    BABYLON: "babylon-binding"
+  };
+
+  let bootStartTime = 0;
+  let lastBootPhaseTime = 0;
+
+  const onRigCanvasContextMenu = (event) => {
+    if (event?.target && event.target.id === "rig-canvas") {
+      event.preventDefault();
+    }
+  };
 
   const timelineControls = { btnPlay: null };
   const TIMELINE_MIN_VIEW_SPAN = 2;
@@ -2768,35 +2791,153 @@
     });
   }
 
-  function boot(){
-    if (booted){
-      if (!sceneAuditReady) {
-        try {
-          window.SceneAudit?.completeTransition?.("menu->rig", {
-            fromLabel: "Menu Background",
-            toLabel: "Rig Editor",
-            scene,
-            engine
-          });
-        } catch (err) {}
-        sceneAuditReady = true;
-      }
-      refresh();
+  function nowMs() {
+    if (typeof performance !== "undefined" && typeof performance.now === "function") {
+      return performance.now();
+    }
+    return Date.now();
+  }
+
+  function beginBootLog() {
+    bootStartTime = nowMs();
+    lastBootPhaseTime = bootStartTime;
+  }
+
+  function logBootPhase(phase, status, endTime, error) {
+    const total = endTime - bootStartTime;
+    const delta = endTime - lastBootPhaseTime;
+    lastBootPhaseTime = endTime;
+    const label = `[RigEditor][Boot][${phase}] ${status === "ok" ? "completed" : "failed"} in ${delta.toFixed(1)}ms (total ${total.toFixed(1)}ms)`;
+    if (status === "ok") {
+      console.info(label);
+    } else {
+      console.error(label, error);
+    }
+  }
+
+  async function runBootPhase(phase, fn) {
+    const start = nowMs();
+    try {
+      const result = await fn();
+      const end = nowMs();
+      logBootPhase(phase, "ok", end);
+      return result;
+    } catch (err) {
+      const end = nowMs();
+      logBootPhase(phase, "error", end, err);
+      throw err;
+    }
+  }
+
+  async function yieldFrame() {
+    if (typeof requestAnimationFrame === "function") {
+      await new Promise(resolve => requestAnimationFrame(() => resolve()));
+    } else {
+      await new Promise(resolve => setTimeout(resolve, 16));
+    }
+  }
+
+  async function waitForSceneReadyAsync(targetScene) {
+    if (!targetScene) return;
+    if (typeof targetScene.whenReadyAsync === "function") {
+      await targetScene.whenReadyAsync();
       return;
     }
-    booted = true;
+    if (typeof targetScene.executeWhenReady === "function") {
+      await new Promise(resolve => targetScene.executeWhenReady(() => resolve()));
+    }
+  }
 
+  function ensureToastRoot() {
+    if (typeof document === "undefined") return null;
+    let root = document.getElementById("rig-toast-root");
+    if (!root) {
+      root = document.createElement("div");
+      root.id = "rig-toast-root";
+      document.body.appendChild(root);
+    }
+    root.style.position = "fixed";
+    root.style.bottom = "20px";
+    root.style.right = "20px";
+    root.style.zIndex = "9999";
+    root.style.display = "flex";
+    root.style.flexDirection = "column";
+    root.style.alignItems = "flex-end";
+    root.style.gap = "8px";
+    root.style.pointerEvents = "none";
+    if (!root.hasAttribute("aria-live")) {
+      root.setAttribute("aria-live", "polite");
+    }
+    if (!root.hasAttribute("aria-atomic")) {
+      root.setAttribute("aria-atomic", "true");
+    }
+    return root;
+  }
+
+  function showBootToast(message, { duration = 6000 } = {}) {
+    const root = ensureToastRoot();
+    if (!root) return null;
+    if (activeBootToast && activeBootToast.isConnected) {
+      try { activeBootToast.remove(); } catch (err) { /* ignore stale toast removal */ }
+    }
+    const toast = document.createElement("div");
+    toast.className = "rig-toast";
+    toast.textContent = message;
+    toast.style.background = "rgba(20, 24, 32, 0.95)";
+    toast.style.color = "#f4f7ff";
+    toast.style.padding = "0.6rem 0.9rem";
+    toast.style.borderRadius = "6px";
+    toast.style.boxShadow = "0 12px 24px rgba(0,0,0,0.45)";
+    toast.style.maxWidth = "320px";
+    toast.style.fontSize = "0.85rem";
+    toast.style.pointerEvents = "auto";
+    toast.style.opacity = "0";
+    toast.style.transform = "translateY(6px)";
+    toast.style.transition = "opacity 160ms ease, transform 160ms ease";
+    root.appendChild(toast);
+    activeBootToast = toast;
+    requestAnimationFrame(() => {
+      toast.style.opacity = "1";
+      toast.style.transform = "translateY(0)";
+    });
+    const dismiss = () => {
+      toast.style.opacity = "0";
+      toast.style.transform = "translateY(6px)";
+      const remove = () => {
+        toast.removeEventListener("transitionend", remove);
+        if (toast.isConnected) {
+          toast.remove();
+        }
+      };
+      toast.addEventListener("transitionend", remove);
+      setTimeout(remove, 220);
+      if (activeBootToast === toast) {
+        activeBootToast = null;
+      }
+    };
+    setTimeout(dismiss, Math.max(1200, duration));
+    return toast;
+  }
+
+  function handleBootError(error) {
+    const message = error?.message
+      ? `Rig Editor failed to open: ${error.message}`
+      : "Rig Editor failed to open. Check console for details.";
+    showBootToast(message);
+  }
+
+  async function rigLoadStep() {
     ensureAnimationLibraryHydrated();
     if (!unloadAnimationSaveHandler && typeof window !== "undefined") {
       unloadAnimationSaveHandler = () => {
-        try { flushAnimationAutosave({ force: true }); } catch (err) {}
+        try { flushAnimationAutosave({ force: true }); } catch (err) { /* ignore */ }
       };
       window.addEventListener("beforeunload", unloadAnimationSaveHandler);
     }
     if (!visibilityAnimationSaveHandler && typeof document !== "undefined") {
       visibilityAnimationSaveHandler = () => {
         if (document.visibilityState === "hidden") {
-          try { flushAnimationAutosave(); } catch (err) {}
+          try { flushAnimationAutosave(); } catch (err) { /* ignore */ }
         }
       };
       document.addEventListener("visibilitychange", visibilityAnimationSaveHandler);
@@ -2835,7 +2976,7 @@
 
     let storedParams = null;
     if (!initialParams) {
-      try { storedParams = JSON.parse(localStorage.getItem("hxh.rig.params")||"null"); }
+      try { storedParams = JSON.parse(localStorage.getItem("hxh.rig.params") || "null"); }
       catch { storedParams = null; }
       if (storedParams && typeof storedParams === "object") {
         const storedType = typeof storedParams.rigType === "string" ? storedParams.rigType : null;
@@ -2867,95 +3008,175 @@
       params.color = getRigColor();
     }
 
-    const canvas = document.getElementById("rig-canvas");
-    engine = new BABYLON.Engine(canvas, true, { stencil:true });
-    scene  = new BABYLON.Scene(engine);
-    scene.clearColor   = new BABYLON.Color4(0.06,0.08,0.12,1);
-    scene.ambientColor = new BABYLON.Color3(0.35,0.35,0.42);
+    const canvas = typeof document !== "undefined" ? document.getElementById("rig-canvas") : null;
+    if (!canvas) {
+      throw new Error("Rig canvas element is missing.");
+    }
 
-    // Arc camera: left = orbit, right = pan, wheel = zoom (smooth)
-    camera = new BABYLON.ArcRotateCamera("cam", Math.PI/2, 1.1, 8, new BABYLON.Vector3(0,1.1,0), scene);
+    const BabylonNS = typeof BABYLON !== "undefined" ? BABYLON : (typeof window !== "undefined" ? window.BABYLON : null);
+    if (!BabylonNS || typeof BabylonNS.Engine !== "function" || typeof BabylonNS.Scene !== "function") {
+      throw new Error("Babylon.js is not available.");
+    }
+
+    if (engine && typeof engine.dispose === "function") {
+      try { engine.stopRenderLoop(); } catch (err) { /* ignore */ }
+      try { engine.dispose(); } catch (err) { /* ignore */ }
+    }
+    renderLoopAttached = false;
+    if (canvasWheelBinding?.canvas && canvasWheelBinding.handler) {
+      try { canvasWheelBinding.canvas.removeEventListener("wheel", canvasWheelBinding.handler); } catch (err) { /* ignore */ }
+    }
+    canvasWheelBinding = null;
+
+    engine = new BabylonNS.Engine(canvas, true, { stencil: true });
+    scene = new BabylonNS.Scene(engine);
+    scene.clearColor = new BabylonNS.Color4(0.06, 0.08, 0.12, 1);
+    scene.ambientColor = new BabylonNS.Color3(0.35, 0.35, 0.42);
+
+    camera = new BabylonNS.ArcRotateCamera("cam", Math.PI / 2, 1.1, 8, new BabylonNS.Vector3(0, 1.1, 0), scene);
     camera.attachControl(canvas, true);
     camera.lowerRadiusLimit = 3;
     camera.upperRadiusLimit = 30;
     camera.wheelDeltaPercentage = 0.015;
     camera.pinchDeltaPercentage = 0.015;
     camera.useNaturalPinchZoom = true;
-    // Ensure pan works across versions
     camera.panningSensibility = 1000;
-    const pInput = camera.inputs.attached.pointers;
-    if (pInput){
-      pInput.buttons=[0];
-      pInput.useCtrlForPanning=false;
-      pInput.panningMouseButton=2;
-      pInput.panningSensibility=1000;
+    const pInput = camera.inputs?.attached?.pointers;
+    if (pInput) {
+      pInput.buttons = [0];
+      pInput.useCtrlForPanning = false;
+      pInput.panningMouseButton = 2;
+      pInput.panningSensibility = 1000;
     }
-    window.addEventListener("contextmenu",(e)=>{ if (e.target && e.target.id==="rig-canvas") e.preventDefault(); });
 
-    const hemi = new BABYLON.HemisphericLight("hemi", new BABYLON.Vector3(0,1,0), scene); hemi.intensity=1.0;
-    const sun  = new BABYLON.DirectionalLight("sun", new BABYLON.Vector3(-0.5,-1,-0.3), scene);
-    sun.position = new BABYLON.Vector3(30,60,30); sun.intensity=1.05;
+    if (!contextMenuHandlerInstalled && typeof window !== "undefined") {
+      window.addEventListener("contextmenu", onRigCanvasContextMenu);
+      contextMenuHandlerInstalled = true;
+    }
 
-    // grid ground
-    try{
-      const ground = BABYLON.MeshBuilder.CreateGround("g",{width:30,height:30},scene);
-      const grid = new BABYLON.GridMaterial("grid",scene);
-      grid.gridRatio=1.5; grid.majorUnitFrequency=5; grid.minorUnitVisibility=0.6;
-      grid.color1=new BABYLON.Color3(0.35,0.8,1); grid.color2=new BABYLON.Color3(0.05,0.07,0.1);
-      ground.material = grid; ground.isPickable=false;
-    }catch{}
+    const hemi = new BabylonNS.HemisphericLight("hemi", new BabylonNS.Vector3(0, 1, 0), scene);
+    hemi.intensity = 1.0;
+    const sun = new BabylonNS.DirectionalLight("sun", new BabylonNS.Vector3(-0.5, -1, -0.3), scene);
+    sun.position = new BabylonNS.Vector3(30, 60, 30);
+    sun.intensity = 1.05;
 
-    // orientation helpers
-    const beacon = BABYLON.MeshBuilder.CreateBox("beacon",{size:0.6},scene);
-    const bm = new BABYLON.StandardMaterial("bm",scene); bm.emissiveColor=new BABYLON.Color3(1,0.5,0.2);
-    beacon.material=bm; beacon.position=new BABYLON.Vector3(0,1.1,2);
-    new BABYLON.AxesViewer(scene,1.5);
+    try {
+      const ground = BabylonNS.MeshBuilder.CreateGround("g", { width: 30, height: 30 }, scene);
+      const grid = new BabylonNS.GridMaterial("grid", scene);
+      grid.gridRatio = 1.5;
+      grid.majorUnitFrequency = 5;
+      grid.minorUnitVisibility = 0.6;
+      grid.color1 = new BabylonNS.Color3(0.35, 0.8, 1);
+      grid.color2 = new BabylonNS.Color3(0.05, 0.07, 0.1);
+      ground.material = grid;
+      ground.isPickable = false;
+    } catch (err) { /* ignore grid material issues */ }
 
+    const beacon = BabylonNS.MeshBuilder.CreateBox("beacon", { size: 0.6 }, scene);
+    const bm = new BabylonNS.StandardMaterial("bm", scene);
+    bm.emissiveColor = new BabylonNS.Color3(1, 0.5, 0.2);
+    beacon.material = bm;
+    beacon.position = new BabylonNS.Vector3(0, 1.1, 2);
+    new BabylonNS.AxesViewer(scene, 1.5);
+
+    await waitForSceneReadyAsync(scene);
     rebuildRig();
     markDecorUnpickable();
 
-    // (Right panel removal) hide panel if present; don't build resizer/panel UI
-    const panel = document.querySelector('#screen--rig .rig-panel');
-    const layout = document.querySelector('#screen--rig .rig-layout');
-    if (panel){ panel.style.display = 'none'; }
-    if (layout){ layout.style.setProperty('--panel-w','0px'); }
+    const panel = typeof document !== "undefined" ? document.querySelector("#screen--rig .rig-panel") : null;
+    const layout = typeof document !== "undefined" ? document.querySelector("#screen--rig .rig-layout") : null;
+    if (panel) { panel.style.display = "none"; }
+    if (layout) { layout.style.setProperty("--panel-w", "0px"); }
+  }
 
+  function buildTimelinePhase() {
     buildAnimBar();
+  }
+
+  function buildDopeSheetPhase() {
     buildAnimEditor();
     setOnionSkinEnabled(onionSkinEnabled, { persist: false });
-    // buildResizablePanel(); // disabled to remove right box
+  }
 
-    // --- Gizmos ---
-    gizmoMgr = new BABYLON.GizmoManager(scene);
+  async function bindBabylonPhase() {
+    const BabylonNS = typeof BABYLON !== "undefined" ? BABYLON : (typeof window !== "undefined" ? window.BABYLON : null);
+    if (!scene || !engine || !BabylonNS) {
+      throw new Error("Rig scene is unavailable for Babylon binding.");
+    }
+    if (gizmoMgr && typeof gizmoMgr.dispose === "function") {
+      try { gizmoMgr.dispose(); } catch (err) { /* ignore */ }
+    }
+    gizmoMgr = new BabylonNS.GizmoManager(scene);
     gizmoMgr.usePointerToAttachGizmos = false;
-    if (typeof gizmoMgr.clearGizmos === "function"){ gizmoMgr.clearGizmos(); }
-    else { gizmoMgr.positionGizmoEnabled=false; gizmoMgr.rotationGizmoEnabled=false; gizmoMgr.scaleGizmoEnabled=false; gizmoMgr.attachToMesh(null); }
+    if (typeof gizmoMgr.clearGizmos === "function") {
+      gizmoMgr.clearGizmos();
+    } else {
+      gizmoMgr.positionGizmoEnabled = false;
+      gizmoMgr.rotationGizmoEnabled = false;
+      gizmoMgr.scaleGizmoEnabled = false;
+      gizmoMgr.attachToMesh(null);
+    }
     setGizmoMode("select");
     ensureAutoKeyHooks();
 
-    // Toolbar, actions, picking
     buildToolbar();
-    wireActionButtons();     // NEW: wire the buttons inside the toolbar
+    wireActionButtons();
     installPicking();
 
-    // smooth zoom feel
-    let targetRadius = camera.radius;
-    scene.onBeforeRenderObservable.add(()=>{ targetRadius = BABYLON.Scalar.Clamp(targetRadius, camera.lowerRadiusLimit||1, camera.upperRadiusLimit||100); camera.radius = BABYLON.Scalar.Lerp(camera.radius, targetRadius, 0.18); });
-    canvas.addEventListener("wheel", ()=>{ targetRadius = camera.radius; }, {passive:true});
-
-    engine.runRenderLoop(()=>{
-      if (animationGroupDirty) ensureAnimationGroup();
-      const dt = engine.getDeltaTime()/1000;
-      if (anim.playing){
-        const binding = animationBinding;
-        if (!binding.group){
-          animateTick(dt);
-          syncAllNodeQuaternions();
+    const canvas = engine.getRenderingCanvas?.() || (typeof document !== "undefined" ? document.getElementById("rig-canvas") : null);
+    if (camera && scene) {
+      let targetRadius = camera.radius;
+      scene.onBeforeRenderObservable.add(() => {
+        if (!camera) return;
+        const lower = camera.lowerRadiusLimit || 1;
+        const upper = camera.upperRadiusLimit || 100;
+        targetRadius = BabylonNS.Scalar.Clamp(targetRadius, lower, upper);
+        camera.radius = BabylonNS.Scalar.Lerp(camera.radius, targetRadius, 0.18);
+      });
+      if (canvas) {
+        if (canvasWheelBinding?.canvas && canvasWheelBinding.handler && canvasWheelBinding.canvas !== canvas) {
+          canvasWheelBinding.canvas.removeEventListener("wheel", canvasWheelBinding.handler);
+          canvasWheelBinding = null;
+        }
+        if (!canvasWheelBinding) {
+          const handler = () => {
+            if (camera) {
+              targetRadius = camera.radius;
+            }
+          };
+          canvas.addEventListener("wheel", handler, { passive: true });
+          canvasWheelBinding = { canvas, handler };
         }
       }
-      scene.render();
-    });
-    window.addEventListener("resize", ()=> engine.resize());
+    }
+
+    if (engine && !renderLoopAttached) {
+      engine.runRenderLoop(() => {
+        if (!engine || engine.isDisposed?.()) return;
+        if (animationGroupDirty) ensureAnimationGroup();
+        const dt = engine.getDeltaTime() / 1000;
+        if (anim.playing) {
+          const binding = animationBinding;
+          if (!binding.group) {
+            animateTick(dt);
+            syncAllNodeQuaternions();
+          }
+        }
+        scene.render();
+      });
+      renderLoopAttached = true;
+    }
+
+    if (typeof window !== "undefined" && !resizeHandlerInstalled) {
+      const resizeHandler = () => {
+        try { engine?.resize(); } catch (err) { /* ignore */ }
+      };
+      window.addEventListener("resize", resizeHandler);
+      resizeHandlerInstalled = true;
+    }
+
+    refresh();
+
     if (!sceneAuditReady) {
       try {
         window.SceneAudit?.completeTransition?.("menu->rig", {
@@ -2964,10 +3185,65 @@
           scene,
           engine
         });
-      } catch (err) {}
+      } catch (err) { /* ignore */ }
       sceneAuditReady = true;
     }
   }
+
+  function boot(){
+    if (booted){
+      if (!sceneAuditReady) {
+        try {
+          window.SceneAudit?.completeTransition?.("menu->rig", {
+            fromLabel: "Menu Background",
+            toLabel: "Rig Editor",
+            scene,
+            engine
+          });
+        } catch (err) {}
+        sceneAuditReady = true;
+      }
+      refresh();
+      return Promise.resolve(true);
+    }
+
+    if (bootPromise) {
+      return bootPromise;
+    }
+
+    beginBootLog();
+    logBootPhase(BootPhases.GATE, "ok", nowMs());
+
+    const inner = (async () => {
+      await runBootPhase(BootPhases.RIG_LOAD, rigLoadStep);
+      await yieldFrame();
+      await runBootPhase(BootPhases.TIMELINE, buildTimelinePhase);
+      await yieldFrame();
+      await runBootPhase(BootPhases.DOPE_SHEET, buildDopeSheetPhase);
+      await yieldFrame();
+      await runBootPhase(BootPhases.BABYLON, bindBabylonPhase);
+      booted = true;
+      const totalEnd = nowMs();
+      console.info(`[RigEditor][Boot] complete in ${(totalEnd - bootStartTime).toFixed(1)}ms`);
+      return true;
+    })();
+
+    bootPromise = inner.then(
+      (value) => {
+        bootPromise = null;
+        return value;
+      },
+      (err) => {
+        handleBootError(err);
+        booted = false;
+        bootPromise = null;
+        return false;
+      }
+    );
+
+    return bootPromise;
+  }
+
 
   // Helper: what's the current active gizmo mode?
   function activeMode(){ if(gizmoMgr.positionGizmoEnabled)return "move"; if(gizmoMgr.rotationGizmoEnabled)return "rotate"; if(gizmoMgr.scaleGizmoEnabled)return "scale"; return "select"; }
@@ -3869,7 +4145,18 @@
     const handleUnlock = () => {
       pendingUnlockBoot = null;
       try {
-        boot(...args);
+        const result = boot(...args);
+        if (result && typeof result.then === "function") {
+          result
+            .then((ok) => {
+              if (ok === false) {
+                console.warn("[RigEditor] Boot after unlock did not complete successfully.");
+              }
+            })
+            .catch((err) => {
+              console.warn("[RigEditor] Boot after unlock failed", err);
+            });
+        }
       } catch (err) {
         console.warn("[RigEditor] Boot after unlock failed", err);
       }
