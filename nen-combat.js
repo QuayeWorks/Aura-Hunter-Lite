@@ -397,6 +397,7 @@ const NenCombat = {
   dash: (...a) => getHXH().dash?.(...a),
   special: (...a) => getHXH().special?.(...a),
   nearestEnemy: (...a) => getHXH().nearestEnemy?.(...a),
+  terrainDamage: (options) => getHXH().Terrain?.applyDamage?.(options),
 };
 
 window.NenCombat = NenCombat;
