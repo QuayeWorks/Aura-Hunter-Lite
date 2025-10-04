@@ -53,6 +53,15 @@
           </div>
           <label>Max Trees (performance cap) <input type="number" id="settings-max-trees" min="0" max="400" step="1" required />
           </label>
+          <fieldset class="terrain-thresholds">
+            <legend>Deformation Layers</legend>
+            <p class="small settings-note">Depth thresholds (world units) that switch the terrain from grass to dirt, clay, and bedrock.</p>
+            <div class="grid-3">
+              <label>Grass → Dirt <input type="number" id="settings-threshold-dirt" min="0" max="40" step="0.05" required /></label>
+              <label>Dirt → Clay <input type="number" id="settings-threshold-clay" min="0.05" max="60" step="0.05" required /></label>
+              <label>Clay → Bedrock <input type="number" id="settings-threshold-bedrock" min="0.1" max="80" step="0.05" required /></label>
+            </div>
+          </fieldset>
           <p class="small muted">Only cubes within the active radius are visible and collidable. Increase the radius for longer draw distances at the cost of performance.</p>
           <div class="row-right">
             <button type="button" id="settings-cancel" class="secondary">Cancel</button>
