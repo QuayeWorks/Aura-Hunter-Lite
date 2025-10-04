@@ -10518,7 +10518,7 @@
             playerRoot.computeWorldMatrix(true);
             const sampleOffset = sampleRootGroundOffset(playerRoot);
             if (Number.isFinite(sampleOffset)) {
-               state.rootGroundOffsetTarget += sampleOffset;
+               state.rootGroundOffsetTarget = state.rootGroundOffset + sampleOffset;
             }
             state.groundSampleDirty = false;
             state.groundSampleCountdown = ROOT_GROUND_SAMPLE_INTERVAL;
