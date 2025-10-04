@@ -713,6 +713,40 @@
 
    let engine, scene, camera;
    let rearDebugCamera = null;
+   const TMP_DEBUG_POS = new BABYLON.Vector3();
+   const TMP_DEBUG_FORWARD = new BABYLON.Vector3();
+   const TMP_DEBUG_LEFT = new BABYLON.Vector3();
+   const TMP_DEBUG_RIGHT = new BABYLON.Vector3();
+   const cullingOverlayState = {
+      enabled: false,
+      root: null,
+      renderCircle: null,
+      cullCircle: null,
+      observer: null,
+      lastMetrics: null,
+      lastHudUpdate: 0,
+      lastValues: { radius: 0, sleepRadius: 0, renderRadius: 0, cullRadius: 0 }
+   };
+   const rearProxyState = {
+      enabled: false,
+      root: null,
+      marker: null,
+      lineSystem: null,
+      linePoints: null,
+      observer: null,
+      material: null,
+      lastHudSync: 0
+   };
+   const singleCamPerfState = {
+      enabled: false,
+      observer: null,
+      samples: 0,
+      sum: 0,
+      min: Infinity,
+      max: 0,
+      lastHudUpdate: 0,
+      metrics: null
+   };
    let player, playerRoot, input = {},
       inputOnce = {},
       inputUp = {};
@@ -4687,6 +4721,358 @@
       };
       const hudApi = window.HUD;
       hudApi?.setTerrainBrushMetrics?.(brush.lastMetrics);
+      return true;
+   }
+
+   function buildCirclePoints(radius, segments = 72) {
+      const pts = [];
+      const safeRadius = Math.max(0.05, radius);
+      for (let i = 0; i <= segments; i++) {
+         const t = (i / segments) * Math.PI * 2;
+         const x = Math.cos(t) * safeRadius;
+         const z = Math.sin(t) * safeRadius;
+         pts.push(new BABYLON.Vector3(x, 0.05, z));
+      }
+      return pts;
+   }
+
+   function ensureCullingOverlay() {
+      if (!scene) return null;
+      const overlay = cullingOverlayState;
+      if (overlay.root) {
+         const owningScene = typeof overlay.root.getScene === "function" ? overlay.root.getScene() : null;
+         if (!owningScene || owningScene !== scene || overlay.root.isDisposed()) {
+            try { overlay.root.dispose(); } catch (err) {}
+            overlay.root = null;
+            overlay.renderCircle = null;
+            overlay.cullCircle = null;
+            overlay.observer = null;
+            overlay.lastMetrics = null;
+            overlay.lastHudUpdate = 0;
+            overlay.lastValues = { radius: 0, sleepRadius: 0, renderRadius: 0, cullRadius: 0 };
+         }
+      }
+      if (!overlay.root) {
+         const root = new BABYLON.TransformNode("culling-debug-root", scene);
+         root.rotationQuaternion = new BABYLON.Quaternion();
+         root.isPickable = false;
+         root.setEnabled(false);
+
+         const renderCircle = BABYLON.MeshBuilder.CreateLines("culling-debug-render", { points: buildCirclePoints(1) }, scene);
+         renderCircle.color = new BABYLON.Color3(0.25, 0.78, 1.0);
+         renderCircle.parent = root;
+         renderCircle.isPickable = false;
+         renderCircle.alwaysSelectAsActiveMesh = true;
+         renderCircle.renderingGroupId = 1;
+
+         const cullCircle = BABYLON.MeshBuilder.CreateLines("culling-debug-cull", { points: buildCirclePoints(1.1) }, scene);
+         cullCircle.color = new BABYLON.Color3(1.0, 0.45, 0.45);
+         cullCircle.parent = root;
+         cullCircle.isPickable = false;
+         cullCircle.alwaysSelectAsActiveMesh = true;
+         cullCircle.renderingGroupId = 1;
+
+         overlay.root = root;
+         overlay.renderCircle = renderCircle;
+         overlay.cullCircle = cullCircle;
+         overlay.lastHudUpdate = 0;
+         overlay.lastMetrics = null;
+         overlay.lastValues = { radius: 0, sleepRadius: 0, renderRadius: 0, cullRadius: 0 };
+      }
+      return overlay;
+   }
+
+   function updateCullingOverlay() {
+      if (!cullingOverlayState.enabled) return;
+      const overlay = ensureCullingOverlay();
+      if (!overlay || !overlay.root) return;
+      if (playerRoot) {
+         TMP_DEBUG_POS.copyFrom(playerRoot.position);
+         TMP_DEBUG_POS.y += 0.1;
+         overlay.root.position.copyFrom(TMP_DEBUG_POS);
+      }
+      const derived = simulationBubble.derived || {};
+      const radius = Number.isFinite(derived.radius) ? derived.radius : 0;
+      const sleepRadius = Number.isFinite(derived.sleepRadius) ? derived.sleepRadius : radius;
+      const renderRadius = Number.isFinite(derived.renderRadius) ? derived.renderRadius : Math.max(radius, sleepRadius);
+      const cullRadius = Number.isFinite(derived.cullRadius) ? derived.cullRadius : Math.max(renderRadius, sleepRadius);
+      const last = overlay.lastValues;
+      const changedRender = Math.abs(renderRadius - last.renderRadius) > 0.05;
+      const changedCull = Math.abs(cullRadius - last.cullRadius) > 0.05;
+      const changedRadius = Math.abs(radius - last.radius) > 0.05 || Math.abs(sleepRadius - last.sleepRadius) > 0.05;
+      if (overlay.renderCircle && changedRender) {
+         const points = buildCirclePoints(Math.max(0.25, renderRadius));
+         BABYLON.MeshBuilder.CreateLines(null, { points, instance: overlay.renderCircle });
+      }
+      if (overlay.cullCircle && changedCull) {
+         const points = buildCirclePoints(Math.max(0.3, cullRadius));
+         BABYLON.MeshBuilder.CreateLines(null, { points, instance: overlay.cullCircle });
+      }
+      last.radius = radius;
+      last.sleepRadius = sleepRadius;
+      last.renderRadius = renderRadius;
+      last.cullRadius = cullRadius;
+      overlay.lastMetrics = { radius, sleepRadius, renderRadius, cullRadius };
+      const now = Date.now();
+      if (!overlay.lastHudUpdate || changedRender || changedCull || changedRadius || now - overlay.lastHudUpdate > 400) {
+         overlay.lastHudUpdate = now;
+         window.HUD?.setCullingOverlayState?.({ enabled: true, metrics: overlay.lastMetrics });
+      }
+   }
+
+   function disableCullingOverlay() {
+      const overlay = cullingOverlayState;
+      overlay.enabled = false;
+      if (overlay.observer && scene?.onBeforeRenderObservable) {
+         try { scene.onBeforeRenderObservable.remove(overlay.observer); } catch (err) {}
+      }
+      overlay.observer = null;
+      if (overlay.root) overlay.root.setEnabled(false);
+      overlay.lastHudUpdate = 0;
+      overlay.lastMetrics = null;
+      overlay.lastValues = { radius: 0, sleepRadius: 0, renderRadius: 0, cullRadius: 0 };
+      window.HUD?.setCullingOverlayState?.({ enabled: false, metrics: null });
+   }
+
+   function setCullingOverlayEnabled(enabled) {
+      const next = !!enabled && DEV_BUILD;
+      cullingOverlayState.enabled = next;
+      if (!next) {
+         disableCullingOverlay();
+         return true;
+      }
+      if (!scene) {
+         cullingOverlayState.enabled = false;
+         disableCullingOverlay();
+         return false;
+      }
+      const overlay = ensureCullingOverlay();
+      if (!overlay?.root) {
+         cullingOverlayState.enabled = false;
+         disableCullingOverlay();
+         return false;
+      }
+      overlay.root.setEnabled(true);
+      if (!overlay.observer && scene?.onBeforeRenderObservable) {
+         overlay.observer = scene.onBeforeRenderObservable.add(updateCullingOverlay);
+      }
+      updateCullingOverlay();
+      window.HUD?.setCullingOverlayState?.({ enabled: true, metrics: overlay.lastMetrics });
+      return true;
+   }
+
+   function ensureRearProxyMeshes() {
+      if (!scene) return null;
+      const state = rearProxyState;
+      if (state.root) {
+         const owningScene = typeof state.root.getScene === "function" ? state.root.getScene() : null;
+         if (!owningScene || owningScene !== scene || state.root.isDisposed()) {
+            try { state.root.dispose(); } catch (err) {}
+            state.root = null;
+            state.marker = null;
+            state.lineSystem = null;
+            state.linePoints = null;
+            state.material = null;
+            state.observer = null;
+            state.lastHudSync = 0;
+         }
+      }
+      if (!state.root) {
+         const root = new BABYLON.TransformNode("rear-proxy-root", scene);
+         root.rotationQuaternion = new BABYLON.Quaternion();
+         root.isPickable = false;
+         root.setEnabled(false);
+
+         const marker = BABYLON.MeshBuilder.CreateSphere("rear-proxy-marker", { diameter: 0.6, segments: 12 }, scene);
+         marker.parent = root;
+         marker.isPickable = false;
+         marker.alwaysSelectAsActiveMesh = true;
+         marker.renderingGroupId = 1;
+
+         const linePoints = [
+            [BABYLON.Vector3.Zero(), new BABYLON.Vector3(0, 0, -1)],
+            [BABYLON.Vector3.Zero(), new BABYLON.Vector3(0, 0, -1)],
+            [BABYLON.Vector3.Zero(), new BABYLON.Vector3(0, 0, -1)]
+         ];
+         const lineSystem = BABYLON.MeshBuilder.CreateLineSystem("rear-proxy-lines", { lines: linePoints }, scene);
+         lineSystem.parent = root;
+         lineSystem.isPickable = false;
+         lineSystem.renderingGroupId = 1;
+         lineSystem.alwaysSelectAsActiveMesh = true;
+         lineSystem.color = new BABYLON.Color3(0.65, 0.85, 1.0);
+
+         const mat = new BABYLON.StandardMaterial("rear-proxy-mat", scene);
+         mat.emissiveColor = new BABYLON.Color3(0.55, 0.35, 0.95);
+         mat.alpha = 0.55;
+         mat.disableLighting = true;
+         mat.backFaceCulling = false;
+         marker.material = mat;
+
+         state.root = root;
+         state.marker = marker;
+         state.lineSystem = lineSystem;
+         state.linePoints = linePoints;
+         state.material = mat;
+         state.lastHudSync = 0;
+      }
+      return state;
+   }
+
+   function rotateVectorAroundY(vec, angle) {
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+      const x = vec.x * cos - vec.z * sin;
+      const z = vec.x * sin + vec.z * cos;
+      vec.x = x;
+      vec.z = z;
+   }
+
+   function updateRearDebugProxies() {
+      if (!rearProxyState.enabled) return;
+      if (!camera) return;
+      const state = ensureRearProxyMeshes();
+      if (!state || !state.root) return;
+      if (playerRoot) {
+         TMP_DEBUG_POS.copyFrom(playerRoot.position);
+         const offsetY = camera?.target ? (camera.target.y - playerRoot.position.y) : 0.9;
+         TMP_DEBUG_POS.y += offsetY;
+         state.root.position.copyFrom(TMP_DEBUG_POS);
+      }
+      TMP_DEBUG_FORWARD.copyFrom(camera.target);
+      TMP_DEBUG_FORWARD.subtractInPlace(camera.position);
+      let lenSq = TMP_DEBUG_FORWARD.lengthSquared();
+      if (lenSq < 1e-6) {
+         TMP_DEBUG_FORWARD.set(0, 0, 1);
+         lenSq = 1;
+      }
+      TMP_DEBUG_FORWARD.scaleInPlace(1 / Math.sqrt(lenSq));
+      TMP_DEBUG_FORWARD.x *= -1;
+      TMP_DEBUG_FORWARD.z *= -1;
+      const fov = Number.isFinite(camera.fov) ? camera.fov : Math.PI / 3;
+      TMP_DEBUG_LEFT.copyFrom(TMP_DEBUG_FORWARD);
+      TMP_DEBUG_RIGHT.copyFrom(TMP_DEBUG_FORWARD);
+      rotateVectorAroundY(TMP_DEBUG_LEFT, fov * 0.5);
+      rotateVectorAroundY(TMP_DEBUG_RIGHT, -fov * 0.5);
+      const reach = 5;
+      TMP_DEBUG_FORWARD.scaleInPlace(reach);
+      TMP_DEBUG_LEFT.scaleInPlace(reach);
+      TMP_DEBUG_RIGHT.scaleInPlace(reach);
+      if (state.linePoints?.length === 3) {
+         state.linePoints[0][1].copyFrom(TMP_DEBUG_FORWARD);
+         state.linePoints[1][1].copyFrom(TMP_DEBUG_LEFT);
+         state.linePoints[2][1].copyFrom(TMP_DEBUG_RIGHT);
+         BABYLON.MeshBuilder.CreateLineSystem(null, { lines: state.linePoints, instance: state.lineSystem });
+      }
+      const now = Date.now();
+      if (now - (rearProxyState.lastHudSync || 0) > 600) {
+         rearProxyState.lastHudSync = now;
+         window.HUD?.setRearProxyState?.({ enabled: true });
+      }
+   }
+
+   function disableRearDebugProxies() {
+      rearProxyState.enabled = false;
+      if (rearProxyState.observer && scene?.onBeforeRenderObservable) {
+         try { scene.onBeforeRenderObservable.remove(rearProxyState.observer); } catch (err) {}
+      }
+      rearProxyState.observer = null;
+      if (rearProxyState.root) rearProxyState.root.setEnabled(false);
+      rearProxyState.lastHudSync = 0;
+      window.HUD?.setRearProxyState?.({ enabled: false });
+   }
+
+   function setRearDebugProxiesEnabled(enabled) {
+      const next = !!enabled && DEV_BUILD;
+      rearProxyState.enabled = next;
+      if (!next) {
+         disableRearDebugProxies();
+         return true;
+      }
+      if (!scene) {
+         rearProxyState.enabled = false;
+         disableRearDebugProxies();
+         return false;
+      }
+      const state = ensureRearProxyMeshes();
+      if (!state?.root) {
+         rearProxyState.enabled = false;
+         disableRearDebugProxies();
+         return false;
+      }
+      state.root.setEnabled(true);
+      if (!rearProxyState.observer && scene?.onBeforeRenderObservable) {
+         rearProxyState.observer = scene.onBeforeRenderObservable.add(updateRearDebugProxies);
+      }
+      updateRearDebugProxies();
+      window.HUD?.setRearProxyState?.({ enabled: true });
+      return true;
+   }
+
+   function resetSingleCamPerfMetrics() {
+      singleCamPerfState.samples = 0;
+      singleCamPerfState.sum = 0;
+      singleCamPerfState.min = Infinity;
+      singleCamPerfState.max = 0;
+      singleCamPerfState.metrics = null;
+      singleCamPerfState.lastHudUpdate = 0;
+      window.HUD?.setSingleCamPerfMetrics?.(null);
+   }
+
+   function updateSingleCamPerfMetrics() {
+      if (!singleCamPerfState.enabled || !engine) return;
+      const dt = engine.getDeltaTime ? engine.getDeltaTime() : null;
+      if (!Number.isFinite(dt) || dt <= 0) return;
+      const fps = 1000 / dt;
+      if (!Number.isFinite(fps)) return;
+      singleCamPerfState.samples += 1;
+      singleCamPerfState.sum += fps;
+      if (fps < singleCamPerfState.min) singleCamPerfState.min = fps;
+      if (fps > singleCamPerfState.max) singleCamPerfState.max = fps;
+      const avg = singleCamPerfState.sum / singleCamPerfState.samples;
+      singleCamPerfState.metrics = {
+         avgFps: avg,
+         minFps: singleCamPerfState.min,
+         maxFps: singleCamPerfState.max,
+         samples: singleCamPerfState.samples
+      };
+      const now = Date.now();
+      if (!singleCamPerfState.lastHudUpdate || now - singleCamPerfState.lastHudUpdate > 500) {
+         singleCamPerfState.lastHudUpdate = now;
+         window.HUD?.setSingleCamPerfMetrics?.(singleCamPerfState.metrics);
+      }
+   }
+
+   function disableSingleCamPerfTest() {
+      if (singleCamPerfState.observer && scene?.onAfterRenderObservable) {
+         try { scene.onAfterRenderObservable.remove(singleCamPerfState.observer); } catch (err) {}
+      }
+      singleCamPerfState.observer = null;
+      singleCamPerfState.enabled = false;
+      resetSingleCamPerfMetrics();
+      window.HUD?.setSingleCamPerfState?.({ enabled: false });
+   }
+
+   function setSingleCamPerfTestEnabled(enabled) {
+      const next = !!enabled && DEV_BUILD;
+      if (!next) {
+         disableSingleCamPerfTest();
+         return true;
+      }
+      if (!scene) {
+         disableSingleCamPerfTest();
+         return false;
+      }
+      disableRearDebugCamera();
+      singleCamPerfState.enabled = true;
+      resetSingleCamPerfMetrics();
+      if (singleCamPerfState.observer && scene?.onAfterRenderObservable) {
+         try { scene.onAfterRenderObservable.remove(singleCamPerfState.observer); } catch (err) {}
+         singleCamPerfState.observer = null;
+      }
+      if (scene?.onAfterRenderObservable) {
+         singleCamPerfState.observer = scene.onAfterRenderObservable.add(updateSingleCamPerfMetrics);
+      }
+      window.HUD?.setSingleCamPerfState?.({ enabled: true });
       return true;
    }
 
@@ -9300,6 +9686,9 @@
 
    async function setupBabylon(canvas) {
       disableRearDebugCamera();
+      disableCullingOverlay();
+      disableRearDebugProxies();
+      disableSingleCamPerfTest();
       engine = new BABYLON.Engine(canvas, true, {
          stencil: true
       });
@@ -9531,12 +9920,23 @@
             toggleTerrainBrush: (enabled) => setTerrainBrushEnabled(enabled),
             setTerrainBrushOptions: (options) => setTerrainBrushOptions(options),
             setTerrainBrushDeferred: (enabled) => setTerrainBrushDeferred(enabled),
-            resetTerrainPatch: () => resetTerrainBrushPatch()
+            resetTerrainPatch: () => resetTerrainBrushPatch(),
+            toggleCullingOverlay: (enabled) => setCullingOverlayEnabled(enabled),
+            toggleRearProxies: (enabled) => setRearDebugProxiesEnabled(enabled),
+            toggleSingleCamPerf: (enabled) => setSingleCamPerfTestEnabled(enabled)
          });
          hudApi.updateDevPanelState?.(getAuraSnapshot());
          hudApi.setRearViewActive?.(isRearDebugCameraActive());
          scheduleTerrainRadiusUiUpdate();
          syncTerrainBrushHud();
+         hudApi.setCullingOverlayState?.({ enabled: cullingOverlayState.enabled, metrics: cullingOverlayState.lastMetrics });
+         hudApi.setRearProxyState?.({ enabled: rearProxyState.enabled });
+         hudApi.setSingleCamPerfState?.({ enabled: singleCamPerfState.enabled });
+         if (singleCamPerfState.metrics) {
+            hudApi.setSingleCamPerfMetrics?.(singleCamPerfState.metrics);
+         } else {
+            hudApi.setSingleCamPerfMetrics?.(null);
+         }
       }
 
       if (typeof regionChangeUnsub === "function") {
