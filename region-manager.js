@@ -12,6 +12,13 @@
   const interiorSpecsByRegion = new Map();
   const interiorRuntimeByRegion = new Map();
   const chunkMeshes = new Map();
+  const navigationState = {
+    pendingPatch: null,
+    resetPending: false,
+    version: 0,
+    listeners: new Set(),
+    sampler: null
+  };
   let interiorRevisionCounter = 1;
   let activeRegionId = null;
   let lastCommand = null;
@@ -137,6 +144,77 @@
       }
       return value;
     }
+  }
+
+  function mergePatchBounds(target, patch) {
+    if (!patch) return target ? { ...target } : null;
+    if (!target) return { ...patch };
+    const merged = { ...target };
+    if (Number.isFinite(patch.minVX)) merged.minVX = Math.min(merged.minVX, patch.minVX);
+    if (Number.isFinite(patch.maxVX)) merged.maxVX = Math.max(merged.maxVX, patch.maxVX);
+    if (Number.isFinite(patch.minVZ)) merged.minVZ = Math.min(merged.minVZ, patch.minVZ);
+    if (Number.isFinite(patch.maxVZ)) merged.maxVZ = Math.max(merged.maxVZ, patch.maxVZ);
+    if (Number.isFinite(patch.minX)) merged.minX = Math.min(merged.minX, patch.minX);
+    if (Number.isFinite(patch.maxX)) merged.maxX = Math.max(merged.maxX, patch.maxX);
+    if (Number.isFinite(patch.minZ)) merged.minZ = Math.min(merged.minZ, patch.minZ);
+    if (Number.isFinite(patch.maxZ)) merged.maxZ = Math.max(merged.maxZ, patch.maxZ);
+    if (Number.isFinite(patch.stepX)) merged.stepX = patch.stepX;
+    if (Number.isFinite(patch.stepZ)) merged.stepZ = patch.stepZ;
+    return merged;
+  }
+
+  function getTerrainSampler() {
+    if (navigationState.sampler) return navigationState.sampler;
+    const terrain = window.HXH?.environment?.terrain;
+    return terrain?.heightSampler || null;
+  }
+
+  function notifyTerrainSamplerPatch(detail = {}) {
+    const sampler = detail.sampler || getTerrainSampler();
+    navigationState.sampler = sampler || null;
+    if (typeof detail.version === "number" && Number.isFinite(detail.version)) {
+      navigationState.version = detail.version;
+    } else {
+      navigationState.version += 1;
+    }
+    if (detail.reset) {
+      navigationState.pendingPatch = detail.patch ? { ...detail.patch } : null;
+      navigationState.resetPending = true;
+    } else if (detail.patch) {
+      navigationState.pendingPatch = mergePatchBounds(navigationState.pendingPatch, detail.patch);
+    }
+    const aggregated = navigationState.pendingPatch ? { ...navigationState.pendingPatch } : (detail.patch ? { ...detail.patch } : null);
+    const payload = {
+      version: navigationState.version,
+      patch: aggregated,
+      reset: navigationState.resetPending || detail.reset === true,
+      sampler: navigationState.sampler
+    };
+    for (const listener of navigationState.listeners) {
+      try {
+        listener(payload);
+      } catch (err) {
+        console.warn("[RegionManager] Terrain sampler listener failed", err);
+      }
+    }
+    return payload;
+  }
+
+  function consumeTerrainSamplerPatch() {
+    if (!navigationState.pendingPatch && !navigationState.resetPending) {
+      return null;
+    }
+    const patch = navigationState.pendingPatch ? { ...navigationState.pendingPatch } : null;
+    const reset = navigationState.resetPending;
+    navigationState.pendingPatch = null;
+    navigationState.resetPending = false;
+    return { version: navigationState.version, patch, reset, sampler: navigationState.sampler };
+  }
+
+  function onTerrainSamplerUpdate(listener) {
+    if (typeof listener !== "function") return () => {};
+    navigationState.listeners.add(listener);
+    return () => navigationState.listeners.delete(listener);
   }
 
   function normalizeLodAssetConfig(source) {
@@ -1551,6 +1629,10 @@
     setScene,
     ensureChunkMesh,
     disposeChunkMesh,
+    notifyTerrainSamplerPatch,
+    consumeTerrainSamplerPatch,
+    onTerrainSamplerUpdate,
+    getTerrainSampler,
     distanceToRegionBoundary: (id, point) => {
       const region = typeof id === "string" ? registry.get(id) : id;
       if (!region) return Infinity;
