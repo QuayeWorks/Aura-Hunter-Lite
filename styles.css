@@ -28,6 +28,10 @@ legend{ padding:0 .4rem; color:var(--muted); }
 .grid-3{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:.8rem; }
 .settings-form{ display:flex; flex-direction:column; gap:.6rem; }
 .settings-form .row-right{ margin-top:.6rem; }
+.terrain-thresholds{ margin-top:.2rem; }
+.terrain-thresholds .grid-3 label{ margin:0; }
+.terrain-thresholds input{ text-align:right; }
+.settings-note{ margin:.1rem 0 .5rem; }
 .row-right{ display:flex; gap:.6rem; justify-content:flex-end; }
 .small{ font-size:.9rem; color:var(--muted); }
 

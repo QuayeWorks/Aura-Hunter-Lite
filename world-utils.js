@@ -831,7 +831,15 @@
       return unsupported;
     }
 
-    const DEFAULT_COLOR = new BABYLON.Color4(0.58, 0.62, 0.6, 1);
+    const DEFAULT_COLOR = new BABYLON.Color4(0.34, 0.52, 0.26, 1);
+    const DEFAULT_LAYER_COLORS = {
+      grass: new BABYLON.Color4(0.34, 0.52, 0.26, 1),
+      dirt: new BABYLON.Color4(0.45, 0.33, 0.19, 1),
+      clay: new BABYLON.Color4(0.58, 0.4, 0.26, 1),
+      bedrock: new BABYLON.Color4(0.32, 0.33, 0.38, 1)
+    };
+    const DEFAULT_DEPTH_THRESHOLDS = { dirt: 0.45, clay: 1.35, bedrock: 2.8 };
+    const COLOR_WRITE_EPS = 1e-4;
 
     const state = {
       mesh: null,
@@ -850,12 +858,18 @@
       colors: null,
       indices: null,
       heights: null,
+      originalHeights: null,
+      originalInitialized: false,
       dirty: false,
       colorsDirty: false,
       defaultColor: DEFAULT_COLOR.clone(),
       lastColorKey: null,
       pendingColor: null,
-      activeRegion: null
+      activeRegion: null,
+      layerPalette: clonePalette(DEFAULT_LAYER_COLORS),
+      depthThresholds: { ...DEFAULT_DEPTH_THRESHOLDS },
+      colorBlendRing: true,
+      colorBlendStrength: 0.45
     };
 
     function encodeColorKey(color) {
@@ -900,6 +914,209 @@
       }
       const base = fallback || DEFAULT_COLOR;
       return base.clone ? base.clone() : new BABYLON.Color4(base.r, base.g, base.b, base.a ?? 1);
+    }
+
+    function clamp01(v) {
+      return Math.min(1, Math.max(0, Number(v) || 0));
+    }
+
+    function mixColor4(a, b, t) {
+      const clamped = clamp01(t);
+      const ar = a?.r ?? 0;
+      const ag = a?.g ?? 0;
+      const ab = a?.b ?? 0;
+      const aa = a?.a ?? 1;
+      const br = b?.r ?? 0;
+      const bg = b?.g ?? 0;
+      const bb = b?.b ?? 0;
+      const ba = b?.a ?? 1;
+      return new BABYLON.Color4(
+        clamp01(ar + (br - ar) * clamped),
+        clamp01(ag + (bg - ag) * clamped),
+        clamp01(ab + (bb - ab) * clamped),
+        clamp01(aa + (ba - aa) * clamped)
+      );
+    }
+
+    function clonePalette(palette) {
+      return {
+        grass: toColor4(palette?.grass || DEFAULT_LAYER_COLORS.grass, DEFAULT_LAYER_COLORS.grass),
+        dirt: toColor4(palette?.dirt || DEFAULT_LAYER_COLORS.dirt, DEFAULT_LAYER_COLORS.dirt),
+        clay: toColor4(palette?.clay || DEFAULT_LAYER_COLORS.clay, DEFAULT_LAYER_COLORS.clay),
+        bedrock: toColor4(palette?.bedrock || DEFAULT_LAYER_COLORS.bedrock, DEFAULT_LAYER_COLORS.bedrock)
+      };
+    }
+
+    function resolveDepthThresholds(source, base = state.depthThresholds) {
+      const ref = base && typeof base === "object" ? base : DEFAULT_DEPTH_THRESHOLDS;
+      const resolved = {
+        dirt: Number.isFinite(ref?.dirt) ? Number(ref.dirt) : DEFAULT_DEPTH_THRESHOLDS.dirt,
+        clay: Number.isFinite(ref?.clay) ? Number(ref.clay) : DEFAULT_DEPTH_THRESHOLDS.clay,
+        bedrock: Number.isFinite(ref?.bedrock) ? Number(ref.bedrock) : DEFAULT_DEPTH_THRESHOLDS.bedrock
+      };
+      if (source && typeof source === "object") {
+        const dirt = Number(source.dirt ?? source.t1 ?? source.grassToDirt);
+        const clay = Number(source.clay ?? source.t2 ?? source.dirtToClay);
+        const bedrock = Number(source.bedrock ?? source.t3 ?? source.clayToBedrock);
+        if (Number.isFinite(dirt) && dirt >= 0) resolved.dirt = dirt;
+        if (Number.isFinite(clay) && clay >= 0) resolved.clay = clay;
+        if (Number.isFinite(bedrock) && bedrock >= 0) resolved.bedrock = bedrock;
+      }
+      if (resolved.dirt < 0) resolved.dirt = 0;
+      if (resolved.clay <= resolved.dirt) resolved.clay = resolved.dirt + 0.01;
+      if (resolved.bedrock <= resolved.clay) resolved.bedrock = resolved.clay + 0.01;
+      return resolved;
+    }
+
+    function resolveLayerPalette(overrides, grassBase) {
+      const grass = grassBase ? toColor4(grassBase, DEFAULT_LAYER_COLORS.grass) : DEFAULT_LAYER_COLORS.grass;
+      const palette = clonePalette({
+        grass,
+        dirt: mixColor4(DEFAULT_LAYER_COLORS.dirt, grass, 0.35),
+        clay: mixColor4(DEFAULT_LAYER_COLORS.clay, grass, 0.22),
+        bedrock: mixColor4(DEFAULT_LAYER_COLORS.bedrock, grass, 0.18)
+      });
+      if (overrides && typeof overrides === "object") {
+        if (overrides.grass) palette.grass = toColor4(overrides.grass, palette.grass);
+        if (overrides.dirt) palette.dirt = toColor4(overrides.dirt, palette.dirt);
+        if (overrides.clay) palette.clay = toColor4(overrides.clay, palette.clay);
+        if (overrides.bedrock) palette.bedrock = toColor4(overrides.bedrock, palette.bedrock);
+      }
+      return palette;
+    }
+
+    function ensureOriginalHeightsInitialized(force = false) {
+      if (!state.heights) return;
+      if (!state.originalHeights || state.originalHeights.length !== state.heights.length) {
+        state.originalHeights = new Float32Array(state.heights.length);
+      }
+      if (!state.originalInitialized || force) {
+        state.originalHeights.set(state.heights);
+        state.originalInitialized = true;
+      }
+    }
+
+    function writeVertexColor(index, color) {
+      if (!state.colors) return false;
+      const base = index * 4;
+      const cr = state.colors[base];
+      const cg = state.colors[base + 1];
+      const cb = state.colors[base + 2];
+      const ca = state.colors[base + 3];
+      const nr = color.r;
+      const ng = color.g;
+      const nb = color.b;
+      const na = color.a ?? 1;
+      if (
+        Math.abs(cr - nr) < COLOR_WRITE_EPS &&
+        Math.abs(cg - ng) < COLOR_WRITE_EPS &&
+        Math.abs(cb - nb) < COLOR_WRITE_EPS &&
+        Math.abs(ca - na) < COLOR_WRITE_EPS
+      ) {
+        return false;
+      }
+      state.colors[base] = nr;
+      state.colors[base + 1] = ng;
+      state.colors[base + 2] = nb;
+      state.colors[base + 3] = na;
+      state.colorsDirty = true;
+      return true;
+    }
+
+    function commitColors() {
+      if (!state.mesh || !state.colors || !state.colorsDirty) return;
+      state.mesh.updateVerticesData(BABYLON.VertexBuffer.ColorKind, state.colors, false, false);
+      state.mesh.markAsDirty(BABYLON.VertexBuffer.ColorKind);
+      state.colorsDirty = false;
+    }
+
+    function updateColorsForRegion(minVX, maxVX, minVZ, maxVZ, opts = {}) {
+      if (!state.colors || !state.heights || state.vertexCountX <= 0 || state.vertexCountZ <= 0) {
+        return null;
+      }
+      ensureOriginalHeightsInitialized(opts.resetOriginal === true);
+      if (!state.originalHeights) return null;
+      const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+      const rowStride = state.vertexCountX;
+      const vx0 = clamp(minVX ?? 0, 0, state.vertexCountX - 1);
+      const vx1 = clamp(maxVX ?? state.vertexCountX - 1, vx0, state.vertexCountX - 1);
+      const vz0 = clamp(minVZ ?? 0, 0, state.vertexCountZ - 1);
+      const vz1 = clamp(maxVZ ?? state.vertexCountZ - 1, vz0, state.vertexCountZ - 1);
+      const thresholds = resolveDepthThresholds(opts.depthThresholds, state.depthThresholds);
+      state.depthThresholds = thresholds;
+      const palette = state.layerPalette || clonePalette(DEFAULT_LAYER_COLORS);
+      const blendRing = opts.softBlend ?? state.colorBlendRing;
+      const ringEntries = blendRing ? [] : null;
+      let changed = false;
+      for (let vz = vz0; vz <= vz1; vz++) {
+        for (let vx = vx0; vx <= vx1; vx++) {
+          const idx = vz * rowStride + vx;
+          const original = state.originalHeights[idx];
+          const current = state.heights[idx];
+          if (!Number.isFinite(original) || !Number.isFinite(current)) continue;
+          const depth = Math.max(0, original - current);
+          let color = palette.grass;
+          if (depth > thresholds.dirt) color = palette.dirt;
+          if (depth > thresholds.clay) color = palette.clay;
+          if (depth > thresholds.bedrock) color = palette.bedrock;
+          changed = writeVertexColor(idx, color) || changed;
+          if (ringEntries && (vx === vx0 || vx === vx1 || vz === vz0 || vz === vz1)) {
+            ringEntries.push({ index: idx, vx, vz });
+          }
+        }
+      }
+      if (ringEntries && ringEntries.length && state.colorBlendStrength > 0) {
+        const strength = Math.max(0, Math.min(1, Number(state.colorBlendStrength) || 0));
+        for (const entry of ringEntries) {
+          let totalR = 0;
+          let totalG = 0;
+          let totalB = 0;
+          let totalA = 0;
+          let count = 0;
+          for (let dz = -1; dz <= 1; dz++) {
+            for (let dx = -1; dx <= 1; dx++) {
+              const nvx = entry.vx + dx;
+              const nvz = entry.vz + dz;
+              if (nvx < 0 || nvx >= state.vertexCountX || nvz < 0 || nvz >= state.vertexCountZ) continue;
+              if (dx === 0 && dz === 0) continue;
+              const nIdx = nvz * rowStride + nvx;
+              const base = nIdx * 4;
+              totalR += state.colors[base];
+              totalG += state.colors[base + 1];
+              totalB += state.colors[base + 2];
+              totalA += state.colors[base + 3];
+              count++;
+            }
+          }
+          if (!count) continue;
+          const avgR = totalR / count;
+          const avgG = totalG / count;
+          const avgB = totalB / count;
+          const avgA = totalA / count;
+          const base = entry.index * 4;
+          const currentR = state.colors[base];
+          const currentG = state.colors[base + 1];
+          const currentB = state.colors[base + 2];
+          const currentA = state.colors[base + 3];
+          const blended = new BABYLON.Color4(
+            clamp01(currentR * (1 - strength) + avgR * strength),
+            clamp01(currentG * (1 - strength) + avgG * strength),
+            clamp01(currentB * (1 - strength) + avgB * strength),
+            clamp01(currentA * (1 - strength) + avgA * strength)
+          );
+          changed = writeVertexColor(entry.index, blended) || changed;
+        }
+      }
+      return changed ? { minVX: vx0, maxVX: vx1, minVZ: vz0, maxVZ: vz1 } : null;
+    }
+
+    function refreshAllVertexColors(options = {}) {
+      const region = updateColorsForRegion(0, state.vertexCountX - 1, 0, state.vertexCountZ - 1, options);
+      if (region) {
+        commitColors();
+        return true;
+      }
+      return false;
     }
 
     function resolveScene(options = {}) {
@@ -957,10 +1174,17 @@
       state.colors = null;
       state.indices = null;
       state.heights = null;
+      state.originalHeights = null;
+      state.originalInitialized = false;
       state.dirty = false;
       state.colorsDirty = false;
       state.lastColorKey = null;
       state.activeRegion = null;
+      state.layerPalette = clonePalette(DEFAULT_LAYER_COLORS);
+      state.depthThresholds = { ...DEFAULT_DEPTH_THRESHOLDS };
+      state.colorBlendRing = true;
+      state.colorBlendStrength = 0.45;
+      state.pendingColor = null;
     }
 
     function commit(updateNormals = true) {
@@ -975,11 +1199,7 @@
         state.mesh.markAsDirty(BABYLON.VertexBuffer.PositionKind | BABYLON.VertexBuffer.NormalKind);
         state.dirty = false;
       }
-      if (state.colorsDirty && state.colors) {
-        state.mesh.updateVerticesData(BABYLON.VertexBuffer.ColorKind, state.colors, false, false);
-        state.mesh.markAsDirty(BABYLON.VertexBuffer.ColorKind);
-        state.colorsDirty = false;
-      }
+      commitColors();
     }
 
     function emitTerrainDeformed(detail) {
@@ -1120,6 +1340,7 @@
       if (!Number.isFinite(worldX) || !Number.isFinite(worldZ) || !Number.isFinite(radius) || radius <= 0 || !Number.isFinite(strength) || strength <= 0) {
         return false;
       }
+      ensureOriginalHeightsInitialized();
       const falloff = options.falloff === "linear" ? "linear" : "gauss";
       const startX = -state.width * 0.5;
       const startZ = -state.depth * 0.5;
@@ -1177,6 +1398,16 @@
       state.mesh.refreshBoundingInfo();
       state.mesh.markAsDirty(BABYLON.VertexBuffer.PositionKind | BABYLON.VertexBuffer.NormalKind);
       state.dirty = false;
+      const colorRegion = updateColorsForRegion(
+        Math.max(0, minVX - 1),
+        Math.min(state.vertexCountX - 1, maxVX + 1),
+        Math.max(0, minVZ - 1),
+        Math.min(state.vertexCountZ - 1, maxVZ + 1),
+        { softBlend: true }
+      );
+      if (colorRegion) {
+        commitColors();
+      }
       emitTerrainDeformed({
         worldX,
         worldZ,
@@ -1277,9 +1508,18 @@
       const colors = new Float32Array(vertexCount * 4);
       const indices = new Uint32Array(segmentsX * segmentsZ * 6);
       const heights = new Float32Array(vertexCount);
+      const originalHeights = new Float32Array(vertexCount);
 
       const baseColor = options.color ? toColor4(options.color, DEFAULT_COLOR) : DEFAULT_COLOR.clone();
       const appliedColor = state.pendingColor ? state.pendingColor.clone() : baseColor.clone();
+      state.layerPalette = resolveLayerPalette(options.layerColors, appliedColor);
+      state.depthThresholds = resolveDepthThresholds(options.depthThresholds, state.depthThresholds);
+      state.colorBlendRing = options.colorBlendRing !== false;
+      state.colorBlendStrength = Number.isFinite(options.colorBlendStrength)
+        ? Math.max(0, Math.min(1, options.colorBlendStrength))
+        : state.colorBlendStrength;
+      const grassColor = state.layerPalette.grass || appliedColor;
+      state.lastColorKey = encodeColorKey(grassColor);
 
       const startX = -width * 0.5;
       const startZ = -depth * 0.5;
@@ -1293,11 +1533,12 @@
           positions[pIndex + 1] = baseY;
           positions[pIndex + 2] = posZ;
           heights[v] = baseY;
+          originalHeights[v] = baseY;
           const cIndex = v * 4;
-          colors[cIndex] = appliedColor.r;
-          colors[cIndex + 1] = appliedColor.g;
-          colors[cIndex + 2] = appliedColor.b;
-          colors[cIndex + 3] = appliedColor.a;
+          colors[cIndex] = grassColor.r;
+          colors[cIndex + 1] = grassColor.g;
+          colors[cIndex + 2] = grassColor.b;
+          colors[cIndex + 3] = grassColor.a;
           v++;
         }
       }
@@ -1346,11 +1587,12 @@
       state.colors = colors;
       state.indices = indices;
       state.heights = heights;
+      state.originalHeights = originalHeights;
+      state.originalInitialized = false;
       state.dirty = false;
       state.colorsDirty = false;
       state.defaultColor = baseColor.clone();
       state.pendingColor = appliedColor.clone();
-      state.lastColorKey = encodeColorKey(appliedColor);
       state.activeRegion = null;
 
       return mesh;
@@ -1411,35 +1653,57 @@
       if (terrain.colsX !== state.segmentsX || terrain.colsZ !== state.segmentsZ) return false;
       state.baseY = Number.isFinite(terrain.baseY) ? Number(terrain.baseY) : state.baseY;
       const { columnIndex, columnIndices } = opts;
+      const regions = [];
       if (Array.isArray(columnIndices) && columnIndices.length) {
-        for (const idx of columnIndices) updateColumn(idx, terrain);
+        for (const idx of columnIndices) {
+          updateColumn(idx, terrain);
+          const cx = idx % terrain.colsX;
+          const cz = Math.floor(idx / terrain.colsX);
+          regions.push({
+            minVX: Math.max(0, cx - 1),
+            maxVX: Math.min(state.vertexCountX - 1, cx + 2),
+            minVZ: Math.max(0, cz - 1),
+            maxVZ: Math.min(state.vertexCountZ - 1, cz + 2)
+          });
+        }
       } else if (Number.isInteger(columnIndex)) {
         updateColumn(columnIndex, terrain);
+        const cx = columnIndex % terrain.colsX;
+        const cz = Math.floor(columnIndex / terrain.colsX);
+        regions.push({
+          minVX: Math.max(0, cx - 1),
+          maxVX: Math.min(state.vertexCountX - 1, cx + 2),
+          minVZ: Math.max(0, cz - 1),
+          maxVZ: Math.min(state.vertexCountZ - 1, cz + 2)
+        });
       } else {
         updateAllVertices(terrain);
       }
       commit(true);
+      if (!regions.length) {
+        refreshAllVertexColors({ resetOriginal: !state.originalInitialized });
+      } else {
+        let changed = false;
+        for (const region of regions) {
+          const updated = updateColorsForRegion(region.minVX, region.maxVX, region.minVZ, region.maxVZ, { softBlend: true });
+          if (updated) changed = true;
+        }
+        if (!state.originalInitialized) ensureOriginalHeightsInitialized();
+        if (changed) commitColors();
+      }
       return true;
     }
 
     function setColor(color) {
       const resolved = toColor4(color, state.defaultColor);
       state.pendingColor = resolved.clone();
+      state.defaultColor = resolved.clone();
+      state.layerPalette = resolveLayerPalette(null, resolved);
+      state.lastColorKey = encodeColorKey(state.layerPalette.grass);
       if (!state.mesh || !state.colors) {
-        state.lastColorKey = encodeColorKey(resolved);
         return resolved;
       }
-      const key = encodeColorKey(resolved);
-      if (key === state.lastColorKey && !state.colorsDirty) return resolved;
-      for (let i = 0; i < state.colors.length; i += 4) {
-        state.colors[i] = resolved.r;
-        state.colors[i + 1] = resolved.g;
-        state.colors[i + 2] = resolved.b;
-        state.colors[i + 3] = resolved.a;
-      }
-      state.colorsDirty = true;
-      state.lastColorKey = key;
-      commit(false);
+      refreshAllVertexColors();
       return resolved;
     }
 
@@ -1463,6 +1727,23 @@
       }
     }
 
+    function setDepthThresholds(thresholds) {
+      state.depthThresholds = resolveDepthThresholds(thresholds, state.depthThresholds);
+      if (!state.mesh || !state.colors) {
+        return { ...state.depthThresholds };
+      }
+      const region = updateColorsForRegion(0, state.vertexCountX - 1, 0, state.vertexCountZ - 1, {
+        depthThresholds: state.depthThresholds,
+        softBlend: true
+      });
+      if (region) commitColors();
+      return { ...state.depthThresholds };
+    }
+
+    function getDepthThresholds() {
+      return { ...state.depthThresholds };
+    }
+
     return {
       init,
       dispose,
@@ -1474,7 +1755,9 @@
       applyRegionAmbient,
       setActiveRegion,
       setColor,
-      getActiveRegion: () => state.activeRegion
+      getActiveRegion: () => state.activeRegion,
+      setDepthThresholds,
+      getDepthThresholds
     };
   })();
 

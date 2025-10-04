@@ -1155,7 +1155,8 @@
       streamingPadding: 6,
       layers: TERRAIN_LAYER_DEFS.length,
       maxTrees: 18,
-      chunkSize: DEFAULT_CHUNK_SIZE
+      chunkSize: DEFAULT_CHUNK_SIZE,
+      depthThresholds: { dirt: 0.45, clay: 1.35, bedrock: 2.8 }
    };
 
    const TERRAIN_SETTINGS_KEY = "hxh-terrain-settings";
@@ -1165,8 +1166,29 @@
       return clamp(value, min, max);
    }
 
+   function normalizeDepthThresholds(next = {}, base = defaultTerrainSettings.depthThresholds) {
+      const reference = base && typeof base === "object" ? base : defaultTerrainSettings.depthThresholds;
+      const out = {
+         dirt: Number.isFinite(reference?.dirt) ? Number(reference.dirt) : defaultTerrainSettings.depthThresholds.dirt,
+         clay: Number.isFinite(reference?.clay) ? Number(reference.clay) : defaultTerrainSettings.depthThresholds.clay,
+         bedrock: Number.isFinite(reference?.bedrock) ? Number(reference.bedrock) : defaultTerrainSettings.depthThresholds.bedrock
+      };
+      if (next && typeof next === "object") {
+         const dirt = Number(next.dirt ?? next.t1 ?? next.grassToDirt);
+         const clay = Number(next.clay ?? next.t2 ?? next.dirtToClay);
+         const bedrock = Number(next.bedrock ?? next.t3 ?? next.clayToBedrock);
+         if (Number.isFinite(dirt) && dirt >= 0) out.dirt = dirt;
+         if (Number.isFinite(clay) && clay >= 0) out.clay = clay;
+         if (Number.isFinite(bedrock) && bedrock >= 0) out.bedrock = bedrock;
+      }
+      if (out.dirt < 0) out.dirt = 0;
+      if (out.clay <= out.dirt) out.clay = out.dirt + 0.01;
+      if (out.bedrock <= out.clay) out.bedrock = out.clay + 0.01;
+      return out;
+   }
+
    function normalizeTerrainSettings(next = {}) {
-      const out = { ...defaultTerrainSettings };
+      const out = { ...defaultTerrainSettings, depthThresholds: { ...defaultTerrainSettings.depthThresholds } };
       if (typeof next.length === "number") out.length = Math.round(clampSetting(next.length, 8, 256, defaultTerrainSettings.length));
       if (typeof next.width === "number") out.width = Math.round(clampSetting(next.width, 8, 256, defaultTerrainSettings.width));
       if (typeof next.cubeSize === "number") out.cubeSize = clampSetting(next.cubeSize, 0.5, 4, defaultTerrainSettings.cubeSize);
@@ -1176,6 +1198,12 @@
       if (typeof next.chunkSize === "number") {
          const clampedChunk = clampSetting(next.chunkSize, 4, 96, defaultTerrainSettings.chunkSize);
          out.chunkSize = Math.round(clampedChunk);
+      }
+      if (next.depthThresholds) {
+         const merged = { ...out.depthThresholds, ...next.depthThresholds };
+         out.depthThresholds = normalizeDepthThresholds(merged, out.depthThresholds);
+      } else {
+         out.depthThresholds = normalizeDepthThresholds(out.depthThresholds, out.depthThresholds);
       }
       out.layers = TERRAIN_LAYER_DEFS.length;
       return out;
@@ -1412,7 +1440,7 @@
       terrain: null,
       terrainMaterial: null,
       terrainAtlas: terrainTextureState,
-      terrainSettings: { ...savedTerrainSettings },
+      terrainSettings: { ...savedTerrainSettings, depthThresholds: { ...savedTerrainSettings.depthThresholds } },
       lodProfile: JSON.parse(JSON.stringify(DEFAULT_ENVIRONMENT_LOD_PROFILE)),
       lodEnabled: true,
       updateAccumulator: 0,
@@ -2836,27 +2864,50 @@
 
    const GameSettings = {
       getTerrainSettings() {
-         return { ...environment.terrainSettings };
+         const settings = environment.terrainSettings || normalizeTerrainSettings();
+         return { ...settings, depthThresholds: { ...settings.depthThresholds } };
       },
       setTerrainSettings(update) {
-         const merged = normalizeTerrainSettings({ ...environment.terrainSettings, ...update });
-         environment.terrainSettings = merged;
-         saveTerrainSettings(merged);
+         const current = environment.terrainSettings || normalizeTerrainSettings();
+         const thresholds = update?.depthThresholds
+            ? normalizeDepthThresholds({ ...current.depthThresholds, ...update.depthThresholds }, current.depthThresholds)
+            : { ...current.depthThresholds };
+         const merged = normalizeTerrainSettings({ ...current, ...update, depthThresholds: thresholds });
+         const cloned = { ...merged, depthThresholds: { ...merged.depthThresholds } };
+         environment.terrainSettings = cloned;
+         saveTerrainSettings(cloned);
          if (environment.terrain) {
-            environment.terrain.settings = { ...merged };
-            initializeTerrainStreaming(environment.terrain, merged, { preserveOverride: true });
+            const terrainSettings = { ...cloned, depthThresholds: { ...cloned.depthThresholds } };
+            environment.terrain.settings = terrainSettings;
+            environment.terrain.depthThresholds = { ...cloned.depthThresholds };
+            const terrainApi = getTerrainApi();
+            if (terrainApi?.setDepthThresholds) {
+               try { terrainApi.setDepthThresholds(cloned.depthThresholds); } catch (err) {
+                  console.warn("[Terrain] Failed to apply updated depth thresholds", err);
+               }
+            }
+            initializeTerrainStreaming(environment.terrain, terrainSettings, { preserveOverride: true });
          }
-         return merged;
+         return { ...cloned, depthThresholds: { ...cloned.depthThresholds } };
       },
       resetTerrainSettings() {
          const merged = normalizeTerrainSettings(defaultTerrainSettings);
-         environment.terrainSettings = merged;
-         saveTerrainSettings(merged);
+         const cloned = { ...merged, depthThresholds: { ...merged.depthThresholds } };
+         environment.terrainSettings = cloned;
+         saveTerrainSettings(cloned);
          if (environment.terrain) {
-            environment.terrain.settings = { ...merged };
-            initializeTerrainStreaming(environment.terrain, merged, { preserveOverride: true, forceRebuild: true });
+            const terrainSettings = { ...cloned, depthThresholds: { ...cloned.depthThresholds } };
+            environment.terrain.settings = terrainSettings;
+            environment.terrain.depthThresholds = { ...cloned.depthThresholds };
+            const terrainApi = getTerrainApi();
+            if (terrainApi?.setDepthThresholds) {
+               try { terrainApi.setDepthThresholds(cloned.depthThresholds); } catch (err) {
+                  console.warn("[Terrain] Failed to reset depth thresholds", err);
+               }
+            }
+            initializeTerrainStreaming(environment.terrain, terrainSettings, { preserveOverride: true, forceRebuild: true });
          }
-         return merged;
+         return { ...cloned, depthThresholds: { ...cloned.depthThresholds } };
       }
    };
    const SKY_RADIUS = 420;
@@ -3428,8 +3479,8 @@
 	function createTerrain(scene) {
 	  disposeTerrain();
 
-	  const settings = environment.terrainSettings = normalizeTerrainSettings(environment.terrainSettings);
-	  saveTerrainSettings(settings);
+          const settings = environment.terrainSettings = normalizeTerrainSettings(environment.terrainSettings);
+          saveTerrainSettings({ ...settings, depthThresholds: { ...settings.depthThresholds } });
 
           const { length, width, cubeSize, layers } = settings;
 
@@ -3549,7 +3600,8 @@
                 layerThicknesses,
                 material: terrainMaterial,
                 atlasRects: atlasRects?.slice() || [],
-                settings: { ...settings },
+                settings: { ...settings, depthThresholds: { ...settings.depthThresholds } },
+                depthThresholds: { ...settings.depthThresholds },
                 streamAccumulator: 0,
                 streamInterval: DEFAULT_STREAM_INTERVAL,
                 bounds: { minX: -halfX, maxX: halfX, minZ: -halfZ, maxZ: halfZ },
@@ -3566,7 +3618,10 @@
                         resolution: { x: length, z: width },
                         baseY,
                         parent: root,
-                        material: terrainMaterial
+                        material: terrainMaterial,
+                        depthThresholds: settings.depthThresholds,
+                        colorBlendRing: true,
+                        colorBlendStrength: 0.5
                   });
                   if (mesh && typeof terrainApi.updateFromColumns === "function") {
                         terrainApi.updateFromColumns(environment.terrain);
@@ -11459,6 +11514,9 @@ try {
    const inputCube = document.getElementById("settings-cube");
    const inputRadius = document.getElementById("settings-radius");
    const inputMaxTrees = document.getElementById("settings-max-trees");
+   const inputThresholdDirt = document.getElementById("settings-threshold-dirt");
+   const inputThresholdClay = document.getElementById("settings-threshold-clay");
+   const inputThresholdBedrock = document.getElementById("settings-threshold-bedrock");
    const btnCancel = document.getElementById("settings-cancel");
 
    function populate() {
@@ -11468,6 +11526,10 @@ try {
       if (inputCube) inputCube.value = settings.cubeSize ?? "";
       if (inputRadius) inputRadius.value = settings.activeRadius ?? "";
       if (inputMaxTrees) inputMaxTrees.value = settings.maxTrees ?? "";
+      const thresholds = settings.depthThresholds || {};
+      if (inputThresholdDirt) inputThresholdDirt.value = thresholds.dirt ?? "";
+      if (inputThresholdClay) inputThresholdClay.value = thresholds.clay ?? "";
+      if (inputThresholdBedrock) inputThresholdBedrock.value = thresholds.bedrock ?? "";
    }
 
    function showSettings() {
@@ -11498,6 +11560,14 @@ try {
          activeRadius: inputRadius ? parseFloat(inputRadius.value) : undefined,
          maxTrees: inputMaxTrees ? parseInt(inputMaxTrees.value, 10) : undefined
       };
+      const thresholds = {
+         dirt: inputThresholdDirt ? parseFloat(inputThresholdDirt.value) : undefined,
+         clay: inputThresholdClay ? parseFloat(inputThresholdClay.value) : undefined,
+         bedrock: inputThresholdBedrock ? parseFloat(inputThresholdBedrock.value) : undefined
+      };
+      if (Object.values(thresholds).some((val) => Number.isFinite(val))) {
+         next.depthThresholds = thresholds;
+      }
       window.GameSettings?.setTerrainSettings?.(next);
       returnToMenu();
    });
