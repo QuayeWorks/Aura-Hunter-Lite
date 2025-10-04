@@ -1070,7 +1070,10 @@
     toggleTerrainBrush: () => {},
     setTerrainBrushOptions: () => {},
     resetTerrainPatch: () => {},
-    setTerrainBrushDeferred: () => {}
+    setTerrainBrushDeferred: () => {},
+    toggleCullingOverlay: () => {},
+    toggleRearProxies: () => {},
+    toggleSingleCamPerf: () => {}
   };
 
   const DEV_BUILD = (() => {
@@ -2029,6 +2032,7 @@
   ];
 
   function ensureDevPanel() {
+    if (!DEV_BUILD) return null;
     const root = ensureHudRoot();
     if (!root) return null;
     if (devPanelCache?.root?.isConnected && root.contains(devPanelCache.root)) {
@@ -2325,6 +2329,81 @@
     dynCard.appendChild(dynSliderRow);
     qaCards.appendChild(dynCard);
 
+    const createDebugToggle = (label, handler) => {
+      const row = document.createElement("label");
+      row.style.display = "flex";
+      row.style.alignItems = "center";
+      row.style.justifyContent = "space-between";
+      row.style.gap = "0.45rem";
+      row.style.fontSize = "0.72rem";
+      row.style.opacity = "0.82";
+      row.style.textTransform = "uppercase";
+      row.style.letterSpacing = "0.06em";
+      const span = document.createElement("span");
+      span.textContent = label;
+      span.style.fontWeight = "600";
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.style.width = "16px";
+      input.style.height = "16px";
+      input.style.cursor = "pointer";
+      input.addEventListener("change", () => {
+        const next = input.checked;
+        const result = handler?.(next);
+        if (result === false) {
+          input.checked = !next;
+        }
+      });
+      row.appendChild(span);
+      row.appendChild(input);
+      return { row, input };
+    };
+
+    const debugCard = document.createElement("div");
+    applyCardStyle(debugCard);
+
+    const debugTitle = document.createElement("span");
+    debugTitle.textContent = "Debug Visuals";
+    debugTitle.style.fontSize = "0.7rem";
+    debugTitle.style.textTransform = "uppercase";
+    debugTitle.style.letterSpacing = "0.08em";
+    debugTitle.style.opacity = "0.78";
+    debugTitle.style.fontWeight = "600";
+
+    const cullingToggle = createDebugToggle("Culling Overlay", (value) => devPanelHandlers.toggleCullingOverlay?.(value));
+    const rearProxyToggle = createDebugToggle("Rear Proxies", (value) => devPanelHandlers.toggleRearProxies?.(value));
+
+    const cullingMetricsGrid = document.createElement("div");
+    cullingMetricsGrid.style.display = "grid";
+    cullingMetricsGrid.style.gridTemplateColumns = "repeat(2, minmax(0, 1fr))";
+    cullingMetricsGrid.style.gap = "0.3rem 0.45rem";
+    cullingMetricsGrid.style.fontSize = "0.68rem";
+
+    const makeCullingMetric = (labelText, key) => {
+      const label = document.createElement("span");
+      label.textContent = labelText;
+      label.style.opacity = "0.76";
+      const value = document.createElement("span");
+      value.dataset.cullingMetric = key;
+      value.style.justifySelf = "end";
+      value.style.fontVariantNumeric = "tabular-nums";
+      value.textContent = "—";
+      cullingMetricsGrid.appendChild(label);
+      cullingMetricsGrid.appendChild(value);
+      return value;
+    };
+
+    const cullingMetricRadius = makeCullingMetric("Active Radius", "radius");
+    const cullingMetricSleep = makeCullingMetric("Sleep Buffer", "sleep");
+    const cullingMetricRender = makeCullingMetric("Render", "render");
+    const cullingMetricCull = makeCullingMetric("Cull", "cull");
+
+    debugCard.appendChild(debugTitle);
+    debugCard.appendChild(cullingToggle.row);
+    debugCard.appendChild(rearProxyToggle.row);
+    debugCard.appendChild(cullingMetricsGrid);
+    qaCards.appendChild(debugCard);
+
     const brushCard = document.createElement("div");
     applyCardStyle(brushCard);
 
@@ -2542,6 +2621,67 @@
 
     qaCards.appendChild(brushCard);
 
+    const perfTestCard = document.createElement("div");
+    applyCardStyle(perfTestCard);
+
+    const perfTestHeader = document.createElement("div");
+    perfTestHeader.style.display = "flex";
+    perfTestHeader.style.alignItems = "center";
+    perfTestHeader.style.justifyContent = "space-between";
+
+    const perfTestLabel = document.createElement("span");
+    perfTestLabel.textContent = "Single-Cam Perf Test";
+    perfTestLabel.style.fontSize = "0.7rem";
+    perfTestLabel.style.textTransform = "uppercase";
+    perfTestLabel.style.letterSpacing = "0.08em";
+    perfTestLabel.style.opacity = "0.78";
+    perfTestLabel.style.fontWeight = "600";
+
+    const perfTestToggle = document.createElement("input");
+    perfTestToggle.type = "checkbox";
+    perfTestToggle.style.cursor = "pointer";
+    perfTestToggle.style.width = "16px";
+    perfTestToggle.style.height = "16px";
+    perfTestToggle.addEventListener("change", () => {
+      const next = perfTestToggle.checked;
+      const result = devPanelHandlers.toggleSingleCamPerf?.(next);
+      if (result === false) {
+        perfTestToggle.checked = !next;
+      }
+    });
+
+    perfTestHeader.appendChild(perfTestLabel);
+    perfTestHeader.appendChild(perfTestToggle);
+
+    const perfMetricsGrid = document.createElement("div");
+    perfMetricsGrid.style.display = "grid";
+    perfMetricsGrid.style.gridTemplateColumns = "repeat(2, minmax(0, 1fr))";
+    perfMetricsGrid.style.gap = "0.3rem 0.45rem";
+    perfMetricsGrid.style.fontSize = "0.68rem";
+
+    const makePerfMetric = (labelText, key) => {
+      const label = document.createElement("span");
+      label.textContent = labelText;
+      label.style.opacity = "0.76";
+      const value = document.createElement("span");
+      value.dataset.perfMetric = key;
+      value.style.justifySelf = "end";
+      value.style.fontVariantNumeric = "tabular-nums";
+      value.textContent = "—";
+      perfMetricsGrid.appendChild(label);
+      perfMetricsGrid.appendChild(value);
+      return value;
+    };
+
+    const perfMetricAvg = makePerfMetric("Avg FPS", "avg");
+    const perfMetricMin = makePerfMetric("Min FPS", "min");
+    const perfMetricMax = makePerfMetric("Max FPS", "max");
+    const perfMetricSamples = makePerfMetric("Samples", "samples");
+
+    perfTestCard.appendChild(perfTestHeader);
+    perfTestCard.appendChild(perfMetricsGrid);
+    qaCards.appendChild(perfTestCard);
+
     const sceneCard = document.createElement("div");
     applyCardStyle(sceneCard);
     const sceneHeader = document.createElement("div");
@@ -2691,9 +2831,29 @@
       dynSlider,
       dynValue,
       dynCurrent,
+      debugVisuals: {
+        cullingToggle: cullingToggle.input,
+        rearProxyToggle: rearProxyToggle.input,
+        metrics: {
+          radius: cullingMetricRadius,
+          sleep: cullingMetricSleep,
+          render: cullingMetricRender,
+          cull: cullingMetricCull
+        }
+      },
       cosmeticTester,
       sceneAudit: sceneAuditUi,
-      terrainBrush: terrainBrushCache
+      terrainBrush: terrainBrushCache,
+      singleCamPerf: {
+        toggle: perfTestToggle,
+        grid: perfMetricsGrid,
+        metrics: {
+          avg: perfMetricAvg,
+          min: perfMetricMin,
+          max: perfMetricMax,
+          samples: perfMetricSamples
+        }
+      }
     };
     setPerformanceTarget(performanceTargetValue);
     setDynamicResolutionUI({
@@ -2708,6 +2868,7 @@
   }
 
   function setDevPanelVisible(visible) {
+    if (!DEV_BUILD) return false;
     const cache = ensureDevPanel();
     if (!cache) return false;
     devPanelVisible = !!visible;
@@ -2716,16 +2877,19 @@
   }
 
   function toggleDevPanel() {
+    if (!DEV_BUILD) return false;
     setDevPanelVisible(!devPanelVisible);
     return devPanelVisible;
   }
 
   function configureDevPanel(handlers = {}) {
     devPanelHandlers = { ...devPanelHandlers, ...handlers };
+    if (!DEV_BUILD) return;
     ensureDevPanel();
   }
 
   function updateDevPanelState(aura = {}) {
+    if (!DEV_BUILD) return;
     const cache = devPanelCache || ensureDevPanel();
     if (!cache) return;
     DEV_TOGGLES.forEach(spec => {
@@ -2764,6 +2928,16 @@
     return value.toLocaleString();
   }
 
+  function formatMeters(value) {
+    if (!Number.isFinite(value)) return "—";
+    return `${Math.max(0, value).toFixed(1)}m`;
+  }
+
+  function formatFps(value) {
+    if (!Number.isFinite(value)) return "—";
+    return value.toFixed(1);
+  }
+
   function setTerrainBrushState(state = {}) {
     const cache = ensureTerrainBrushCache();
     if (!cache) return;
@@ -2785,6 +2959,59 @@
     if (state.metrics) {
       setTerrainBrushMetrics(state.metrics);
     }
+  }
+
+  function ensureDebugVisualCache() {
+    if (!DEV_BUILD) return null;
+    if (!devPanelCache) ensureDevPanel();
+    return devPanelCache?.debugVisuals || null;
+  }
+
+  function ensureSingleCamPerfCache() {
+    if (!DEV_BUILD) return null;
+    if (!devPanelCache) ensureDevPanel();
+    return devPanelCache?.singleCamPerf || null;
+  }
+
+  function setCullingOverlayState(state = {}) {
+    if (!DEV_BUILD) return;
+    const cache = ensureDebugVisualCache();
+    if (!cache) return;
+    if (cache.cullingToggle) cache.cullingToggle.checked = !!state.enabled;
+    const metrics = state.metrics || {};
+    if (cache.metrics?.radius) cache.metrics.radius.textContent = formatMeters(metrics.radius);
+    if (cache.metrics?.sleep) cache.metrics.sleep.textContent = formatMeters(metrics.sleepRadius ?? metrics.sleep);
+    if (cache.metrics?.render) cache.metrics.render.textContent = formatMeters(metrics.renderRadius ?? metrics.render);
+    if (cache.metrics?.cull) cache.metrics.cull.textContent = formatMeters(metrics.cullRadius ?? metrics.cull);
+  }
+
+  function setRearProxyState(state = {}) {
+    if (!DEV_BUILD) return;
+    const cache = ensureDebugVisualCache();
+    if (!cache) return;
+    if (cache.rearProxyToggle) cache.rearProxyToggle.checked = !!state.enabled;
+  }
+
+  function setSingleCamPerfState(state = {}) {
+    if (!DEV_BUILD) return;
+    const cache = ensureSingleCamPerfCache();
+    if (!cache) return;
+    if (cache.toggle) cache.toggle.checked = !!state.enabled;
+    if (cache.grid) cache.grid.style.opacity = state.enabled ? "1" : "0.7";
+  }
+
+  function setSingleCamPerfMetrics(metrics = null) {
+    if (!DEV_BUILD) return;
+    const cache = ensureSingleCamPerfCache();
+    if (!cache) return;
+    const avg = Number.isFinite(metrics?.avgFps) ? metrics.avgFps : metrics?.avg;
+    const min = Number.isFinite(metrics?.minFps) ? metrics.minFps : metrics?.min;
+    const max = Number.isFinite(metrics?.maxFps) ? metrics.maxFps : metrics?.max;
+    const samples = Number.isFinite(metrics?.samples) ? metrics.samples : metrics?.sampleCount;
+    if (cache.metrics?.avg) cache.metrics.avg.textContent = formatFps(avg);
+    if (cache.metrics?.min) cache.metrics.min.textContent = formatFps(min);
+    if (cache.metrics?.max) cache.metrics.max.textContent = formatFps(max);
+    if (cache.metrics?.samples) cache.metrics.samples.textContent = Number.isFinite(samples) ? samples.toLocaleString() : "—";
   }
 
   function ensureDepthHud() {
@@ -4828,6 +5055,10 @@
     setDevPanelVisible,
     setTerrainBrushState,
     setTerrainBrushMetrics,
+    setCullingOverlayState,
+    setRearProxyState,
+    setSingleCamPerfState,
+    setSingleCamPerfMetrics,
     setDepthHudVisible,
     setDepthHudPosition,
     updateDepthHudMetrics: setDepthHudMetrics,
