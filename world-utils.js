@@ -8,6 +8,11 @@
     patched: false
   };
 
+  const FLAGS = (H.FLAGS ||= {});
+  if (!Object.prototype.hasOwnProperty.call(FLAGS, "USE_UNIFIED_TERRAIN")) {
+    FLAGS.USE_UNIFIED_TERRAIN = true;
+  }
+
   const WorkerJobs = (() => {
     if (typeof window === "undefined") return null;
 
@@ -804,6 +809,467 @@
     };
   })();
 
+  const Terrain = (() => {
+    const unsupported = {
+      init() {
+        console.warn("[WorldUtils] Babylon.js unavailable; unified terrain disabled");
+        return null;
+      },
+      dispose() {},
+      getMesh() { return null; },
+      sampleHeight() { return null; },
+      worldToVertex() { return null; },
+      updateFromColumns() { return false; },
+      applyRegionAmbient() {},
+      setActiveRegion() {},
+      setColor() { return null; },
+      getActiveRegion() { return null; }
+    };
+
+    if (typeof BABYLON === "undefined") {
+      return unsupported;
+    }
+
+    const DEFAULT_COLOR = new BABYLON.Color4(0.58, 0.62, 0.6, 1);
+
+    const state = {
+      mesh: null,
+      scene: null,
+      width: 0,
+      depth: 0,
+      segmentsX: 0,
+      segmentsZ: 0,
+      vertexCountX: 0,
+      vertexCountZ: 0,
+      stepX: 1,
+      stepZ: 1,
+      baseY: 0,
+      positions: null,
+      normals: null,
+      colors: null,
+      indices: null,
+      heights: null,
+      dirty: false,
+      colorsDirty: false,
+      defaultColor: DEFAULT_COLOR.clone(),
+      lastColorKey: null,
+      pendingColor: null,
+      activeRegion: null
+    };
+
+    function encodeColorKey(color) {
+      if (!color) return null;
+      return `${color.r.toFixed(4)},${color.g.toFixed(4)},${color.b.toFixed(4)},${color.a.toFixed(4)}`;
+    }
+
+    function toColor4(input, fallback = state.defaultColor) {
+      if (input instanceof BABYLON.Color4) return input.clone();
+      if (input instanceof BABYLON.Color3) return new BABYLON.Color4(input.r, input.g, input.b, 1);
+      if (Array.isArray(input) && input.length >= 3) {
+        const r = Number(input[0]) || 0;
+        const g = Number(input[1]) || 0;
+        const b = Number(input[2]) || 0;
+        const a = input.length >= 4 && Number.isFinite(Number(input[3])) ? Number(input[3]) : 1;
+        return new BABYLON.Color4(r, g, b, a);
+      }
+      if (typeof input === "string") {
+        const trimmed = input.trim();
+        if (trimmed) {
+          try {
+            const col = BABYLON.Color3.FromHexString(trimmed.startsWith("#") ? trimmed : `#${trimmed}`);
+            return new BABYLON.Color4(col.r, col.g, col.b, 1);
+          } catch (err) {
+            try {
+              const parsed = JSON.parse(trimmed);
+              if (Array.isArray(parsed) && parsed.length >= 3) {
+                return toColor4(parsed, fallback);
+              }
+            } catch (_) {}
+          }
+        }
+      }
+      if (input && typeof input === "object") {
+        const r = Number(input.r ?? input.red);
+        const g = Number(input.g ?? input.green);
+        const b = Number(input.b ?? input.blue);
+        const a = Number.isFinite(input.a) ? Number(input.a) : Number(input.alpha);
+        if ([r, g, b].every((v) => Number.isFinite(v))) {
+          return new BABYLON.Color4(r, g, b, Number.isFinite(a) ? a : 1);
+        }
+      }
+      const base = fallback || DEFAULT_COLOR;
+      return base.clone ? base.clone() : new BABYLON.Color4(base.r, base.g, base.b, base.a ?? 1);
+    }
+
+    function resolveScene(options = {}) {
+      if (options.scene && typeof options.scene.getEngine === "function") return options.scene;
+      if (options.parent && typeof options.parent.getScene === "function") return options.parent.getScene();
+      if (H.environment?.terrain?.root?.getScene) return H.environment.terrain.root.getScene();
+      if (H.environment?.sun?.getScene) return H.environment.sun.getScene();
+      if (BABYLON.EngineStore?.LastCreatedScene) return BABYLON.EngineStore.LastCreatedScene;
+      return null;
+    }
+
+    function resolveSegments(resolution, axis) {
+      if (resolution == null) return 1;
+      if (typeof resolution === "number" && Number.isFinite(resolution)) {
+        return Math.max(1, Math.floor(resolution));
+      }
+      if (Array.isArray(resolution)) {
+        const idx = axis === "x" ? 0 : 1;
+        const value = Number(resolution[idx]);
+        if (Number.isFinite(value) && value > 0) return Math.floor(value);
+      }
+      if (typeof resolution === "object") {
+        const key = axis === "x" ? "x" : "z";
+        let value = Number(resolution[key]);
+        if (!Number.isFinite(value)) {
+          const fallbackKey = axis === "x" ? "width" : "depth";
+          value = Number(resolution[fallbackKey]);
+        }
+        if (!Number.isFinite(value)) {
+          const altKey = axis === "x" ? "columns" : "rows";
+          value = Number(resolution[altKey]);
+        }
+        if (Number.isFinite(value) && value > 0) return Math.floor(value);
+      }
+      return 1;
+    }
+
+    function dispose() {
+      if (state.mesh && !state.mesh.isDisposed?.()) {
+        try { state.mesh.dispose(false, true); } catch (err) {}
+      }
+      state.mesh = null;
+      state.scene = null;
+      state.width = 0;
+      state.depth = 0;
+      state.segmentsX = 0;
+      state.segmentsZ = 0;
+      state.vertexCountX = 0;
+      state.vertexCountZ = 0;
+      state.stepX = 1;
+      state.stepZ = 1;
+      state.baseY = 0;
+      state.positions = null;
+      state.normals = null;
+      state.colors = null;
+      state.indices = null;
+      state.heights = null;
+      state.dirty = false;
+      state.colorsDirty = false;
+      state.lastColorKey = null;
+      state.activeRegion = null;
+    }
+
+    function commit(updateNormals = true) {
+      if (!state.mesh) return;
+      if (state.dirty && state.positions) {
+        state.mesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind, state.positions, false, false);
+        if (updateNormals && state.normals && state.indices) {
+          BABYLON.VertexData.ComputeNormals(state.positions, state.indices, state.normals);
+          state.mesh.updateVerticesData(BABYLON.VertexBuffer.NormalKind, state.normals, false, false);
+        }
+        state.mesh.refreshBoundingInfo();
+        state.mesh.markAsDirty(BABYLON.VertexBuffer.PositionKind | BABYLON.VertexBuffer.NormalKind);
+        state.dirty = false;
+      }
+      if (state.colorsDirty && state.colors) {
+        state.mesh.updateVerticesData(BABYLON.VertexBuffer.ColorKind, state.colors, false, false);
+        state.mesh.markAsDirty(BABYLON.VertexBuffer.ColorKind);
+        state.colorsDirty = false;
+      }
+    }
+
+    function computeVertexHeight(vx, vz, terrain) {
+      if (!terrain || !terrain.heights) return state.baseY;
+      const colsX = terrain.colsX | 0;
+      const colsZ = terrain.colsZ | 0;
+      const heights = terrain.heights;
+      let total = 0;
+      let count = 0;
+      for (let dz = -1; dz <= 0; dz++) {
+        const cz = vz + dz;
+        if (cz < 0 || cz >= colsZ) continue;
+        for (let dx = -1; dx <= 0; dx++) {
+          const cx = vx + dx;
+          if (cx < 0 || cx >= colsX) continue;
+          const idx = cz * colsX + cx;
+          total += heights[idx] ?? 0;
+          count++;
+        }
+      }
+      const offset = count > 0 ? total / count : 0;
+      return state.baseY + offset;
+    }
+
+    function updateVertexAt(vx, vz, terrain) {
+      if (!state.positions || !state.heights) return;
+      if (vx < 0 || vz < 0 || vx > state.segmentsX || vz > state.segmentsZ) return;
+      const vertexIndex = vz * state.vertexCountX + vx;
+      if (vertexIndex < 0 || vertexIndex >= state.heights.length) return;
+      const height = computeVertexHeight(vx, vz, terrain);
+      state.heights[vertexIndex] = height;
+      state.positions[vertexIndex * 3 + 1] = height;
+      state.dirty = true;
+    }
+
+    function updateColumn(columnIndex, terrain) {
+      if (!Number.isInteger(columnIndex)) return;
+      const colsX = terrain?.colsX | 0;
+      if (colsX <= 0) return;
+      const cx = columnIndex % colsX;
+      const cz = Math.floor(columnIndex / colsX);
+      for (let vz = cz; vz <= cz + 1; vz++) {
+        for (let vx = cx; vx <= cx + 1; vx++) {
+          updateVertexAt(vx, vz, terrain);
+        }
+      }
+    }
+
+    function updateAllVertices(terrain) {
+      for (let vz = 0; vz <= state.segmentsZ; vz++) {
+        for (let vx = 0; vx <= state.segmentsX; vx++) {
+          updateVertexAt(vx, vz, terrain);
+        }
+      }
+    }
+
+    function init(options = {}) {
+      const scene = resolveScene(options);
+      if (!scene) {
+        console.warn("[WorldUtils] Terrain.init requires an active Babylon scene");
+        return null;
+      }
+
+      const width = Number.isFinite(options.width) ? Math.max(0.001, Math.abs(options.width)) : 1;
+      const depth = Number.isFinite(options.depth) ? Math.max(0.001, Math.abs(options.depth)) : 1;
+      const segmentsX = Math.max(1, resolveSegments(options.resolution, "x"));
+      const segmentsZ = Math.max(1, resolveSegments(options.resolution, "z"));
+      const vertexCountX = segmentsX + 1;
+      const vertexCountZ = segmentsZ + 1;
+      const vertexCount = vertexCountX * vertexCountZ;
+      const stepX = width / segmentsX;
+      const stepZ = depth / segmentsZ;
+      const baseY = Number.isFinite(options.baseY) ? Number(options.baseY) : 0;
+
+      dispose();
+
+      const mesh = new BABYLON.Mesh(options.name || "terrainUnified", scene);
+      mesh.isPickable = true;
+      mesh.checkCollisions = true;
+      mesh.receiveShadows = true;
+      mesh.alwaysSelectAsActiveMesh = false;
+      mesh.useVertexColors = true;
+      mesh.hasVertexAlpha = true;
+
+      const positions = new Float32Array(vertexCount * 3);
+      const normals = new Float32Array(vertexCount * 3);
+      const colors = new Float32Array(vertexCount * 4);
+      const indices = new Uint32Array(segmentsX * segmentsZ * 6);
+      const heights = new Float32Array(vertexCount);
+
+      const baseColor = options.color ? toColor4(options.color, DEFAULT_COLOR) : DEFAULT_COLOR.clone();
+      const appliedColor = state.pendingColor ? state.pendingColor.clone() : baseColor.clone();
+
+      const startX = -width * 0.5;
+      const startZ = -depth * 0.5;
+      let v = 0;
+      for (let z = 0; z < vertexCountZ; z++) {
+        const posZ = startZ + z * stepZ;
+        for (let x = 0; x < vertexCountX; x++) {
+          const posX = startX + x * stepX;
+          const pIndex = v * 3;
+          positions[pIndex] = posX;
+          positions[pIndex + 1] = baseY;
+          positions[pIndex + 2] = posZ;
+          heights[v] = baseY;
+          const cIndex = v * 4;
+          colors[cIndex] = appliedColor.r;
+          colors[cIndex + 1] = appliedColor.g;
+          colors[cIndex + 2] = appliedColor.b;
+          colors[cIndex + 3] = appliedColor.a;
+          v++;
+        }
+      }
+
+      let ii = 0;
+      for (let z = 0; z < segmentsZ; z++) {
+        for (let x = 0; x < segmentsX; x++) {
+          const topLeft = z * vertexCountX + x;
+          const bottomLeft = (z + 1) * vertexCountX + x;
+          const topRight = topLeft + 1;
+          const bottomRight = bottomLeft + 1;
+          indices[ii++] = topLeft;
+          indices[ii++] = bottomLeft;
+          indices[ii++] = topRight;
+          indices[ii++] = topRight;
+          indices[ii++] = bottomLeft;
+          indices[ii++] = bottomRight;
+        }
+      }
+
+      BABYLON.VertexData.ComputeNormals(positions, indices, normals);
+
+      mesh.setVerticesData(BABYLON.VertexBuffer.PositionKind, positions, true);
+      mesh.setVerticesData(BABYLON.VertexBuffer.NormalKind, normals, true);
+      mesh.setVerticesData(BABYLON.VertexBuffer.ColorKind, colors, true, 4);
+      mesh.setIndices(indices);
+      mesh.refreshBoundingInfo();
+      mesh.metadata = { ...(mesh.metadata || {}), terrainUnified: true };
+
+      if (options.material) mesh.material = options.material;
+      if (options.parent) mesh.parent = options.parent;
+
+      state.mesh = mesh;
+      state.scene = scene;
+      state.width = width;
+      state.depth = depth;
+      state.segmentsX = segmentsX;
+      state.segmentsZ = segmentsZ;
+      state.vertexCountX = vertexCountX;
+      state.vertexCountZ = vertexCountZ;
+      state.stepX = stepX;
+      state.stepZ = stepZ;
+      state.baseY = baseY;
+      state.positions = positions;
+      state.normals = normals;
+      state.colors = colors;
+      state.indices = indices;
+      state.heights = heights;
+      state.dirty = false;
+      state.colorsDirty = false;
+      state.defaultColor = baseColor.clone();
+      state.pendingColor = appliedColor.clone();
+      state.lastColorKey = encodeColorKey(appliedColor);
+      state.activeRegion = null;
+
+      return mesh;
+    }
+
+    function getMesh() {
+      return state.mesh || null;
+    }
+
+    function worldToVertex(x, z) {
+      if (!state.mesh || !Number.isFinite(x) || !Number.isFinite(z)) return null;
+      if (x < -state.width * 0.5 || x > state.width * 0.5 || z < -state.depth * 0.5 || z > state.depth * 0.5) return null;
+      const localX = (x + state.width * 0.5) / state.stepX;
+      const localZ = (z + state.depth * 0.5) / state.stepZ;
+      const vx = Math.max(0, Math.min(state.vertexCountX - 1, Math.floor(localX)));
+      const vz = Math.max(0, Math.min(state.vertexCountZ - 1, Math.floor(localZ)));
+      const fx = Math.min(1, Math.max(0, localX - vx));
+      const fz = Math.min(1, Math.max(0, localZ - vz));
+      const index = vz * state.vertexCountX + vx;
+      return {
+        vx,
+        vz,
+        index,
+        fx,
+        fz,
+        cellX: Math.max(0, Math.min(state.segmentsX - 1, vx)),
+        cellZ: Math.max(0, Math.min(state.segmentsZ - 1, vz)),
+        position: new BABYLON.Vector3(state.positions[index * 3], state.heights[index], state.positions[index * 3 + 2])
+      };
+    }
+
+    function sampleHeight(x, z) {
+      if (!state.mesh || !Number.isFinite(x) || !Number.isFinite(z)) return null;
+      if (x < -state.width * 0.5 || x > state.width * 0.5 || z < -state.depth * 0.5 || z > state.depth * 0.5) return null;
+      const localX = (x + state.width * 0.5) / state.stepX;
+      const localZ = (z + state.depth * 0.5) / state.stepZ;
+      const cellX = Math.max(0, Math.min(state.segmentsX - 1, Math.floor(localX)));
+      const cellZ = Math.max(0, Math.min(state.segmentsZ - 1, Math.floor(localZ)));
+      const fx = Math.min(1, Math.max(0, localX - cellX));
+      const fz = Math.min(1, Math.max(0, localZ - cellZ));
+      const rowStride = state.vertexCountX;
+      const idx = cellZ * rowStride + cellX;
+      const idxRight = idx + 1;
+      const idxDown = idx + rowStride;
+      const idxDownRight = idxDown + 1;
+      const h00 = state.heights[idx] ?? state.baseY;
+      const h10 = state.heights[idxRight] ?? h00;
+      const h01 = state.heights[idxDown] ?? h00;
+      const h11 = state.heights[idxDownRight] ?? h10;
+      const h0 = h00 + (h10 - h00) * fx;
+      const h1 = h01 + (h11 - h01) * fx;
+      return h0 + (h1 - h0) * fz;
+    }
+
+    function updateFromColumns(terrain, opts = {}) {
+      if (!terrain || !state.mesh) return false;
+      if (!terrain.heights || !Number.isInteger(terrain.colsX) || !Number.isInteger(terrain.colsZ)) return false;
+      if (terrain.colsX !== state.segmentsX || terrain.colsZ !== state.segmentsZ) return false;
+      state.baseY = Number.isFinite(terrain.baseY) ? Number(terrain.baseY) : state.baseY;
+      const { columnIndex, columnIndices } = opts;
+      if (Array.isArray(columnIndices) && columnIndices.length) {
+        for (const idx of columnIndices) updateColumn(idx, terrain);
+      } else if (Number.isInteger(columnIndex)) {
+        updateColumn(columnIndex, terrain);
+      } else {
+        updateAllVertices(terrain);
+      }
+      commit(true);
+      return true;
+    }
+
+    function setColor(color) {
+      const resolved = toColor4(color, state.defaultColor);
+      state.pendingColor = resolved.clone();
+      if (!state.mesh || !state.colors) {
+        state.lastColorKey = encodeColorKey(resolved);
+        return resolved;
+      }
+      const key = encodeColorKey(resolved);
+      if (key === state.lastColorKey && !state.colorsDirty) return resolved;
+      for (let i = 0; i < state.colors.length; i += 4) {
+        state.colors[i] = resolved.r;
+        state.colors[i + 1] = resolved.g;
+        state.colors[i + 2] = resolved.b;
+        state.colors[i + 3] = resolved.a;
+      }
+      state.colorsDirty = true;
+      state.lastColorKey = key;
+      commit(false);
+      return resolved;
+    }
+
+    function applyRegionAmbient(ambient = {}) {
+      if (!ambient) {
+        setColor(state.defaultColor);
+        return;
+      }
+      const color = ambient.ground ?? ambient.color ?? ambient.base ?? null;
+      if (color) {
+        setColor(color);
+      } else {
+        setColor(state.defaultColor);
+      }
+    }
+
+    function setActiveRegion(region) {
+      state.activeRegion = region || null;
+      if (region?.ambient) {
+        applyRegionAmbient(region.ambient);
+      }
+    }
+
+    return {
+      init,
+      dispose,
+      getMesh,
+      sampleHeight,
+      worldToVertex,
+      updateFromColumns,
+      applyRegionAmbient,
+      setActiveRegion,
+      setColor,
+      getActiveRegion: () => state.activeRegion
+    };
+  })();
+
+  H.Terrain = Terrain;
+
   function parseColor3(input, fallback) {
     if (!input) return fallback || null;
     if (input instanceof BABYLON.Color3) return input;
@@ -919,6 +1385,11 @@
     };
     VISUAL_STATE.region = region;
     VISUAL_STATE.colors = colors;
+    if (H.Terrain && typeof H.Terrain.applyRegionAmbient === "function") {
+      try { H.Terrain.applyRegionAmbient(colors); } catch (err) {
+        console.warn("[WorldUtils] Failed to apply terrain ambient", err);
+      }
+    }
     applyRegionTint();
     scheduleTint();
   }
@@ -1575,6 +2046,17 @@
     buildChunkMesh,
     buildChunkMeshAsync,
     WorkerJobs,
+    Terrain,
+    FLAGS,
+    isUnifiedTerrainEnabled: () => FLAGS.USE_UNIFIED_TERRAIN !== false,
+    isUnifiedTerrainActive: () => {
+      if (FLAGS.USE_UNIFIED_TERRAIN === false) return false;
+      const mesh = typeof Terrain.getMesh === "function" ? Terrain.getMesh() : null;
+      if (!mesh) return false;
+      if (typeof mesh.isDisposed === "function" && mesh.isDisposed()) return false;
+      return true;
+    },
+    getUnifiedTerrainMesh: () => (typeof Terrain.getMesh === "function" ? Terrain.getMesh() : null),
     GameSettings: window.GameSettings || H.GameSettings
   };
   window.WorldUtils = WorldUtils;
