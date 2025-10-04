@@ -1066,7 +1066,11 @@
     setEnRadius: () => {},
     spawnDummy: () => {},
     refill: () => {},
-    toggleRearView: () => {}
+    toggleRearView: () => {},
+    toggleTerrainBrush: () => {},
+    setTerrainBrushOptions: () => {},
+    resetTerrainPatch: () => {},
+    setTerrainBrushDeferred: () => {}
   };
 
   const DEV_BUILD = (() => {
@@ -2011,6 +2015,9 @@
     logOverlayCache = null;
   }
 
+  let terrainBrushCache = null;
+  let depthHudCache = null;
+
   const DEV_TOGGLES = [
     { key: "ten", label: "Ten" },
     { key: "zetsu", label: "Zetsu" },
@@ -2318,6 +2325,223 @@
     dynCard.appendChild(dynSliderRow);
     qaCards.appendChild(dynCard);
 
+    const brushCard = document.createElement("div");
+    applyCardStyle(brushCard);
+
+    const brushHeader = document.createElement("div");
+    brushHeader.style.display = "flex";
+    brushHeader.style.alignItems = "center";
+    brushHeader.style.justifyContent = "space-between";
+
+    const brushLabel = document.createElement("span");
+    brushLabel.textContent = "Deform Brush";
+    brushLabel.style.fontSize = "0.7rem";
+    brushLabel.style.textTransform = "uppercase";
+    brushLabel.style.letterSpacing = "0.08em";
+    brushLabel.style.opacity = "0.78";
+
+    const brushToggle = document.createElement("input");
+    brushToggle.type = "checkbox";
+    brushToggle.style.cursor = "pointer";
+    brushToggle.addEventListener("change", () => {
+      devPanelHandlers.toggleTerrainBrush?.(brushToggle.checked);
+    });
+
+    brushHeader.appendChild(brushLabel);
+    brushHeader.appendChild(brushToggle);
+
+    const brushRadiusRow = document.createElement("label");
+    brushRadiusRow.style.display = "flex";
+    brushRadiusRow.style.flexDirection = "column";
+    brushRadiusRow.style.gap = "0.3rem";
+
+    const brushRadiusHeader = document.createElement("span");
+    brushRadiusHeader.textContent = "Radius";
+    brushRadiusHeader.style.fontSize = "0.72rem";
+    brushRadiusHeader.style.opacity = "0.82";
+
+    const brushRadiusWrap = document.createElement("div");
+    brushRadiusWrap.style.display = "flex";
+    brushRadiusWrap.style.alignItems = "center";
+    brushRadiusWrap.style.gap = "0.45rem";
+
+    const brushRadius = document.createElement("input");
+    brushRadius.type = "range";
+    brushRadius.min = "0.8";
+    brushRadius.max = "12";
+    brushRadius.step = "0.2";
+    brushRadius.value = "3";
+    brushRadius.style.flex = "1";
+    brushRadius.style.cursor = "pointer";
+
+    const brushRadiusValue = document.createElement("span");
+    brushRadiusValue.style.fontSize = "0.72rem";
+    brushRadiusValue.style.opacity = "0.8";
+    brushRadiusValue.style.minWidth = "5ch";
+    brushRadiusValue.style.textAlign = "right";
+    brushRadiusValue.textContent = "3.0m";
+
+    brushRadius.addEventListener("input", () => {
+      brushRadiusValue.textContent = `${Number.parseFloat(brushRadius.value).toFixed(1)}m`;
+      devPanelHandlers.setTerrainBrushOptions?.({ radius: Number.parseFloat(brushRadius.value) });
+    });
+
+    brushRadiusWrap.appendChild(brushRadius);
+    brushRadiusWrap.appendChild(brushRadiusValue);
+    brushRadiusRow.appendChild(brushRadiusHeader);
+    brushRadiusRow.appendChild(brushRadiusWrap);
+
+    const brushStrengthRow = document.createElement("label");
+    brushStrengthRow.style.display = "flex";
+    brushStrengthRow.style.flexDirection = "column";
+    brushStrengthRow.style.gap = "0.3rem";
+
+    const brushStrengthHeader = document.createElement("span");
+    brushStrengthHeader.textContent = "Strength";
+    brushStrengthHeader.style.fontSize = "0.72rem";
+    brushStrengthHeader.style.opacity = "0.82";
+
+    const brushStrengthWrap = document.createElement("div");
+    brushStrengthWrap.style.display = "flex";
+    brushStrengthWrap.style.alignItems = "center";
+    brushStrengthWrap.style.gap = "0.45rem";
+
+    const brushStrength = document.createElement("input");
+    brushStrength.type = "range";
+    brushStrength.min = "0.1";
+    brushStrength.max = "6";
+    brushStrength.step = "0.1";
+    brushStrength.value = "1.5";
+    brushStrength.style.flex = "1";
+    brushStrength.style.cursor = "pointer";
+
+    const brushStrengthValue = document.createElement("span");
+    brushStrengthValue.style.fontSize = "0.72rem";
+    brushStrengthValue.style.opacity = "0.8";
+    brushStrengthValue.style.minWidth = "4ch";
+    brushStrengthValue.style.textAlign = "right";
+    brushStrengthValue.textContent = "1.5";
+
+    brushStrength.addEventListener("input", () => {
+      brushStrengthValue.textContent = Number.parseFloat(brushStrength.value).toFixed(1);
+      devPanelHandlers.setTerrainBrushOptions?.({ strength: Number.parseFloat(brushStrength.value) });
+    });
+
+    brushStrengthWrap.appendChild(brushStrength);
+    brushStrengthWrap.appendChild(brushStrengthValue);
+    brushStrengthRow.appendChild(brushStrengthHeader);
+    brushStrengthRow.appendChild(brushStrengthWrap);
+
+    const brushFalloffRow = document.createElement("label");
+    brushFalloffRow.style.display = "flex";
+    brushFalloffRow.style.flexDirection = "column";
+    brushFalloffRow.style.gap = "0.3rem";
+
+    const brushFalloffHeader = document.createElement("span");
+    brushFalloffHeader.textContent = "Falloff";
+    brushFalloffHeader.style.fontSize = "0.72rem";
+    brushFalloffHeader.style.opacity = "0.82";
+
+    const brushFalloffSelect = document.createElement("select");
+    brushFalloffSelect.style.width = "100%";
+    brushFalloffSelect.style.padding = "0.3rem";
+    brushFalloffSelect.style.borderRadius = "8px";
+    brushFalloffSelect.style.border = "1px solid rgba(120, 200, 255, 0.28)";
+    brushFalloffSelect.style.background = "rgba(14, 24, 38, 0.92)";
+    brushFalloffSelect.style.color = "#e6f4ff";
+    brushFalloffSelect.style.cursor = "pointer";
+
+    const falloffOptions = [
+      { value: "gauss", label: "Gaussian" },
+      { value: "linear", label: "Linear" }
+    ];
+    falloffOptions.forEach(opt => {
+      const option = document.createElement("option");
+      option.value = opt.value;
+      option.textContent = opt.label;
+      brushFalloffSelect.appendChild(option);
+    });
+
+    brushFalloffSelect.addEventListener("change", () => {
+      devPanelHandlers.setTerrainBrushOptions?.({ falloff: brushFalloffSelect.value });
+    });
+
+    brushFalloffRow.appendChild(brushFalloffHeader);
+    brushFalloffRow.appendChild(brushFalloffSelect);
+
+    const brushDeferRow = document.createElement("label");
+    brushDeferRow.style.display = "flex";
+    brushDeferRow.style.alignItems = "center";
+    brushDeferRow.style.gap = "0.45rem";
+    brushDeferRow.style.fontSize = "0.7rem";
+    brushDeferRow.style.opacity = "0.8";
+
+    const brushDeferToggle = document.createElement("input");
+    brushDeferToggle.type = "checkbox";
+    brushDeferToggle.style.cursor = "pointer";
+    brushDeferToggle.addEventListener("change", () => {
+      devPanelHandlers.setTerrainBrushDeferred?.(brushDeferToggle.checked);
+    });
+
+    const brushDeferLabel = document.createElement("span");
+    brushDeferLabel.textContent = "Defer normals if slow";
+
+    brushDeferRow.appendChild(brushDeferToggle);
+    brushDeferRow.appendChild(brushDeferLabel);
+
+    const brushActions = document.createElement("div");
+    brushActions.style.display = "flex";
+    brushActions.style.gap = "0.4rem";
+
+    const brushReset = document.createElement("button");
+    brushReset.type = "button";
+    brushReset.textContent = "Reset Patch";
+    brushReset.style.flex = "1";
+    brushReset.style.padding = "0.35rem 0.4rem";
+    brushReset.style.fontSize = "0.72rem";
+    brushReset.style.borderRadius = "8px";
+    brushReset.style.border = "1px solid rgba(120, 200, 255, 0.28)";
+    brushReset.style.background = "rgba(24, 38, 58, 0.78)";
+    brushReset.style.color = "#e4f4ff";
+    brushReset.style.cursor = "pointer";
+    brushReset.addEventListener("click", () => devPanelHandlers.resetTerrainPatch?.());
+
+    brushActions.appendChild(brushReset);
+
+    const brushMetrics = document.createElement("div");
+    brushMetrics.style.display = "grid";
+    brushMetrics.style.gridTemplateColumns = "repeat(2, minmax(0, 1fr))";
+    brushMetrics.style.gap = "0.35rem 0.4rem";
+    brushMetrics.style.fontSize = "0.7rem";
+
+    const makeMetricRow = (labelText, key) => {
+      const label = document.createElement("span");
+      label.textContent = labelText;
+      label.style.opacity = "0.76";
+      const value = document.createElement("span");
+      value.dataset.metricKey = key;
+      value.style.fontVariantNumeric = "tabular-nums";
+      value.style.justifySelf = "end";
+      value.textContent = "—";
+      brushMetrics.appendChild(label);
+      brushMetrics.appendChild(value);
+      return value;
+    };
+
+    const metricTime = makeMetricRow("Last deform", "time");
+    const metricVerts = makeMetricRow("Verts edited", "verts");
+    const metricLayer = makeMetricRow("Dominant layer", "layer");
+
+    brushCard.appendChild(brushHeader);
+    brushCard.appendChild(brushRadiusRow);
+    brushCard.appendChild(brushStrengthRow);
+    brushCard.appendChild(brushFalloffRow);
+    brushCard.appendChild(brushDeferRow);
+    brushCard.appendChild(brushActions);
+    brushCard.appendChild(brushMetrics);
+
+    qaCards.appendChild(brushCard);
+
     const sceneCard = document.createElement("div");
     applyCardStyle(sceneCard);
     const sceneHeader = document.createElement("div");
@@ -2435,6 +2659,23 @@
       unsubscribe: null
     };
 
+    terrainBrushCache = {
+      root: brushCard,
+      toggle: brushToggle,
+      radius: brushRadius,
+      radiusValue: brushRadiusValue,
+      strength: brushStrength,
+      strengthValue: brushStrengthValue,
+      falloff: brushFalloffSelect,
+      deferToggle: brushDeferToggle,
+      reset: brushReset,
+      metrics: {
+        time: metricTime,
+        verts: metricVerts,
+        layer: metricLayer
+      }
+    };
+
     devPanelCache = {
       root: panel,
       toggles: toggleInputs,
@@ -2451,7 +2692,8 @@
       dynValue,
       dynCurrent,
       cosmeticTester,
-      sceneAudit: sceneAuditUi
+      sceneAudit: sceneAuditUi,
+      terrainBrush: terrainBrushCache
     };
     setPerformanceTarget(performanceTargetValue);
     setDynamicResolutionUI({
@@ -2500,6 +2742,169 @@
       cache.enSlider.value = radius;
       if (cache.enValue) cache.enValue.textContent = `${radius.toFixed(1)}m`;
     }
+  }
+
+  function ensureTerrainBrushCache() {
+    if (!devPanelCache) ensureDevPanel();
+    return devPanelCache?.terrainBrush || terrainBrushCache || null;
+  }
+
+  function formatBrushRadius(value) {
+    if (!Number.isFinite(value)) return "—";
+    return `${Math.max(0, value).toFixed(1)}m`;
+  }
+
+  function formatBrushStrength(value) {
+    if (!Number.isFinite(value)) return "—";
+    return value.toFixed(1);
+  }
+
+  function formatMetricValue(value) {
+    if (!Number.isFinite(value)) return "—";
+    return value.toLocaleString();
+  }
+
+  function setTerrainBrushState(state = {}) {
+    const cache = ensureTerrainBrushCache();
+    if (!cache) return;
+    if (cache.toggle) cache.toggle.checked = !!state.enabled;
+    if (cache.radius) cache.radius.value = Number.isFinite(state.radius) ? state.radius : cache.radius.value;
+    if (cache.radiusValue) cache.radiusValue.textContent = formatBrushRadius(Number(state.radius ?? cache.radius.value));
+    if (cache.strength) cache.strength.value = Number.isFinite(state.strength) ? state.strength : cache.strength.value;
+    if (cache.strengthValue) cache.strengthValue.textContent = formatBrushStrength(Number(state.strength ?? cache.strength.value));
+    if (cache.falloff && typeof state.falloff === "string") {
+      cache.falloff.value = state.falloff;
+    }
+    if (cache.deferToggle) cache.deferToggle.checked = !!state.deferNormals;
+    const disabled = !state.enabled;
+    if (cache.radius) cache.radius.disabled = disabled;
+    if (cache.strength) cache.strength.disabled = disabled;
+    if (cache.falloff) cache.falloff.disabled = disabled;
+    if (cache.deferToggle) cache.deferToggle.disabled = disabled;
+    if (cache.reset) cache.reset.disabled = disabled;
+    if (state.metrics) {
+      setTerrainBrushMetrics(state.metrics);
+    }
+  }
+
+  function ensureDepthHud() {
+    if (!DEV_BUILD) return null;
+    const root = ensureHudRoot();
+    if (!root) return null;
+    if (depthHudCache?.root?.isConnected && root.contains(depthHudCache.root)) {
+      return depthHudCache;
+    }
+    let overlay = document.getElementById("hud-depth-overlay");
+    if (overlay && overlay.parentElement !== root) {
+      overlay.remove();
+      overlay = null;
+    }
+    if (!overlay) {
+      overlay = document.createElement("div");
+      overlay.id = "hud-depth-overlay";
+      overlay.style.position = "absolute";
+      overlay.style.minWidth = "180px";
+      overlay.style.maxWidth = "220px";
+      overlay.style.padding = "0.4rem 0.55rem";
+      overlay.style.borderRadius = "10px";
+      overlay.style.background = "rgba(8, 16, 28, 0.92)";
+      overlay.style.border = "1px solid rgba(120, 200, 255, 0.28)";
+      overlay.style.boxShadow = "0 12px 30px rgba(4, 12, 22, 0.45)";
+      overlay.style.color = "#e6f4ff";
+      overlay.style.fontSize = "0.72rem";
+      overlay.style.pointerEvents = "none";
+      overlay.style.display = "none";
+      overlay.style.zIndex = "30";
+      root.appendChild(overlay);
+    }
+    overlay.style.position = "absolute";
+
+    overlay.innerHTML = "";
+    const title = document.createElement("div");
+    title.textContent = "Depth HUD";
+    title.style.fontSize = "0.68rem";
+    title.style.textTransform = "uppercase";
+    title.style.letterSpacing = "0.08em";
+    title.style.opacity = "0.78";
+    title.style.marginBottom = "0.25rem";
+    overlay.appendChild(title);
+
+    const grid = document.createElement("div");
+    grid.style.display = "grid";
+    grid.style.gridTemplateColumns = "repeat(2, minmax(0, 1fr))";
+    grid.style.gap = "0.25rem 0.4rem";
+
+    const makeEntry = (labelText, key) => {
+      const label = document.createElement("span");
+      label.textContent = labelText;
+      label.style.opacity = "0.75";
+      const value = document.createElement("span");
+      value.dataset.depthKey = key;
+      value.style.fontVariantNumeric = "tabular-nums";
+      value.style.justifySelf = "end";
+      value.textContent = "—";
+      grid.appendChild(label);
+      grid.appendChild(value);
+      return value;
+    };
+
+    const time = makeEntry("Last deform", "time");
+    const verts = makeEntry("Verts edited", "verts");
+    const layer = makeEntry("Layer", "layer");
+
+    overlay.appendChild(grid);
+
+    depthHudCache = {
+      root: overlay,
+      values: { time, verts, layer },
+      visible: false
+    };
+    return depthHudCache;
+  }
+
+  function setDepthHudVisible(visible) {
+    const cache = ensureDepthHud();
+    if (!cache || !cache.root) return false;
+    cache.visible = !!visible;
+    cache.root.style.display = cache.visible ? "block" : "none";
+    return cache.visible;
+  }
+
+  function setDepthHudPosition(position = {}) {
+    const cache = depthHudCache || ensureDepthHud();
+    if (!cache?.root) return;
+    if (!cache.visible) return;
+    if (Number.isFinite(position.x)) {
+      cache.root.style.left = `${position.x + 16}px`;
+    }
+    if (Number.isFinite(position.y)) {
+      cache.root.style.top = `${position.y + 16}px`;
+    }
+  }
+
+  function setDepthHudMetrics(metrics = {}) {
+    const cache = depthHudCache || ensureDepthHud();
+    if (!cache) return;
+    const time = Number.isFinite(metrics.timeMs) ? metrics.timeMs : null;
+    const verts = Number.isFinite(metrics.verts) ? metrics.verts : null;
+    const layer = typeof metrics.layer === "string" && metrics.layer.trim() ? metrics.layer.trim() : "—";
+    if (cache.values.time) cache.values.time.textContent = time != null ? `${time.toFixed(2)} ms` : "—";
+    if (cache.values.verts) cache.values.verts.textContent = verts != null ? formatMetricValue(verts) : "—";
+    if (cache.values.layer) cache.values.layer.textContent = layer;
+  }
+
+  function setTerrainBrushMetrics(metrics = {}) {
+    const cache = ensureTerrainBrushCache();
+    if (cache?.metrics?.time) {
+      cache.metrics.time.textContent = Number.isFinite(metrics.timeMs) ? `${metrics.timeMs.toFixed(2)} ms` : "—";
+    }
+    if (cache?.metrics?.verts) {
+      cache.metrics.verts.textContent = Number.isFinite(metrics.verts) ? formatMetricValue(metrics.verts) : "—";
+    }
+    if (cache?.metrics?.layer) {
+      cache.metrics.layer.textContent = typeof metrics.layer === "string" && metrics.layer.trim() ? metrics.layer.trim() : "—";
+    }
+    setDepthHudMetrics(metrics);
   }
 
   function ensureProfilerOverlay() {
@@ -4421,6 +4826,11 @@
     },
     toggleDevPanel,
     setDevPanelVisible,
+    setTerrainBrushState,
+    setTerrainBrushMetrics,
+    setDepthHudVisible,
+    setDepthHudPosition,
+    updateDepthHudMetrics: setDepthHudMetrics,
     configureProfilerOverlay,
     updateProfilerOverlayMetrics,
     updateProfilerOverlayState,

@@ -4489,6 +4489,207 @@
       return { radius, strength, falloff };
    }
 
+   function getTerrainBrushState() {
+      const brush = state.terrainBrush;
+      return {
+         enabled: !!brush.enabled,
+         radius: brush.radius,
+         strength: brush.strength,
+         falloff: brush.falloff,
+         deferNormals: !!brush.deferNormals,
+         metrics: { ...brush.lastMetrics }
+      };
+   }
+
+   function syncTerrainBrushHud() {
+      const hudApi = window.HUD;
+      if (!hudApi?.setTerrainBrushState) return;
+      hudApi.setTerrainBrushState(getTerrainBrushState());
+      if (!state.terrainBrush.enabled) {
+         hudApi.setDepthHudVisible?.(false);
+      }
+   }
+
+   function clampTerrainBrushRadius(value) {
+      const radius = Number(value);
+      if (!Number.isFinite(radius)) return state.terrainBrush.radius;
+      return Math.max(0.8, Math.min(12, radius));
+   }
+
+   function clampTerrainBrushStrength(value) {
+      const strength = Number(value);
+      if (!Number.isFinite(strength)) return state.terrainBrush.strength;
+      return Math.max(0.1, Math.min(6, strength));
+   }
+
+   function setTerrainBrushEnabled(enabled) {
+      state.terrainBrush.enabled = !!enabled && DEV_BUILD;
+      if (!state.terrainBrush.enabled) {
+         state.terrainBrush.pointerActive = false;
+      }
+      syncTerrainBrushHud();
+      return state.terrainBrush.enabled;
+   }
+
+   function setTerrainBrushOptions(update = {}) {
+      if (update.radius !== undefined) {
+         state.terrainBrush.radius = clampTerrainBrushRadius(update.radius);
+      }
+      if (update.strength !== undefined) {
+         state.terrainBrush.strength = clampTerrainBrushStrength(update.strength);
+      }
+      if (typeof update.falloff === "string") {
+         state.terrainBrush.falloff = update.falloff === "linear" ? "linear" : "gauss";
+      }
+      syncTerrainBrushHud();
+   }
+
+   function setTerrainBrushDeferred(enabled) {
+      state.terrainBrush.deferNormals = !!enabled;
+      syncTerrainBrushHud();
+   }
+
+   function formatLayerLabel(key) {
+      if (!key) return "—";
+      return key.replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+   }
+
+   function gatherBrushColumns(center, radius) {
+      const terrain = environment.terrain;
+      if (!terrain) return [];
+      const colsX = terrain.colsX | 0;
+      const colsZ = terrain.colsZ | 0;
+      if (!colsX || !colsZ) return [];
+      const cubeSize = Math.max(terrain.cubeSize || 1, 0.5);
+      const minX = Math.max(-terrain.halfX, center.x - radius);
+      const maxX = Math.min(terrain.halfX, center.x + radius);
+      const minZ = Math.max(-terrain.halfZ, center.z - radius);
+      const maxZ = Math.min(terrain.halfZ, center.z + radius);
+      const startCX = Math.max(0, Math.floor((minX + terrain.halfX) / cubeSize));
+      const endCX = Math.min(colsX - 1, Math.ceil((maxX + terrain.halfX) / cubeSize));
+      const startCZ = Math.max(0, Math.floor((minZ + terrain.halfZ) / cubeSize));
+      const endCZ = Math.min(colsZ - 1, Math.ceil((maxZ + terrain.halfZ) / cubeSize));
+      const indices = [];
+      for (let cz = startCZ; cz <= endCZ; cz++) {
+         for (let cx = startCX; cx <= endCX; cx++) {
+            indices.push(cz * colsX + cx);
+         }
+      }
+      return indices;
+   }
+
+   function resolveColumnBounds(indices) {
+      const terrain = environment.terrain;
+      if (!terrain || !indices.length) return null;
+      const colsX = terrain.colsX | 0;
+      if (!colsX) return null;
+      let minCX = Infinity;
+      let maxCX = -Infinity;
+      let minCZ = Infinity;
+      let maxCZ = -Infinity;
+      for (const idx of indices) {
+         if (!Number.isInteger(idx) || idx < 0) continue;
+         const cx = idx % colsX;
+         const cz = Math.floor(idx / colsX);
+         if (cx < minCX) minCX = cx;
+         if (cx > maxCX) maxCX = cx;
+         if (cz < minCZ) minCZ = cz;
+         if (cz > maxCZ) maxCZ = cz;
+      }
+      if (!Number.isFinite(minCX) || !Number.isFinite(minCZ)) return null;
+      return { minCX, maxCX, minCZ, maxCZ };
+   }
+
+   function resolveDominantLayerAt(x, z) {
+      const terrain = environment.terrain;
+      if (!terrain) return null;
+      const idx = terrainColumnIndexFromWorld(x, z);
+      if (idx < 0) return null;
+      const offset = terrain.heights?.[idx] ?? terrain.totalHeight ?? 0;
+      const offsets = terrain.layerOffsets || [];
+      const thicknesses = terrain.layerThicknesses || [];
+      for (let layer = offsets.length - 1; layer >= 0; layer--) {
+         const start = offsets[layer];
+         const top = start + (thicknesses[layer] ?? 0);
+         if (offset > start + 1e-3) {
+            const def = TERRAIN_LAYER_DEFS[layer] || {};
+            return {
+               key: def.key || `layer-${layer}`,
+               label: formatLayerLabel(def.key || `layer ${layer}`),
+               index: layer
+            };
+         }
+         if (offset >= start) {
+            const def = TERRAIN_LAYER_DEFS[layer] || {};
+            return {
+               key: def.key || `layer-${layer}`,
+               label: formatLayerLabel(def.key || `layer ${layer}`),
+               index: layer
+            };
+         }
+      }
+      return { key: "void", label: "Void", index: -1 };
+   }
+
+   function applyBrushMetrics(detail, elapsedMs) {
+      const brush = state.terrainBrush;
+      if (!brush) return;
+      const layerInfo = resolveDominantLayerAt(detail?.worldX ?? 0, detail?.worldZ ?? 0);
+      brush.lastMetrics = {
+         timeMs: Number.isFinite(elapsedMs) ? elapsedMs : 0,
+         verts: Number.isFinite(detail?.affected) ? detail.affected : 0,
+         layer: layerInfo?.label || "—"
+      };
+      if (detail?.worldX != null && detail?.worldZ != null) {
+         const radius = Number.isFinite(detail?.radius) ? detail.radius : brush.radius;
+         const columns = gatherBrushColumns({ x: detail.worldX, z: detail.worldZ }, radius);
+         brush.lastPatch = {
+            center: { x: detail.worldX, z: detail.worldZ },
+            radius,
+            columnIndices: columns
+         };
+      }
+      const hudApi = window.HUD;
+      hudApi?.setTerrainBrushMetrics?.(brush.lastMetrics);
+   }
+
+   function resetTerrainBrushPatch() {
+      const brush = state.terrainBrush;
+      if (!brush?.lastPatch) return false;
+      const terrain = environment.terrain;
+      const terrainApi = getTerrainApi();
+      if (!terrain || !terrainApi?.updateFromColumns) return false;
+      const columns = Array.isArray(brush.lastPatch.columnIndices) && brush.lastPatch.columnIndices.length
+         ? brush.lastPatch.columnIndices.slice()
+         : gatherBrushColumns(brush.lastPatch.center, brush.lastPatch.radius);
+      if (!columns.length) return false;
+      const bounds = resolveColumnBounds(columns);
+      const start = performance.now();
+      let success = false;
+      try {
+         success = terrainApi.updateFromColumns(terrain, { columnIndices: columns });
+      } catch (err) {
+         console.warn("[Terrain] Failed to restore terrain patch", err);
+         success = false;
+      }
+      if (!success) return false;
+      if (bounds) {
+         updateTerrainColumnsFromUnifiedMeshRange(terrain, bounds.minCX, bounds.maxCX, bounds.minCZ, bounds.maxCZ);
+         const patch = updateTerrainSamplerForColumns(terrain, bounds.minCX, bounds.maxCX, bounds.minCZ, bounds.maxCZ, { reset: true });
+         if (patch) handleTerrainPatchPhysics(patch);
+      }
+      const elapsed = performance.now() - start;
+      const layerInfo = resolveDominantLayerAt(brush.lastPatch.center.x, brush.lastPatch.center.z);
+      brush.lastMetrics = {
+         timeMs: elapsed,
+         verts: 0,
+         layer: layerInfo?.label || "—"
+      };
+      const hudApi = window.HUD;
+      hudApi?.setTerrainBrushMetrics?.(brush.lastMetrics);
+      return true;
+   }
+
    function buildTerrainSamplerDescriptor(sampler) {
       if (!sampler) return null;
       return {
@@ -4734,7 +4935,7 @@
       }
    }
 
-   function handleTerrainDeformed(detail) {
+   function processTerrainDeformDetail(detail) {
       if (!detail) return;
       const terrain = environment.terrain;
       if (!terrain) return;
@@ -4756,6 +4957,56 @@
       updateTerrainColumnsFromUnifiedMeshRange(terrain, minCX, maxCX, minCZ, maxCZ);
       const patch = updateTerrainSamplerRegion(terrain, minVXInt, maxVXInt, minVZInt, maxVZInt);
       if (patch) handleTerrainPatchPhysics(patch);
+   }
+
+   function flushDeferredTerrainBrush() {
+      const brush = state.terrainBrush;
+      if (!brush.deferredQueue.length) {
+         brush.deferredScheduled = false;
+         return;
+      }
+      const queue = brush.deferredQueue.splice(0, brush.deferredQueue.length);
+      brush.deferredScheduled = false;
+      for (const entry of queue) {
+         processTerrainDeformDetail(entry);
+      }
+   }
+
+   function scheduleDeferredTerrainBrush() {
+      const brush = state.terrainBrush;
+      if (brush.deferredScheduled) return;
+      brush.deferredScheduled = true;
+      const runner = () => flushDeferredTerrainBrush();
+      if (typeof requestAnimationFrame === "function") {
+         requestAnimationFrame(runner);
+      } else if (typeof requestIdleCallback === "function") {
+         requestIdleCallback(runner, { timeout: 16 });
+      } else {
+         setTimeout(runner, 0);
+      }
+   }
+
+   function handleTerrainDeformed(detail) {
+      if (!detail) return;
+      const brush = state.terrainBrush;
+      let shouldDefer = false;
+      if (brush && brush.pendingStroke) {
+         const affected = Number.isFinite(detail?.affected) ? detail.affected : 0;
+         if (affected > 0) {
+            const elapsed = performance.now() - (brush.pendingStroke.startedAt || performance.now());
+            applyBrushMetrics(detail, elapsed);
+            if (brush.deferNormals && elapsed > brush.frameBudgetMs) {
+               shouldDefer = true;
+            }
+         }
+         brush.pendingStroke = null;
+      }
+      if (shouldDefer && brush) {
+         brush.deferredQueue.push(detail);
+         scheduleDeferredTerrainBrush();
+         return;
+      }
+      processTerrainDeformDetail(detail);
    }
 
    function ensureTerrainDeformListener() {
@@ -4823,6 +5074,113 @@
       } catch (err) {
          console.warn("[Terrain] Failed to deform unified mesh", err);
          return false;
+      }
+   }
+
+   function canUseTerrainBrush() {
+      return DEV_BUILD && state.terrainBrush.enabled && isUnifiedTerrainActive();
+   }
+
+   function pickTerrainPoint(event) {
+      if (!scene) return null;
+      const canvas = engine?.getRenderingCanvas?.();
+      if (!canvas || !event) return null;
+      const rect = canvas.getBoundingClientRect();
+      const x = event.clientX - rect.left;
+      const y = event.clientY - rect.top;
+      const predicate = (mesh) => {
+         if (!mesh) return false;
+         if (mesh === environment.terrain?.unifiedMesh) return true;
+         return isGroundMesh(mesh);
+      };
+      const pick = scene.pick(x, y, predicate);
+      if (!pick || !pick.hit || !pick.pickedPoint) return null;
+      return pick.pickedPoint.clone();
+   }
+
+   function applyTerrainBrushStroke(point) {
+      if (!canUseTerrainBrush() || !point) return false;
+      const brush = state.terrainBrush;
+      const now = performance.now();
+      if (now - brush.lastStrokeTime < brush.strokeIntervalMs) return false;
+      brush.lastStrokeTime = now;
+      const options = {
+         radius: brush.radius,
+         strength: brush.strength,
+         falloff: brush.falloff
+      };
+      brush.pendingStroke = {
+         startedAt: now,
+         center: { x: point.x, z: point.z }
+      };
+      const success = applyUnifiedTerrainDamage(point, options);
+      if (!success) {
+         brush.pendingStroke = null;
+         return false;
+      }
+      return true;
+   }
+
+   function updateDepthHudCursor(pickPoint, event) {
+      const hudApi = window.HUD;
+      if (!hudApi) return;
+      if (!canUseTerrainBrush()) {
+         hudApi.setDepthHudVisible?.(false);
+         return;
+      }
+      if (!pickPoint) {
+         hudApi.setDepthHudVisible?.(false);
+         return;
+      }
+      const layerInfo = resolveDominantLayerAt(pickPoint.x, pickPoint.z);
+      state.terrainBrush.lastMetrics.layer = layerInfo?.label || state.terrainBrush.lastMetrics.layer;
+      hudApi.setDepthHudVisible?.(true);
+      hudApi.updateDepthHudMetrics?.({
+         timeMs: state.terrainBrush.lastMetrics.timeMs,
+         verts: state.terrainBrush.lastMetrics.verts,
+         layer: layerInfo?.label || state.terrainBrush.lastMetrics.layer
+      });
+      if (event) {
+         hudApi.setDepthHudPosition?.({ x: event.clientX, y: event.clientY });
+      }
+   }
+
+   function handleTerrainBrushPointerDown(event) {
+      if (!canUseTerrainBrush()) return;
+      if (event.button !== 0) return;
+      if (event.pointerType && event.pointerType !== "mouse" && event.pointerType !== "pen") return;
+      const point = pickTerrainPoint(event);
+      updateDepthHudCursor(point, event);
+      if (!point) return;
+      state.terrainBrush.pointerActive = true;
+      state.terrainBrush.activePointerId = event.pointerId;
+      if (applyTerrainBrushStroke(point)) {
+         event.preventDefault();
+      }
+   }
+
+   function handleTerrainBrushPointerMove(event) {
+      if (paused) {
+         window.HUD?.setDepthHudVisible?.(false);
+         return;
+      }
+      if (!canUseTerrainBrush()) return;
+      if (event.pointerType && event.pointerType !== "mouse" && event.pointerType !== "pen") return;
+      const point = pickTerrainPoint(event);
+      updateDepthHudCursor(point, event);
+      if (!point) return;
+      if (state.terrainBrush.pointerActive && event.pointerId === state.terrainBrush.activePointerId) {
+         applyTerrainBrushStroke(point);
+      }
+   }
+
+   function handleTerrainBrushPointerUp(event) {
+      if (state.terrainBrush.pointerActive && event.pointerId === state.terrainBrush.activePointerId) {
+         state.terrainBrush.pointerActive = false;
+         state.terrainBrush.activePointerId = null;
+      }
+      if (!canUseTerrainBrush() || event.type === "pointerleave" || event.type === "pointercancel") {
+         window.HUD?.setDepthHudVisible?.(false);
       }
    }
 
@@ -7686,6 +8044,23 @@
       ultMinNen: 5,
       ultT: 0,
       ultMaxDur: 8,
+      terrainBrush: {
+         enabled: false,
+         radius: 3,
+         strength: 1.5,
+         falloff: "gauss",
+         deferNormals: true,
+         frameBudgetMs: 4.5,
+         strokeIntervalMs: 70,
+         lastStrokeTime: 0,
+         pendingStroke: null,
+         lastMetrics: { timeMs: 0, verts: 0, layer: "—" },
+         lastPatch: null,
+         pointerActive: false,
+         activePointerId: null,
+         deferredQueue: [],
+         deferredScheduled: false
+      }
    };
 
    getRuntimeState = () => state;
@@ -9001,6 +9376,7 @@
             e.preventDefault();
             melee();
          }
+         handleTerrainBrushPointerDown(e);
       });
 
       canvas.addEventListener("wheel", (e) => {
@@ -9041,6 +9417,13 @@
          if (paused) return;
          if (e.button === 0 && e.target !== canvas) melee();
       });
+
+      if (DEV_BUILD) {
+         canvas.addEventListener("pointermove", handleTerrainBrushPointerMove);
+         canvas.addEventListener("pointerup", handleTerrainBrushPointerUp);
+         canvas.addEventListener("pointerleave", handleTerrainBrushPointerUp);
+         canvas.addEventListener("pointercancel", handleTerrainBrushPointerUp);
+      }
 
       engine.runRenderLoop(() => {
          const now = performance.now();
@@ -9144,11 +9527,16 @@
                }
                disableRearDebugCamera();
                return true;
-            }
+            },
+            toggleTerrainBrush: (enabled) => setTerrainBrushEnabled(enabled),
+            setTerrainBrushOptions: (options) => setTerrainBrushOptions(options),
+            setTerrainBrushDeferred: (enabled) => setTerrainBrushDeferred(enabled),
+            resetTerrainPatch: () => resetTerrainBrushPatch()
          });
          hudApi.updateDevPanelState?.(getAuraSnapshot());
          hudApi.setRearViewActive?.(isRearDebugCameraActive());
          scheduleTerrainRadiusUiUpdate();
+         syncTerrainBrushHud();
       }
 
       if (typeof regionChangeUnsub === "function") {
