@@ -62,9 +62,24 @@
     [pEl,aEl,fEl].forEach(el => el && el.addEventListener("input", onNumberInput));
 
     cancel?.addEventListener("click", () => {
+      const ctx = window.CharacterCreator?.getRenderContext?.();
+      window.SceneAudit?.beginTransition?.("creator->menu", {
+        fromLabel: "Character Creator",
+        toLabel: "Menu Background",
+        scene: ctx?.scene,
+        engine: ctx?.engine
+      });
+      window.CharacterCreator?.markSceneAuditPending?.();
       document.querySelectorAll(".screen").forEach(s=>s.classList.remove("visible"));
       document.getElementById("screen--menu")?.classList.add("visible");
       window.MenuBG?.start();
+      const menuState = window.MenuBG?.getState?.();
+      window.SceneAudit?.completeTransition?.("creator->menu", {
+        fromLabel: "Character Creator",
+        toLabel: "Menu Background",
+        scene: menuState?.scene,
+        engine: menuState?.engine
+      });
     });
 
     form?.addEventListener("submit", (e) => {
@@ -80,10 +95,17 @@
       };
       try { localStorage.setItem("hxh.character", JSON.stringify(ch)); } catch {}
 
+      const ctx = window.CharacterCreator?.getRenderContext?.();
+      window.SceneAudit?.beginTransition?.("creator->game", {
+        fromLabel: "Character Creator",
+        toLabel: "In-Game Scene",
+        scene: ctx?.scene,
+        engine: ctx?.engine
+      });
       document.querySelectorAll(".screen").forEach(s=>s.classList.remove("visible"));
       document.getElementById("screen--game")?.classList.add("visible");
       window.MenuBG?.stop();
-      window.HXH?.startGame?.(ch);
+      window.HXH?.startGame?.(ch, { sceneAudit: { key: "creator->game", fromLabel: "Character Creator", toLabel: "In-Game Scene" } });
     });
 
     sync();

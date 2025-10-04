@@ -1322,6 +1322,7 @@
 
   // ---------- Babylon setup ----------
   let engine, scene, camera;
+  let sceneAuditReady = false;
   let rigRoot = null; // visible collider
   let nodes = {};     // TransformNodes keyed by part
   let params = null;  // working params
@@ -2768,7 +2769,21 @@
   }
 
   function boot(){
-    if (booted){ refresh(); return; }
+    if (booted){
+      if (!sceneAuditReady) {
+        try {
+          window.SceneAudit?.completeTransition?.("menu->rig", {
+            fromLabel: "Menu Background",
+            toLabel: "Rig Editor",
+            scene,
+            engine
+          });
+        } catch (err) {}
+        sceneAuditReady = true;
+      }
+      refresh();
+      return;
+    }
     booted = true;
 
     ensureAnimationLibraryHydrated();
@@ -2941,6 +2956,17 @@
       scene.render();
     });
     window.addEventListener("resize", ()=> engine.resize());
+    if (!sceneAuditReady) {
+      try {
+        window.SceneAudit?.completeTransition?.("menu->rig", {
+          fromLabel: "Menu Background",
+          toLabel: "Rig Editor",
+          scene,
+          engine
+        });
+      } catch (err) {}
+      sceneAuditReady = true;
+    }
   }
 
   // Helper: what's the current active gizmo mode?
@@ -3190,6 +3216,19 @@
       flushAnimationAutosave({ force: true });
       let handled = false;
       const hx = typeof window !== "undefined" ? window.HXH : null;
+      const ctx = { scene, engine };
+      const target = sessionContext?.meta?.screenId === "screen--creator" ? "rig->creator" : "rig->menu";
+      const targetLabel = target === "rig->creator" ? "Character Creator" : "Menu Background";
+      if (target === "rig->creator") {
+        try { window.CharacterCreator?.markSceneAuditPending?.(); } catch (err) {}
+      }
+      window.SceneAudit?.beginTransition?.(target, {
+        fromLabel: "Rig Editor",
+        toLabel: targetLabel,
+        scene: ctx.scene,
+        engine: ctx.engine
+      });
+      sceneAuditReady = false;
       if (hx && typeof hx.finalizeRigEditorSession === "function" && sessionContext) {
         try {
           handled = !!hx.finalizeRigEditorSession({
@@ -3213,6 +3252,14 @@
       if (!handled) {
         document.querySelectorAll(".screen").forEach(s=> s.classList.remove("visible"));
         document.getElementById("screen--menu")?.classList.add("visible");
+        window.MenuBG?.start();
+        const menuState = window.MenuBG?.getState?.();
+        window.SceneAudit?.completeTransition?.("rig->menu", {
+          fromLabel: "Rig Editor",
+          toLabel: "Menu Background",
+          scene: menuState?.scene,
+          engine: menuState?.engine
+        });
       }
     });
 
@@ -3862,6 +3909,12 @@
     },
     isOnionSkinEnabled() {
       return onionSkinEnabled;
+    },
+    getRenderContext() {
+      return { scene, engine };
+    },
+    markSceneAuditPending() {
+      sceneAuditReady = false;
     }
   };
 })();

@@ -26,6 +26,241 @@
   let rigUnlockOverlayCache = null;
   const rigUnlockWaiters = new Set();
 
+  const sceneAuditState = {
+    pending: new Map(),
+    last: null,
+    counter: 0,
+    subscribers: new Set()
+  };
+
+  function safeArray(value) {
+    return Array.isArray(value) ? value : [];
+  }
+
+  function captureSceneMetrics(scene, engine) {
+    const metrics = {
+      nodes: 0,
+      materials: 0,
+      textures: 0,
+      timestamp: Date.now()
+    };
+
+    const nodes = new Set();
+    const materials = new Set();
+    const textures = new Set();
+
+    const collectNode = (node) => {
+      if (!node) return;
+      try {
+        if (typeof node.isDisposed === "function" && node.isDisposed()) return;
+      } catch (err) {}
+      nodes.add(node);
+    };
+
+    const collectMaterial = (material) => {
+      if (!material) return;
+      try {
+        if (typeof material.isDisposed === "function" && material.isDisposed()) return;
+      } catch (err) {}
+      materials.add(material);
+    };
+
+    const collectTexture = (texture) => {
+      if (!texture) return;
+      try {
+        if (typeof texture.isDisposed === "function" && texture.isDisposed()) return;
+      } catch (err) {}
+      textures.add(texture);
+    };
+
+    if (scene) {
+      try {
+        if (typeof scene.getNodes === "function") {
+          safeArray(scene.getNodes()).forEach(collectNode);
+        } else {
+          safeArray(scene.meshes).forEach(collectNode);
+          safeArray(scene.transformNodes).forEach(collectNode);
+          safeArray(scene.skeletons).forEach(collectNode);
+        }
+        safeArray(scene.cameras).forEach(collectNode);
+        safeArray(scene.lights).forEach(collectNode);
+      } catch (err) {}
+
+      try {
+        safeArray(scene.materials).forEach(collectMaterial);
+        safeArray(scene.multiMaterials).forEach(collectMaterial);
+        if (scene.defaultMaterial) collectMaterial(scene.defaultMaterial);
+      } catch (err) {}
+
+      try {
+        safeArray(scene.textures).forEach(collectTexture);
+        if (scene.environmentTexture) collectTexture(scene.environmentTexture);
+        safeArray(scene.reflectionProbes).forEach(probe => {
+          try {
+            if (probe?.cubeTexture) collectTexture(probe.cubeTexture);
+          } catch (err) {}
+        });
+      } catch (err) {}
+    }
+
+    if (engine) {
+      try {
+        const cache = typeof engine.getLoadedTexturesCache === "function"
+          ? engine.getLoadedTexturesCache()
+          : engine.textures;
+        safeArray(cache).forEach(collectTexture);
+      } catch (err) {}
+    }
+
+    metrics.nodes = nodes.size;
+    metrics.materials = materials.size;
+    metrics.textures = textures.size;
+    return metrics;
+  }
+
+  function resolveTransitionKey(key) {
+    if (typeof key === "string" && key.trim()) return key.trim();
+    sceneAuditState.counter += 1;
+    return `transition-${sceneAuditState.counter}`;
+  }
+
+  function notifySceneAudit(entry) {
+    sceneAuditState.last = entry || null;
+    sceneAuditState.subscribers.forEach(fn => {
+      try {
+        fn(entry || null);
+      } catch (err) {}
+    });
+  }
+
+  function beginSceneAuditTransition(key, details = {}) {
+    const resolvedKey = resolveTransitionKey(key);
+    const entry = {
+      id: ++sceneAuditState.counter,
+      key: resolvedKey,
+      fromLabel: details.fromLabel || details.from || (resolvedKey.includes("->") ? resolvedKey.split("->")[0] : "Previous"),
+      toLabel: details.toLabel || details.to || (resolvedKey.includes("->") ? resolvedKey.split("->")[1] : "Next"),
+      pre: captureSceneMetrics(details.scene, details.engine),
+      post: null,
+      startedAt: Date.now()
+    };
+    sceneAuditState.pending.set(resolvedKey, entry);
+    notifySceneAudit(entry);
+    return resolvedKey;
+  }
+
+  function completeSceneAuditTransition(key, details = {}) {
+    const resolvedKey = resolveTransitionKey(key || details.key);
+    const entry = sceneAuditState.pending.get(resolvedKey) || {
+      id: ++sceneAuditState.counter,
+      key: resolvedKey,
+      fromLabel: details.fromLabel || details.from || (resolvedKey.includes("->") ? resolvedKey.split("->")[0] : "Previous"),
+      startedAt: Date.now(),
+      pre: null
+    };
+    if (details.fromLabel && !entry.fromLabel) entry.fromLabel = details.fromLabel;
+    if (details.toLabel) {
+      entry.toLabel = details.toLabel;
+    } else if (!entry.toLabel) {
+      entry.toLabel = details.to || (resolvedKey.includes("->") ? resolvedKey.split("->")[1] : "Next");
+    }
+    entry.post = captureSceneMetrics(details.scene, details.engine);
+    entry.completedAt = Date.now();
+    sceneAuditState.pending.delete(resolvedKey);
+    notifySceneAudit(entry);
+    return entry;
+  }
+
+  function subscribeSceneAudit(handler) {
+    if (typeof handler !== "function") return () => {};
+    sceneAuditState.subscribers.add(handler);
+    if (sceneAuditState.last) {
+      try { handler(sceneAuditState.last); } catch (err) {}
+    }
+    return () => {
+      sceneAuditState.subscribers.delete(handler);
+    };
+  }
+
+  window.SceneAudit = {
+    captureMetrics: captureSceneMetrics,
+    beginTransition: beginSceneAuditTransition,
+    completeTransition: completeSceneAuditTransition,
+    subscribe: subscribeSceneAudit,
+    getState: () => sceneAuditState.last
+  };
+
+  function formatAuditMetric(value, { signed = false } = {}) {
+    if (!Number.isFinite(value)) return "—";
+    const rounded = Math.round(value);
+    if (signed) {
+      if (rounded > 0) return `+${rounded.toLocaleString()}`;
+      if (rounded < 0) return rounded.toLocaleString();
+      return "0";
+    }
+    return rounded.toLocaleString();
+  }
+
+  function applyAuditDeltaStyle(el, value) {
+    if (!el) return;
+    if (!Number.isFinite(value) || value === 0) {
+      el.style.color = "rgba(220, 236, 255, 0.78)";
+      return;
+    }
+    el.style.color = value > 0 ? "#f3c97a" : "#8de0c5";
+  }
+
+  function updateSceneAuditPanel(entry) {
+    const cache = devPanelCache;
+    if (!cache?.sceneAudit) return;
+    const { status, rows } = cache.sceneAudit;
+    if (!entry) {
+      status.textContent = "Awaiting transition";
+      [rows.pre, rows.post, rows.delta].forEach(row => {
+        if (!row) return;
+        row.nodes.textContent = "—";
+        row.materials.textContent = "—";
+        row.textures.textContent = "—";
+        applyAuditDeltaStyle(row.nodes, NaN);
+        applyAuditDeltaStyle(row.materials, NaN);
+        applyAuditDeltaStyle(row.textures, NaN);
+      });
+      return;
+    }
+    const from = entry.fromLabel || "Previous";
+    const to = entry.toLabel || "Next";
+    status.textContent = `${from} → ${to}`;
+
+    const applyRow = (row, metrics, opts = {}) => {
+      if (!row) return;
+      row.nodes.textContent = formatAuditMetric(metrics?.nodes, opts);
+      row.materials.textContent = formatAuditMetric(metrics?.materials, opts);
+      row.textures.textContent = formatAuditMetric(metrics?.textures, opts);
+      if (opts.signed) {
+        applyAuditDeltaStyle(row.nodes, metrics?.nodes);
+        applyAuditDeltaStyle(row.materials, metrics?.materials);
+        applyAuditDeltaStyle(row.textures, metrics?.textures);
+      } else {
+        applyAuditDeltaStyle(row.nodes, NaN);
+        applyAuditDeltaStyle(row.materials, NaN);
+        applyAuditDeltaStyle(row.textures, NaN);
+      }
+    };
+
+    applyRow(rows.pre, entry.pre || null);
+    applyRow(rows.post, entry.post || null);
+    if (entry.pre && entry.post) {
+      const delta = {
+        nodes: (entry.post.nodes ?? 0) - (entry.pre.nodes ?? 0),
+        materials: (entry.post.materials ?? 0) - (entry.pre.materials ?? 0),
+        textures: (entry.post.textures ?? 0) - (entry.pre.textures ?? 0)
+      };
+      applyRow(rows.delta, delta, { signed: true });
+    } else {
+      applyRow(rows.delta, null, { signed: true });
+    }
+  }
+
   function isRigEditorUnlocked() {
     return rigEditorUnlocked;
   }
@@ -1792,6 +2027,9 @@
     if (devPanelCache?.root?.isConnected && root.contains(devPanelCache.root)) {
       return devPanelCache;
     }
+    try {
+      devPanelCache?.sceneAudit?.unsubscribe?.();
+    } catch (err) {}
     const panel = document.createElement("div");
     panel.id = "hud-dev-panel";
     panel.style.position = "absolute";
@@ -2080,6 +2318,80 @@
     dynCard.appendChild(dynSliderRow);
     qaCards.appendChild(dynCard);
 
+    const sceneCard = document.createElement("div");
+    applyCardStyle(sceneCard);
+    const sceneHeader = document.createElement("div");
+    sceneHeader.style.display = "flex";
+    sceneHeader.style.alignItems = "center";
+    sceneHeader.style.justifyContent = "space-between";
+
+    const sceneLabel = document.createElement("span");
+    sceneLabel.textContent = "Scene Audit";
+    sceneLabel.style.fontSize = "0.7rem";
+    sceneLabel.style.textTransform = "uppercase";
+    sceneLabel.style.letterSpacing = "0.08em";
+    sceneLabel.style.opacity = "0.78";
+
+    const sceneStatus = document.createElement("span");
+    sceneStatus.style.fontSize = "0.72rem";
+    sceneStatus.style.fontWeight = "600";
+    sceneStatus.style.fontVariantNumeric = "tabular-nums";
+    sceneStatus.textContent = "Awaiting transition";
+
+    sceneHeader.appendChild(sceneLabel);
+    sceneHeader.appendChild(sceneStatus);
+
+    const sceneGrid = document.createElement("div");
+    sceneGrid.style.display = "grid";
+    sceneGrid.style.gridTemplateColumns = "minmax(60px, 1fr) repeat(3, minmax(64px, 1fr))";
+    sceneGrid.style.gap = "0.3rem 0.6rem";
+    sceneGrid.style.alignItems = "center";
+
+    ["Phase", "Nodes", "Materials", "Textures"].forEach(text => {
+      const cell = document.createElement("span");
+      cell.textContent = text;
+      cell.style.fontSize = "0.68rem";
+      cell.style.textTransform = "uppercase";
+      cell.style.letterSpacing = "0.06em";
+      cell.style.opacity = "0.72";
+      sceneGrid.appendChild(cell);
+    });
+
+    const makeAuditRow = (label) => {
+      const labelEl = document.createElement("span");
+      labelEl.textContent = label;
+      labelEl.style.fontSize = "0.72rem";
+      labelEl.style.fontWeight = label === "Δ" ? "700" : "600";
+      labelEl.style.opacity = label === "Δ" ? "0.92" : "0.82";
+
+      const nodesEl = document.createElement("span");
+      nodesEl.style.fontVariantNumeric = "tabular-nums";
+      nodesEl.textContent = "—";
+
+      const matsEl = document.createElement("span");
+      matsEl.style.fontVariantNumeric = "tabular-nums";
+      matsEl.textContent = "—";
+
+      const texEl = document.createElement("span");
+      texEl.style.fontVariantNumeric = "tabular-nums";
+      texEl.textContent = "—";
+
+      sceneGrid.appendChild(labelEl);
+      sceneGrid.appendChild(nodesEl);
+      sceneGrid.appendChild(matsEl);
+      sceneGrid.appendChild(texEl);
+
+      return { label: labelEl, nodes: nodesEl, materials: matsEl, textures: texEl };
+    };
+
+    const preRow = makeAuditRow("Pre");
+    const postRow = makeAuditRow("Post");
+    const deltaRow = makeAuditRow("Δ");
+
+    sceneCard.appendChild(sceneHeader);
+    sceneCard.appendChild(sceneGrid);
+    qaCards.appendChild(sceneCard);
+
     const makeCosmeticButton = (label) => {
       const btn = document.createElement("button");
       btn.type = "button";
@@ -2117,6 +2429,12 @@
     panel.appendChild(qaCards);
 
     root.appendChild(panel);
+    const sceneAuditUi = {
+      status: sceneStatus,
+      rows: { pre: preRow, post: postRow, delta: deltaRow },
+      unsubscribe: null
+    };
+
     devPanelCache = {
       root: panel,
       toggles: toggleInputs,
@@ -2132,7 +2450,8 @@
       dynSlider,
       dynValue,
       dynCurrent,
-      cosmeticTester
+      cosmeticTester,
+      sceneAudit: sceneAuditUi
     };
     setPerformanceTarget(performanceTargetValue);
     setDynamicResolutionUI({
@@ -2141,6 +2460,8 @@
       currentScale: dynamicResolutionState.currentScale
     });
     setRearViewButtonState(false);
+    sceneAuditUi.unsubscribe = window.SceneAudit?.subscribe?.(updateSceneAuditPanel) || null;
+    updateSceneAuditPanel(window.SceneAudit?.getState?.() || null);
     return devPanelCache;
   }
 
@@ -4211,7 +4532,8 @@
     accessoryInputs: [],
     rigButton: null,
     saveLoadoutButton: null,
-    loadLoadoutButton: null
+    loadLoadoutButton: null,
+    sceneAuditReady: false
   };
 
   function openRigEditorFromCreator() {
@@ -4304,6 +4626,7 @@
     close();
     document.querySelectorAll(".screen").forEach(s => s.classList.remove("visible"));
     document.getElementById("screen--rig")?.classList.add("visible");
+    rigApi.markSceneAuditPending?.();
     rigApi.boot();
   }
 
@@ -5757,7 +6080,28 @@
   function ensureEngine() {
     const dom = ensureDom();
     if (!dom || typeof BABYLON === "undefined") return null;
-    if (state.engine) return state.engine;
+    if (state.engine) {
+      if (!state.sceneAuditReady) {
+        try {
+          window.SceneAudit?.completeTransition?.("menu->creator", {
+            fromLabel: "Menu Background",
+            toLabel: "Character Creator",
+            scene: state.scene,
+            engine: state.engine
+          });
+        } catch (err) {}
+        try {
+          window.SceneAudit?.completeTransition?.("rig->creator", {
+            fromLabel: "Rig Editor",
+            toLabel: "Character Creator",
+            scene: state.scene,
+            engine: state.engine
+          });
+        } catch (err) {}
+        state.sceneAuditReady = true;
+      }
+      return state.engine;
+    }
     const engine = new BABYLON.Engine(dom.canvas, true, { preserveDrawingBuffer: true, stencil: true });
     const scene = new BABYLON.Scene(engine);
     scene.clearColor = new BABYLON.Color4(0.05, 0.08, 0.14, 1);
@@ -5802,6 +6146,26 @@
         try { state.engine?.resize(); } catch (err) {}
       });
       state.resizeObserver.observe(dom.canvas);
+    }
+
+    if (!state.sceneAuditReady) {
+      try {
+        window.SceneAudit?.completeTransition?.("menu->creator", {
+          fromLabel: "Menu Background",
+          toLabel: "Character Creator",
+          scene,
+          engine
+        });
+      } catch (err) {}
+      try {
+        window.SceneAudit?.completeTransition?.("rig->creator", {
+          fromLabel: "Rig Editor",
+          toLabel: "Character Creator",
+          scene,
+          engine
+        });
+      } catch (err) {}
+      state.sceneAuditReady = true;
     }
 
     return engine;
@@ -5938,6 +6302,12 @@
     open,
     close,
     refresh,
-    handleFlowSnapshot
+    handleFlowSnapshot,
+    getRenderContext() {
+      return { scene: state.scene, engine: state.engine };
+    },
+    markSceneAuditPending() {
+      state.sceneAuditReady = false;
+    }
   };
 })();
