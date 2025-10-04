@@ -170,7 +170,8 @@
   }
 
   function notifyTerrainSamplerPatch(detail = {}) {
-    const sampler = detail.sampler || getTerrainSampler();
+    const hasSampler = Object.prototype.hasOwnProperty.call(detail, "sampler");
+    const sampler = hasSampler ? detail.sampler : getTerrainSampler();
     navigationState.sampler = sampler || null;
     if (typeof detail.version === "number" && Number.isFinite(detail.version)) {
       navigationState.version = detail.version;

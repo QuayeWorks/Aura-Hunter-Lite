@@ -3209,9 +3209,19 @@
    const BLOODLUST_WEAK_HP = 55;
 
    function isGroundMesh(mesh) {
-      if (!mesh) return false;
+      if (!mesh || typeof mesh.isDisposed === "function" && mesh.isDisposed()) return false;
+      if (typeof mesh.isEnabled === "function" && !mesh.isEnabled()) return false;
       const meta = mesh.metadata;
-      if (meta && meta.terrainBlock && !meta.terrainBlock.destroyed && mesh.isEnabled && mesh.isEnabled()) return true;
+      if (meta?.terrainBlock && !meta.terrainBlock.destroyed) return true;
+      if (meta?.terrainUnified) return true;
+      const worldUtils = window.WorldUtils;
+      if (worldUtils?.isUnifiedTerrainActive?.() && typeof worldUtils.getUnifiedTerrainMesh === "function") {
+         const unifiedMesh = worldUtils.getUnifiedTerrainMesh();
+         if (unifiedMesh && mesh === unifiedMesh) {
+            const disposed = typeof unifiedMesh.isDisposed === "function" ? unifiedMesh.isDisposed() : false;
+            if (!disposed) return true;
+         }
+      }
       return world.platforms.includes(mesh);
    }
 

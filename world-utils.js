@@ -996,6 +996,22 @@
       }
     }
 
+    function refreshOriginalHeightsForRegion(minVX, maxVX, minVZ, maxVZ) {
+      if (!state.originalHeights || !state.heights) return;
+      if (state.vertexCountX <= 0 || state.vertexCountZ <= 0) return;
+      const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+      const vx0 = clamp(minVX ?? 0, 0, state.vertexCountX - 1);
+      const vx1 = clamp(maxVX ?? state.vertexCountX - 1, vx0, state.vertexCountX - 1);
+      const vz0 = clamp(minVZ ?? 0, 0, state.vertexCountZ - 1);
+      const vz1 = clamp(maxVZ ?? state.vertexCountZ - 1, vz0, state.vertexCountZ - 1);
+      const rowStride = state.vertexCountX;
+      for (let vz = vz0; vz <= vz1; vz++) {
+        const rowStart = vz * rowStride + vx0;
+        const rowEnd = vz * rowStride + vx1 + 1;
+        state.originalHeights.set(state.heights.subarray(rowStart, rowEnd), rowStart);
+      }
+    }
+
     function writeVertexColor(index, color) {
       if (!state.colors) return false;
       const base = index * 4;
@@ -1681,14 +1697,20 @@
       }
       commit(true);
       if (!regions.length) {
-        refreshAllVertexColors({ resetOriginal: !state.originalInitialized });
+        ensureOriginalHeightsInitialized(true);
+        refreshAllVertexColors({ resetOriginal: true });
       } else {
+        ensureOriginalHeightsInitialized();
+        if (state.originalHeights) {
+          for (const region of regions) {
+            refreshOriginalHeightsForRegion(region.minVX, region.maxVX, region.minVZ, region.maxVZ);
+          }
+        }
         let changed = false;
         for (const region of regions) {
           const updated = updateColorsForRegion(region.minVX, region.maxVX, region.minVZ, region.maxVZ, { softBlend: true });
           if (updated) changed = true;
         }
-        if (!state.originalInitialized) ensureOriginalHeightsInitialized();
         if (changed) commitColors();
       }
       return true;
