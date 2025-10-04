@@ -1,10 +1,13 @@
 // menu-bg.js — God Throne BG (hardcoded poses, no XML), throne x3, crisp, camera pan
-(function(){ 
+(function(){
   let engine, scene, camera, glow, canvas;
   let orbs = [];
   let t = 0;
   let camTarget;
   let manualCam = false; // toggled with 'P'
+  let resizeHandler = null;
+  let keyHandler = null;
+  let renderObserver = null;
 
   // --- Hardcoded poses generated from your uploaded XMLs ---
 // === Hardcoded poses (degrees) ===
@@ -182,9 +185,26 @@ const POSE_KNEELING = {
 	}
 
 
+  function ensureCanvas(){
+    const host = document.querySelector('#screen--menu .menu-bg');
+    if (!host) return null;
+    if (canvas && canvas.isConnected) return canvas;
+    let existing = host.querySelector('#menu-canvas');
+    if (!existing) {
+      existing = document.createElement('canvas');
+      existing.id = 'menu-canvas';
+      host.appendChild(existing);
+    }
+    canvas = existing;
+    return canvas;
+  }
+
   function build(){
-    canvas = document.getElementById("menu-canvas");
+    canvas = ensureCanvas();
     if(!canvas) return;
+    manualCam = false;
+    canvas.style.pointerEvents = '';
+    canvas.style.zIndex = '';
     engine = new BABYLON.Engine(canvas, true, { stencil:true });
     try { engine.setHardwareScalingLevel(1 / (window.devicePixelRatio || 1)); } catch {}
     scene  = new BABYLON.Scene(engine);
@@ -216,7 +236,8 @@ const POSE_KNEELING = {
         canvas.style.zIndex = '';
       }
     };
-    window.addEventListener('keydown', (e)=>{ if ((e.key||'').toLowerCase()==='p') toggleCam(); });
+    keyHandler = (e)=>{ if ((e.key||'').toLowerCase()==='p') toggleCam(); };
+    window.addEventListener('keydown', keyHandler);
 	
     camTarget = new BABYLON.TransformNode("camTarget", scene);
     camTarget.position = new BABYLON.Vector3(0, 2.6, 0);
@@ -290,7 +311,7 @@ const POSE_KNEELING = {
     });
 
     // Animate
-    scene.onBeforeRenderObservable.add(()=>{
+    renderObserver = scene.onBeforeRenderObservable.add(()=>{
       const dt = engine.getDeltaTime()/1000; t += dt;
       if (!manualCam) {
         camera.alpha += dt*0.08;
@@ -311,11 +332,87 @@ const POSE_KNEELING = {
     });
 
     engine.runRenderLoop(()=> scene.render());
-    window.addEventListener("resize", ()=> engine && engine.resize());
+    if (!resizeHandler) {
+      resizeHandler = () => { try { engine && engine.resize(); } catch {} };
+      window.addEventListener("resize", resizeHandler);
+    }
   }
 
   window.MenuBG = {
     start(){ if(!engine) build(); },
-    stop(){ if(engine){ try{ engine.stopRenderLoop(); }catch{} try{ engine.dispose(); }catch{} } engine=null; scene=null; orbs=[]; }
+    stop(){
+      const auditKey = 'menu-background';
+      const audit = window.SceneAudit;
+      if (audit && scene) {
+        try {
+          audit.beginTransition(auditKey, {
+            fromLabel: 'Menu Background',
+            toLabel: 'Disposed',
+            scene,
+            engine
+          });
+        } catch {}
+      }
+
+      if (renderObserver && scene) {
+        try { scene.onBeforeRenderObservable.remove(renderObserver); } catch {}
+      }
+      renderObserver = null;
+
+      if (scene) {
+        try { scene.dispose(); } catch {}
+      }
+      scene = null;
+      glow = null;
+      camTarget = null;
+
+      if (camera) {
+        try { camera.detachControl(); } catch {}
+      }
+      camera = null;
+
+      if (engine) {
+        try { engine.stopRenderLoop(); } catch {}
+        try { engine.dispose(); } catch {}
+      }
+      engine = null;
+
+      if (keyHandler) {
+        window.removeEventListener('keydown', keyHandler);
+        keyHandler = null;
+      }
+      if (resizeHandler) {
+        window.removeEventListener('resize', resizeHandler);
+        resizeHandler = null;
+      }
+
+      if (canvas) {
+        try { canvas.remove(); } catch {}
+      }
+      canvas = null;
+      manualCam = false;
+      orbs = [];
+      t = 0;
+
+      if (audit) {
+        try {
+          const menuState = window.MenuBG?.getState?.();
+          audit.completeTransition(auditKey, {
+            fromLabel: 'Menu Background',
+            toLabel: 'Disposed',
+            scene: menuState.scene,
+            engine: menuState.engine
+          });
+        } catch {}
+      }
+    },
+    getState(){
+      return {
+        engine,
+        scene,
+        canvas,
+        active: !!engine
+      };
+    }
   };
 })();

@@ -8525,10 +8525,28 @@
       hud.pauseOverlay.classList.toggle("visible", paused);
    }
 
-   async function startGame(ch, options = {}) {
+  async function startGame(ch, options = {}) {
       await rigReady;
       playerCosmeticController = null;
       workerMetrics.pending = 0;
+
+      const sceneAuditSpec = options.sceneAudit || null;
+      const sceneAuditKey = typeof sceneAuditSpec === "string"
+         ? sceneAuditSpec
+         : (sceneAuditSpec && typeof sceneAuditSpec === "object" ? sceneAuditSpec.key : null);
+      const sceneAuditLabels = sceneAuditSpec && typeof sceneAuditSpec === "object" ? sceneAuditSpec : {};
+
+      const completeSceneAuditTransition = () => {
+         if (!sceneAuditKey) return;
+         try {
+            window.SceneAudit?.completeTransition?.(sceneAuditKey, {
+               fromLabel: sceneAuditLabels.fromLabel || undefined,
+               toLabel: sceneAuditLabels.toLabel || "In-Game Scene",
+               scene,
+               engine
+            });
+         } catch (err) {}
+      };
 
       const runtimeSnapshot = options && Object.prototype.hasOwnProperty.call(options, "runtime")
          ? options.runtime
@@ -8641,6 +8659,7 @@
 
       const canvas = $("#game-canvas");
       await setupBabylon(canvas);
+      completeSceneAuditTransition();
       setTimeout(() => {
          try {
             canvas.focus();
@@ -10987,12 +11006,28 @@
    hud.btnExit?.addEventListener("click", () => {
       paused = false;
       disableRearDebugCamera();
+      window.SceneAudit?.beginTransition?.("game->menu", {
+         fromLabel: "In-Game Scene",
+         toLabel: "Menu Background",
+         scene,
+         engine
+      });
       try {
          engine.stopRenderLoop();
          engine.dispose();
       } catch (e) {};
+      scene = null;
+      engine = null;
       document.getElementById("screen--game").classList.remove("visible");
       document.getElementById("screen--menu").classList.add("visible");
+      window.MenuBG?.start();
+      const menuState = window.MenuBG?.getState?.();
+      window.SceneAudit?.completeTransition?.("game->menu", {
+         fromLabel: "In-Game Scene",
+         toLabel: "Menu Background",
+         scene: menuState?.scene,
+         engine: menuState?.engine
+      });
    });
 
    if (typeof window !== "undefined") {
@@ -11306,38 +11341,61 @@ try {
          return;
       }
       const runtime = window.loadRuntimeState?.() || null;
+      const menuState = window.MenuBG?.getState?.();
+      window.SceneAudit?.beginTransition?.("menu->game", {
+         fromLabel: "Menu Background",
+         toLabel: "In-Game Scene",
+         scene: menuState?.scene,
+         engine: menuState?.engine
+      });
       window.MenuBG && window.MenuBG.stop();
       document.getElementById("screen--menu").classList.remove("visible");
           document.getElementById("screen--game").classList.add("visible");
           // Make sure Babylon samples a real size once the screen is visible
       setTimeout(() => { try { engine && engine.resize(); } catch {} }, 0);
-      window.HXH.startGame(ch, { runtime });
+      window.HXH.startGame(ch, { runtime, sceneAudit: { key: "menu->game", fromLabel: "Menu Background", toLabel: "In-Game Scene" } });
    });
 
-	btnNew?.addEventListener("click", () => {
-	  if (window.hasSave?.() && !confirm("Start a new game? This will reset your progress and character.")) return;
-	  window.wipeSave?.();
-	  window.MenuBG?.stop();
+   btnNew?.addEventListener("click", () => {
+          if (window.hasSave?.() && !confirm("Start a new game? This will reset your progress and character.")) return;
+          window.wipeSave?.();
+          const menuState = window.MenuBG?.getState?.();
+          window.SceneAudit?.beginTransition?.("menu->creator", {
+            fromLabel: "Menu Background",
+            toLabel: "Character Creator",
+            scene: menuState?.scene,
+            engine: menuState?.engine
+          });
+          window.MenuBG?.stop();
 
-	  // hide all screens
-	  document.querySelectorAll(".screen").forEach(s => s.classList.remove("visible"));
+          // hide all screens
+          document.querySelectorAll(".screen").forEach(s => s.classList.remove("visible"));
 
-	  // show the creator (your HTML id)
-	  const create = document.getElementById("screen--creator");
-	  if (!create) {
-		alert('Could not find the character creation screen (screen--creator).');
-		return;
-	  }
+          // show the creator (your HTML id)
+          const create = document.getElementById("screen--creator");
+          if (!create) {
+                alert('Could not find the character creation screen (screen--creator).');
+                return;
+          }
           create.classList.add("visible");
+          window.CharacterCreator?.markSceneAuditPending?.();
 
           // initialize the 3D creator preview + UI
           window.CharacterCreator?.open?.();
           window.CharacterUI?.boot?.();
-	});
+        });
 
 
 
    btnRig?.addEventListener("click", () => {
+      const menuState = window.MenuBG?.getState?.();
+      window.SceneAudit?.beginTransition?.("menu->rig", {
+         fromLabel: "Menu Background",
+         toLabel: "Rig Editor",
+         scene: menuState?.scene,
+         engine: menuState?.engine
+      });
+      window.RigEditor?.markSceneAuditPending?.();
       document.querySelectorAll(".screen").forEach(s => s.classList.remove("visible"));
       document.getElementById("screen--rig").classList.add("visible");
       window.MenuBG && window.MenuBG.stop();
