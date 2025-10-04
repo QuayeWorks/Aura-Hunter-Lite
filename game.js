@@ -727,12 +727,29 @@
    let getRuntimeState = () => null;
    let pendingInventorySnapshot = null;
    let startPos = new BABYLON.Vector3(0, 3, 0);
-   const world = {
-      size: 100,
-      gravityY: -28,
-      ground: null,
-      platforms: []
-   };
+  const world = {
+     size: 100,
+     gravityY: -28,
+     ground: null,
+     platforms: []
+  };
+
+   const getTerrainApi = () => window.HXH?.Terrain || window.WorldUtils?.Terrain || null;
+
+   function isUnifiedTerrainEnabled() {
+      const flags = window.HXH?.FLAGS || window.WorldUtils?.FLAGS;
+      return !(flags && flags.USE_UNIFIED_TERRAIN === false);
+   }
+
+   function isUnifiedTerrainActive() {
+      if (!isUnifiedTerrainEnabled()) return false;
+      const api = getTerrainApi();
+      if (!api) return false;
+      const mesh = typeof api.getMesh === "function" ? api.getMesh() : null;
+      if (!mesh) return false;
+      if (typeof mesh.isDisposed === "function" && mesh.isDisposed()) return false;
+      return true;
+   }
 
    const physics = {
       bodies: new Set(),
@@ -3395,6 +3412,13 @@
                 if (terrain.streaming.queueMap?.clear) terrain.streaming.queueMap.clear();
          }
 
+         const terrainApi = getTerrainApi();
+         if (terrainApi && typeof terrainApi.dispose === "function") {
+                try { terrainApi.dispose(); } catch (err) {
+                  console.warn("[Terrain] Failed to dispose unified mesh", err);
+                }
+         }
+
          // 4) Clear references
          environment.terrain = null;
          world.ground = null;
@@ -3531,6 +3555,48 @@
                 bounds: { minX: -halfX, maxX: halfX, minZ: -halfZ, maxZ: halfZ },
                 layerTemplates // keep a reference if other systems need access
           };
+          const terrainApi = getTerrainApi();
+          const useUnified = !!terrainApi && isUnifiedTerrainEnabled();
+          if (terrainApi) {
+                if (useUnified) {
+                  const mesh = terrainApi.init({
+                        scene,
+                        width: totalWidth,
+                        depth: totalDepth,
+                        resolution: { x: length, z: width },
+                        baseY,
+                        parent: root,
+                        material: terrainMaterial
+                  });
+                  if (mesh && typeof terrainApi.updateFromColumns === "function") {
+                        terrainApi.updateFromColumns(environment.terrain);
+                        const activeRegion = typeof terrainApi.getActiveRegion === "function"
+                           ? terrainApi.getActiveRegion()
+                           : null;
+                        if (activeRegion && typeof terrainApi.setActiveRegion === "function") {
+                           try { terrainApi.setActiveRegion(activeRegion); } catch (err) {
+                              console.warn("[Terrain] Failed to reapply region ambient", err);
+                           }
+                        }
+                  }
+                  environment.terrain.unifiedMesh = mesh || null;
+                  environment.terrain.unifiedEnabled = !!mesh;
+                  world.ground = mesh || null;
+                } else {
+                  if (typeof terrainApi.dispose === "function") {
+                        try { terrainApi.dispose(); } catch (err) {
+                          console.warn("[Terrain] Failed to reset unified mesh", err);
+                        }
+                  }
+                  environment.terrain.unifiedMesh = null;
+                  environment.terrain.unifiedEnabled = false;
+                  world.ground = null;
+                }
+          } else {
+                environment.terrain.unifiedMesh = null;
+                environment.terrain.unifiedEnabled = false;
+                world.ground = null;
+          }
           initializeTerrainStreaming(environment.terrain, settings, { preserveOverride: true });
           updateTerrainRadiusControl();
         }
@@ -3559,19 +3625,32 @@
    }
 
    function enableTerrainColumn(column) {
+      const hideLegacy = isUnifiedTerrainActive();
       for (const block of column) {
          if (!block) continue;
          const meta = block.metadata?.terrainBlock;
          if (meta && meta.destroyed) continue;
-         block.setEnabled(true);
-         block.isPickable = true;
-         block.checkCollisions = true;
+         if (hideLegacy) {
+            block.isVisible = false;
+            block.visibility = 0;
+            block.isPickable = false;
+            block.checkCollisions = false;
+            block.setEnabled(false);
+         } else {
+            block.visibility = 1;
+            block.isVisible = true;
+            block.setEnabled(true);
+            block.isPickable = true;
+            block.checkCollisions = true;
+         }
       }
    }
 
    function disableTerrainColumn(column) {
       for (const block of column) {
          if (!block) continue;
+         block.isVisible = false;
+         block.visibility = 0;
          block.setEnabled(false);
          block.isPickable = false;
          block.checkCollisions = false;
@@ -4343,6 +4422,12 @@
          block.isVisible = false;
          block.setEnabled(false);
          terrain.heights[columnIndex] = recomputeColumnHeight(column);
+         const terrainApi = getTerrainApi();
+         if (terrainApi && isUnifiedTerrainActive() && typeof terrainApi.updateFromColumns === "function") {
+            try { terrainApi.updateFromColumns(terrain, { columnIndex }); } catch (err) {
+               console.warn("[Terrain] Failed to update unified mesh column", err);
+            }
+         }
          if (terrain.columnStates[columnIndex]) {
             enableTerrainColumn(column);
          }
@@ -11048,6 +11133,8 @@
    // Public API
    window.GameSettings = GameSettings;
    const previousHXH = typeof window.HXH === "object" && window.HXH ? window.HXH : {};
+   const previousFlags = previousHXH.FLAGS || window.WorldUtils?.FLAGS || {};
+   const previousTerrainApi = previousHXH.Terrain || getTerrainApi();
    window.HXH = {
       startGame,
       rigReady,
@@ -11073,6 +11160,8 @@
       enableRearDebugCamera,
       disableRearDebugCamera,
       isRearDebugCameraActive,
+      FLAGS: previousFlags,
+      Terrain: previousTerrainApi,
       getPhysicsStats: () => ({
          bodies: physics.bodies.size,
          sleeping: physics.sleepingBodies.size,

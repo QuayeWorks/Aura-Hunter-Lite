@@ -1333,6 +1333,12 @@
     ensureInteriorRuntime(region.id);
     window.Spawns?.useRegion?.(region);
     window.WorldUtils?.applyRegionVisuals?.(region);
+    const terrainApi = window.HXH?.Terrain || window.WorldUtils?.Terrain;
+    if (terrainApi && typeof terrainApi.setActiveRegion === "function") {
+      try { terrainApi.setActiveRegion(region); } catch (err) {
+        console.warn("[RegionManager] Failed to sync unified terrain region", err);
+      }
+    }
     const streamRadius = Number.isFinite(region.terrain?.streamRadius) ? region.terrain.streamRadius : null;
     window.WorldUtils?.setTerrainStreamingRadius?.(streamRadius, { mode: "base" });
     const lodProfile = buildRegionLodProfile(region.id);
