@@ -2363,6 +2363,7 @@
 
    let terrainRadiusControl = null;
    let terrainRadiusUiScheduled = false;
+   let terrainDeformListenerAttached = false;
 
    let fallbackTreeMaterials = null;
 
@@ -3430,6 +3431,7 @@
          const terrain = environment.terrain;
          if (!terrain) return;
 
+         resetTerrainHeightSampler(terrain);
          clearTrees();
 
          // 1) Dispose all block instances in columns (if present)
@@ -3652,6 +3654,7 @@
                 environment.terrain.unifiedEnabled = false;
                 world.ground = null;
           }
+          initializeTerrainHeightSampler(environment.terrain);
           initializeTerrainStreaming(environment.terrain, settings, { preserveOverride: true });
           updateTerrainRadiusControl();
         }
@@ -4486,6 +4489,292 @@
       return { radius, strength, falloff };
    }
 
+   function buildTerrainSamplerDescriptor(sampler) {
+      if (!sampler) return null;
+      return {
+         minX: sampler.minX,
+         minZ: sampler.minZ,
+         stepX: sampler.stepX,
+         stepZ: sampler.stepZ,
+         vertexCountX: sampler.vertexCountX,
+         vertexCountZ: sampler.vertexCountZ,
+         heights: sampler.heights,
+         version: sampler.version,
+      };
+   }
+
+   function scheduleTerrainSamplerFlush(terrain, sampler) {
+      if (!terrain || !sampler) return;
+      if (sampler.flushScheduled) return;
+      sampler.flushScheduled = true;
+      const flush = () => {
+         sampler.flushScheduled = false;
+         if (!terrain.heightSampler || terrain.heightSampler !== sampler) return;
+         const pendingPatch = sampler.pendingPatch ? { ...sampler.pendingPatch } : null;
+         const reset = sampler.pendingReset === true;
+         sampler.pendingPatch = null;
+         sampler.pendingReset = false;
+         if (!pendingPatch && !reset) return;
+         const detail = {
+            version: sampler.version,
+            patch: pendingPatch,
+            reset,
+            sampler: buildTerrainSamplerDescriptor(sampler)
+         };
+         try {
+            window.RegionManager?.notifyTerrainSamplerPatch?.(detail);
+         } catch (err) {
+            console.warn("[Terrain] Failed to notify RegionManager of sampler patch", err);
+         }
+      };
+      if (typeof requestAnimationFrame === "function") {
+         requestAnimationFrame(flush);
+      } else {
+         setTimeout(flush, 0);
+      }
+   }
+
+   function queueTerrainSamplerPatch(terrain, patch, opts = {}) {
+      if (!terrain || !patch) {
+         if (opts.reset === true) {
+            try {
+               window.RegionManager?.notifyTerrainSamplerPatch?.({
+                  reset: true,
+                  patch: null,
+                  sampler: buildTerrainSamplerDescriptor(terrain?.heightSampler || null),
+                  version: terrain?.heightSampler?.version || 0
+               });
+            } catch (err) {
+               console.warn("[Terrain] Failed to notify RegionManager of sampler reset", err);
+            }
+         }
+         return;
+      }
+      const sampler = terrain.heightSampler;
+      if (!sampler) return;
+      if (!sampler.pendingPatch) {
+         sampler.pendingPatch = { ...patch };
+      } else {
+         const pending = sampler.pendingPatch;
+         pending.minVX = Math.min(pending.minVX, patch.minVX);
+         pending.maxVX = Math.max(pending.maxVX, patch.maxVX);
+         pending.minVZ = Math.min(pending.minVZ, patch.minVZ);
+         pending.maxVZ = Math.max(pending.maxVZ, patch.maxVZ);
+         pending.minX = Math.min(pending.minX, patch.minX);
+         pending.maxX = Math.max(pending.maxX, patch.maxX);
+         pending.minZ = Math.min(pending.minZ, patch.minZ);
+         pending.maxZ = Math.max(pending.maxZ, patch.maxZ);
+      }
+      if (opts.reset === true) sampler.pendingReset = true;
+      scheduleTerrainSamplerFlush(terrain, sampler);
+   }
+
+   function ensureTerrainHeightSampler(terrain) {
+      if (!terrain) return null;
+      if (terrain.heightSampler) return terrain.heightSampler;
+      const colsX = terrain.colsX | 0;
+      const colsZ = terrain.colsZ | 0;
+      if (!colsX || !colsZ) return null;
+      const sampler = {
+         colsX,
+         colsZ,
+         vertexCountX: colsX + 1,
+         vertexCountZ: colsZ + 1,
+         stepX: terrain.cubeSize || 1,
+         stepZ: terrain.cubeSize || 1,
+         minX: -terrain.halfX,
+         minZ: -terrain.halfZ,
+         baseY: terrain.baseY || 0,
+         heights: new Float32Array((colsX + 1) * (colsZ + 1)),
+         version: 0,
+         pendingPatch: null,
+         pendingReset: false,
+         flushScheduled: false
+      };
+      terrain.heightSampler = sampler;
+      return sampler;
+   }
+
+   function resetTerrainHeightSampler(terrain, opts = {}) {
+      if (!terrain || !terrain.heightSampler) return;
+      const sampler = terrain.heightSampler;
+      terrain.heightSampler = null;
+      sampler.pendingPatch = null;
+      sampler.pendingReset = false;
+      sampler.flushScheduled = false;
+      if (opts.notify !== false) {
+        try {
+          window.RegionManager?.notifyTerrainSamplerPatch?.({
+            reset: true,
+            patch: null,
+            sampler: null,
+            version: sampler.version || 0
+          });
+        } catch (err) {
+          console.warn("[Terrain] Failed to broadcast sampler reset", err);
+        }
+      }
+   }
+
+   function sampleTerrainHeightForSampler(terrain, worldX, worldZ) {
+      if (!terrain) return null;
+      const terrainApi = getTerrainApi();
+      if (terrainApi && isUnifiedTerrainActive() && typeof terrainApi.sampleHeight === "function") {
+         const height = terrainApi.sampleHeight(worldX, worldZ);
+         if (Number.isFinite(height)) return height;
+      }
+      const idx = terrainColumnIndexFromWorld(worldX, worldZ);
+      if (idx >= 0) {
+         const offset = terrain.heights?.[idx];
+         if (Number.isFinite(offset)) return terrain.baseY + offset;
+      }
+      return terrain.baseY || 0;
+   }
+
+   function updateTerrainSamplerRegion(terrain, minVX, maxVX, minVZ, maxVZ, opts = {}) {
+      const sampler = ensureTerrainHeightSampler(terrain);
+      if (!sampler) return null;
+      const vCountX = sampler.vertexCountX;
+      const vCountZ = sampler.vertexCountZ;
+      if (!vCountX || !vCountZ) return null;
+      const minVXClamped = Math.max(0, Math.min(vCountX - 1, Math.floor(minVX)));
+      const maxVXClamped = Math.max(minVXClamped, Math.min(vCountX - 1, Math.ceil(maxVX)));
+      const minVZClamped = Math.max(0, Math.min(vCountZ - 1, Math.floor(minVZ)));
+      const maxVZClamped = Math.max(minVZClamped, Math.min(vCountZ - 1, Math.ceil(maxVZ)));
+      if (maxVXClamped < minVXClamped || maxVZClamped < minVZClamped) return null;
+      const { minX, minZ, stepX, stepZ } = sampler;
+      for (let vz = minVZClamped; vz <= maxVZClamped; vz++) {
+         const worldZ = minZ + vz * stepZ;
+         for (let vx = minVXClamped; vx <= maxVXClamped; vx++) {
+            const worldX = minX + vx * stepX;
+            const height = sampleTerrainHeightForSampler(terrain, worldX, worldZ);
+            const idx = vz * vCountX + vx;
+            sampler.heights[idx] = Number.isFinite(height) ? height : sampler.heights[idx];
+         }
+      }
+      sampler.version += 1;
+      const patch = {
+         minVX: minVXClamped,
+         maxVX: maxVXClamped,
+         minVZ: minVZClamped,
+         maxVZ: maxVZClamped,
+         minX: minX + minVXClamped * stepX,
+         maxX: minX + (maxVXClamped + 1) * stepX,
+         minZ: minZ + minVZClamped * stepZ,
+         maxZ: minZ + (maxVZClamped + 1) * stepZ,
+         stepX,
+         stepZ
+      };
+      queueTerrainSamplerPatch(terrain, patch, opts);
+      return patch;
+   }
+
+   function updateTerrainSamplerForColumns(terrain, minCX, maxCX, minCZ, maxCZ, opts = {}) {
+      if (!terrain) return null;
+      const sampler = ensureTerrainHeightSampler(terrain);
+      if (!sampler) return null;
+      const minVX = Math.max(0, minCX);
+      const maxVX = Math.min(sampler.vertexCountX - 1, maxCX + 1);
+      const minVZ = Math.max(0, minCZ);
+      const maxVZ = Math.min(sampler.vertexCountZ - 1, maxCZ + 1);
+      return updateTerrainSamplerRegion(terrain, minVX, maxVX, minVZ, maxVZ, opts);
+   }
+
+   function updateTerrainColumnsFromUnifiedMeshRange(terrain, minCX, maxCX, minCZ, maxCZ) {
+      const terrainApi = getTerrainApi();
+      if (!terrain || !terrain.heights || !terrainApi || typeof terrainApi.sampleHeight !== "function") return;
+      const colsX = terrain.colsX | 0;
+      const colsZ = terrain.colsZ | 0;
+      if (!colsX || !colsZ) return;
+      const cubeSize = Math.max(terrain.cubeSize || 1, 0.5);
+      const halfX = terrain.halfX;
+      const halfZ = terrain.halfZ;
+      const baseY = terrain.baseY || 0;
+      const minSampleCX = Math.max(0, Math.min(colsX - 1, minCX));
+      const maxSampleCX = Math.max(minSampleCX, Math.min(colsX - 1, maxCX));
+      const minSampleCZ = Math.max(0, Math.min(colsZ - 1, minCZ));
+      const maxSampleCZ = Math.max(minSampleCZ, Math.min(colsZ - 1, maxCZ));
+      for (let cz = minSampleCZ; cz <= maxSampleCZ; cz++) {
+         const worldZ = -halfZ + (cz + 0.5) * cubeSize;
+         for (let cx = minSampleCX; cx <= maxSampleCX; cx++) {
+            const worldX = -halfX + (cx + 0.5) * cubeSize;
+            const idx = cz * colsX + cx;
+            const height = terrainApi.sampleHeight(worldX, worldZ);
+            if (Number.isFinite(height)) {
+               terrain.heights[idx] = Math.max(0, height - baseY);
+            }
+         }
+      }
+   }
+
+   function handleTerrainPatchPhysics(patch) {
+      if (!patch) return;
+      const expandX = patch.stepX || 0;
+      const expandZ = patch.stepZ || 0;
+      const minX = patch.minX - expandX;
+      const maxX = patch.maxX + expandX;
+      const minZ = patch.minZ - expandZ;
+      const maxZ = patch.maxZ + expandZ;
+      if (player?.position) {
+         const px = player.position.x;
+         const pz = player.position.z;
+         if (px >= minX && px <= maxX && pz >= minZ && pz <= maxZ) {
+            state.groundSampleDirty = true;
+            state.groundSampleCountdown = 0;
+         }
+      }
+      for (const body of physics.bodies) {
+         if (!body || !body.mesh || body.useCollisions === false) continue;
+         const pos = body.mesh.position;
+         if (!pos) continue;
+         if (pos.x >= minX && pos.x <= maxX && pos.z >= minZ && pos.z <= maxZ) {
+            body.wakeRequested = true;
+            wakePhysicsBody(body);
+         }
+      }
+   }
+
+   function handleTerrainDeformed(detail) {
+      if (!detail) return;
+      const terrain = environment.terrain;
+      if (!terrain) return;
+      const bounds = detail.bounds || {};
+      const sampler = ensureTerrainHeightSampler(terrain);
+      if (!sampler) return;
+      const minVX = Number.isFinite(bounds.minVX) ? bounds.minVX : Number(bounds.vx0) || 0;
+      const maxVX = Number.isFinite(bounds.maxVX) ? bounds.maxVX : Number(bounds.vx1 ?? bounds.minVX ?? 0);
+      const minVZ = Number.isFinite(bounds.minVZ) ? bounds.minVZ : Number(bounds.vz0) || 0;
+      const maxVZ = Number.isFinite(bounds.maxVZ) ? bounds.maxVZ : Number(bounds.vz1 ?? bounds.minVZ ?? 0);
+      const minVXInt = Math.max(0, Math.floor(minVX));
+      const maxVXInt = Math.min(sampler.vertexCountX - 1, Math.ceil(maxVX));
+      const minVZInt = Math.max(0, Math.floor(minVZ));
+      const maxVZInt = Math.min(sampler.vertexCountZ - 1, Math.ceil(maxVZ));
+      const minCX = Math.max(0, Math.floor(minVX));
+      const maxCX = Math.max(minCX, Math.min(terrain.colsX - 1, Math.ceil(maxVX) - 1));
+      const minCZ = Math.max(0, Math.floor(minVZ));
+      const maxCZ = Math.max(minCZ, Math.min(terrain.colsZ - 1, Math.ceil(maxVZ) - 1));
+      updateTerrainColumnsFromUnifiedMeshRange(terrain, minCX, maxCX, minCZ, maxCZ);
+      const patch = updateTerrainSamplerRegion(terrain, minVXInt, maxVXInt, minVZInt, maxVZInt);
+      if (patch) handleTerrainPatchPhysics(patch);
+   }
+
+   function ensureTerrainDeformListener() {
+      if (terrainDeformListenerAttached) return;
+      if (typeof window === "undefined" || typeof window.addEventListener !== "function") return;
+      window.addEventListener("terrainDeformed", (event) => {
+         const detail = event?.detail || null;
+         handleTerrainDeformed(detail);
+      });
+      terrainDeformListenerAttached = true;
+   }
+
+   function initializeTerrainHeightSampler(terrain) {
+      if (!terrain) return;
+      const sampler = ensureTerrainHeightSampler(terrain);
+      if (!sampler) return;
+      updateTerrainSamplerRegion(terrain, 0, sampler.vertexCountX - 1, 0, sampler.vertexCountZ - 1, { reset: true });
+   }
+
    function syncUnifiedTerrainHeights(worldX, worldZ, radius) {
       const terrain = environment.terrain;
       const terrainApi = getTerrainApi();
@@ -4513,6 +4802,8 @@
             }
          }
       }
+      const patch = updateTerrainSamplerForColumns(terrain, startCX, endCX, startCZ, endCZ);
+      if (patch) handleTerrainPatchPhysics(patch);
    }
 
    function applyUnifiedTerrainDamage(point, options = {}) {
@@ -4528,9 +4819,6 @@
             strength: resolved.strength,
             falloff: resolved.falloff,
          });
-         if (success) {
-            syncUnifiedTerrainHeights(point.x, point.z, resolved.radius);
-         }
          return !!success;
       } catch (err) {
          console.warn("[Terrain] Failed to deform unified mesh", err);
@@ -4560,29 +4848,34 @@
       if (!terrain) return false;
       const column = terrain.columns[columnIndex];
       if (!column) return false;
-      for (let layer = column.length - 1; layer >= 0; layer--) {
-         const block = column[layer];
-         if (!block) continue;
-         const meta = block.metadata?.terrainBlock;
-         if (!meta || meta.destroyed) continue;
-         if (!meta.destructible) return false;
-         meta.destroyed = true;
-         block.isPickable = false;
-         block.checkCollisions = false;
-         block.isVisible = false;
-         block.setEnabled(false);
-         terrain.heights[columnIndex] = recomputeColumnHeight(column);
-         const terrainApi = getTerrainApi();
-         if (terrainApi && isUnifiedTerrainActive() && typeof terrainApi.updateFromColumns === "function") {
-            try { terrainApi.updateFromColumns(terrain, { columnIndex }); } catch (err) {
-               console.warn("[Terrain] Failed to update unified mesh column", err);
+         for (let layer = column.length - 1; layer >= 0; layer--) {
+            const block = column[layer];
+            if (!block) continue;
+            const meta = block.metadata?.terrainBlock;
+            if (!meta || meta.destroyed) continue;
+            if (!meta.destructible) return false;
+            meta.destroyed = true;
+            block.isPickable = false;
+            block.checkCollisions = false;
+            block.isVisible = false;
+            block.setEnabled(false);
+            terrain.heights[columnIndex] = recomputeColumnHeight(column);
+            const terrainApi = getTerrainApi();
+            if (terrainApi && isUnifiedTerrainActive() && typeof terrainApi.updateFromColumns === "function") {
+               try { terrainApi.updateFromColumns(terrain, { columnIndex }); } catch (err) {
+                  console.warn("[Terrain] Failed to update unified mesh column", err);
+               }
             }
+            const colsX = terrain.colsX | 0;
+            const cx = colsX > 0 ? columnIndex % colsX : columnIndex;
+            const cz = colsX > 0 ? Math.floor(columnIndex / colsX) : 0;
+            const patch = updateTerrainSamplerForColumns(terrain, cx, cx, cz, cz);
+            if (patch) handleTerrainPatchPhysics(patch);
+            if (terrain.columnStates[columnIndex]) {
+               enableTerrainColumn(column);
+            }
+            return true;
          }
-         if (terrain.columnStates[columnIndex]) {
-            enableTerrainColumn(column);
-         }
-         return true;
-      }
       return false;
    }
 
@@ -7396,6 +7689,7 @@
    };
 
    getRuntimeState = () => state;
+   ensureTerrainDeformListener();
 
    recomputeTrainingEffects({ silent: true });
 
