@@ -1665,16 +1665,18 @@
 
     function updateFromColumns(terrain, opts = {}) {
       if (!terrain || !state.mesh) return false;
-      if (!terrain.heights || !Number.isInteger(terrain.colsX) || !Number.isInteger(terrain.colsZ)) return false;
-      if (terrain.colsX !== state.segmentsX || terrain.colsZ !== state.segmentsZ) return false;
+      const colsX = Number(terrain.colsX);
+      const colsZ = Number(terrain.colsZ);
+      if (!terrain.heights || !Number.isInteger(colsX) || !Number.isInteger(colsZ)) return false;
+      if (colsX !== state.segmentsX || colsZ !== state.segmentsZ) return false;
       state.baseY = Number.isFinite(terrain.baseY) ? Number(terrain.baseY) : state.baseY;
       const { columnIndex, columnIndices } = opts;
       const regions = [];
       if (Array.isArray(columnIndices) && columnIndices.length) {
         for (const idx of columnIndices) {
           updateColumn(idx, terrain);
-          const cx = idx % terrain.colsX;
-          const cz = Math.floor(idx / terrain.colsX);
+          const cx = idx % colsX;
+          const cz = Math.floor(idx / colsX);
           regions.push({
             minVX: Math.max(0, cx - 1),
             maxVX: Math.min(state.vertexCountX - 1, cx + 2),
@@ -1684,8 +1686,8 @@
         }
       } else if (Number.isInteger(columnIndex)) {
         updateColumn(columnIndex, terrain);
-        const cx = columnIndex % terrain.colsX;
-        const cz = Math.floor(columnIndex / terrain.colsX);
+        const cx = columnIndex % colsX;
+        const cz = Math.floor(columnIndex / colsX);
         regions.push({
           minVX: Math.max(0, cx - 1),
           maxVX: Math.min(state.vertexCountX - 1, cx + 2),
