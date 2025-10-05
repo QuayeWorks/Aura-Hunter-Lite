@@ -3554,7 +3554,14 @@
           const settings = environment.terrainSettings = normalizeTerrainSettings(environment.terrainSettings);
           saveTerrainSettings({ ...settings, depthThresholds: { ...settings.depthThresholds } });
 
-          const { length, width, cubeSize, layers } = settings;
+          const {
+             length: rawLength,
+             width: rawWidth,
+             cubeSize,
+             layers
+          } = settings;
+          const length = Number.isFinite(rawLength) ? Math.max(1, Math.round(rawLength)) : defaultTerrainSettings.length;
+          const width = Number.isFinite(rawWidth) ? Math.max(1, Math.round(rawWidth)) : defaultTerrainSettings.width;
 
           const layerThicknesses = new Array(layers);
           const layerOffsets = new Array(layers);
