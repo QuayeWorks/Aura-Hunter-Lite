@@ -33,10 +33,36 @@
       if (typeof window === "undefined") return false;
       if (typeof window.__HXH_DEV__ === "boolean") return window.__HXH_DEV__;
       if (typeof window.DEV_MODE === "boolean") return window.DEV_MODE;
+
+      const autoDisable = window.__HXH_DEV_DISABLE_AUTO === true;
+      const allowList = Array.isArray(window.__HXH_DEV_HOSTS) ? window.__HXH_DEV_HOSTS : null;
       const host = window.location?.hostname || "";
-      if (!host) return false;
-      if (host === "localhost" || host === "127.0.0.1" || host === "0.0.0.0") return true;
-      return host.endsWith(".local");
+
+      const matchesAllowList = (hostname) => {
+         if (!allowList || !hostname) return false;
+         return allowList.some((entry) => {
+            if (typeof entry === "string") return entry.toLowerCase() === hostname.toLowerCase();
+            if (entry instanceof RegExp) {
+               try {
+                  return entry.test(hostname);
+               } catch (err) {
+                  return false;
+               }
+            }
+            return false;
+         });
+      };
+
+      if (!host) return !autoDisable;
+
+      if (matchesAllowList(host)) return true;
+
+      const normalizedHost = host.toLowerCase();
+      if (normalizedHost === "localhost" || normalizedHost === "127.0.0.1" || normalizedHost === "0.0.0.0") return true;
+      if (normalizedHost.endsWith(".local")) return true;
+      if (/^(192\.168|10\.|172\.(1[6-9]|2\d|3[0-1]))\./.test(normalizedHost)) return true;
+
+      return false;
    })();
 
    const AURA_STATUS_KEYS = [
