@@ -11886,9 +11886,10 @@
          }
       }
 
+      const baseY = player.position.y;
       playerRoot.position.copyFrom(player.position);
       if (currentOffset !== 0) {
-         playerRoot.position.y += currentOffset;
+         playerRoot.position.y = baseY + currentOffset;
       }
 
       if (state.grounded) {
@@ -11909,7 +11910,8 @@
       const offsetLerp = Math.max(0, Math.min(1, ROOT_GROUND_LERP * dt * 60));
       state.rootGroundOffset += (state.rootGroundOffsetTarget - state.rootGroundOffset) * offsetLerp;
       if (Math.abs(state.rootGroundOffset) < 1e-4) state.rootGroundOffset = 0;
-      playerRoot.position.y = player.position.y + state.rootGroundOffset;
+      playerRoot.position.y = baseY + state.rootGroundOffset;
+      player.position.y = baseY;
       playerRoot.computeWorldMatrix(true);
 
       updateTerrainStreaming(playerRoot.position, dt);
