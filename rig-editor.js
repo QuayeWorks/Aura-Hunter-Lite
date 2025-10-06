@@ -27,7 +27,7 @@
           torsoLower: { w: 0.9, h: 0.45, d: 0.55 },
           torsoUpper: { w: 0.95, h: 0.71, d: 0.55 },
           neck: { w: 0.25, h: 0.25, d: 0.25 },
-          head: { w: 0.45, h: 0.5, d: 0.45 },
+          head: { w: 0.52, h: 0.52, d: 0.52 },
           armL_upper: { w: 0.34, h: 0.75, d: 0.34 },
           armL_fore: { w: 0.3, h: 0.7, d: 0.27 },
           armL_hand: { w: 0.28, h: 0.25, d: 0.25 },
