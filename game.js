@@ -7323,9 +7323,9 @@
          d: 0.25
       },
       head: {
-         w: 0.45,
-         h: 0.50,
-         d: 0.45
+         w: 0.52,
+         h: 0.52,
+         d: 0.52
       },
       arm: {
          upperW: 0.34,
@@ -10181,13 +10181,12 @@
       const headPivot = new BABYLON.TransformNode("head_pivot", scene);
       headPivot.parent = neck.pivot;
       nodes["head"] = headPivot;
-      const headM = BABYLON.MeshBuilder.CreateSphere(
+      const headM = BABYLON.MeshBuilder.CreateBox(
          "head",
          {
-            diameterX: s.head.w,
-            diameterY: s.head.h,
-            diameterZ: s.head.d,
-            segments: 32
+            width: s.head.w,
+            height: s.head.h,
+            depth: s.head.d
          },
          scene
       );

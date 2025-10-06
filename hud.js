@@ -6134,9 +6134,9 @@
     neck.pivot.position.y = 0.55;
     const headPivot = register("head", new BABYLON.TransformNode("creator-head_pivot", scene));
     headPivot.parent = neck.pivot;
-    const headMesh = BABYLON.MeshBuilder.CreateSphere(
+    const headMesh = BABYLON.MeshBuilder.CreateBox(
       "creator-head",
-      { diameterX: headSize.w, diameterY: headSize.h, diameterZ: headSize.d, segments: 32 },
+      { width: headSize.w, height: headSize.h, depth: headSize.d },
       scene
     );
     headMesh.parent = headPivot;

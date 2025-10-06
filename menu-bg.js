@@ -71,7 +71,7 @@ const POSE_KNEELING = {
       torsoLower: { w: 0.900, h: 0.450, d: 0.550 },
       torsoUpper: { w: 0.950, h: 0.710, d: 0.550 },
       neck: { w: 0.250, h: 0.250, d: 0.250 },
-      head: { w: 0.450, h: 0.500, d: 0.450 },
+      head: { w: 0.520, h: 0.520, d: 0.520 },
       arm: { upperW: 0.340, upperD: 0.340, upperLen: 0.750, foreW: 0.300, foreD: 0.270, foreLen: 0.700, handLen: 0.250 },
       leg: { thighW: 0.450, thighD: 0.500, thighLen: 1.050, shinW: 0.330, shinD: 0.430, shinLen: 0.880, footW: 0.320, footH: 0.210, footLen: 0.750 },
       transforms: {
