@@ -3731,6 +3731,9 @@
                 environment.terrain.unifiedEnabled = false;
                 world.ground = null;
           }
+          if (!environment.terrain.unifiedEnabled) {
+                primeTerrainColumnsForImmediateVisibility(environment.terrain);
+          }
           initializeTerrainHeightSampler(environment.terrain);
           initializeTerrainStreaming(environment.terrain, settings, { preserveOverride: true });
           updateTerrainRadiusControl();
@@ -3795,6 +3798,22 @@
          block.isPickable = false;
          block.checkCollisions = false;
       }
+   }
+
+   function primeTerrainColumnsForImmediateVisibility(terrain) {
+      if (!terrain) return;
+      const columns = terrain.columns;
+      const columnStates = terrain.columnStates;
+      if (!Array.isArray(columns) || !Array.isArray(columnStates)) return;
+      for (let i = 0; i < columns.length; i++) {
+         if (columnStates[i]) continue;
+         const column = columns[i];
+         if (!column) continue;
+         enableTerrainColumn(column);
+         setTreeColumnEnabled(i, true);
+         columnStates[i] = true;
+      }
+      terrain.initialColumnsPrimed = true;
    }
 
    const STREAMING_STATES = {
@@ -4128,6 +4147,11 @@
                const job = workerJobs.requestTerrainChunks(payload);
                if (job && typeof job.then === "function") {
                   streaming.pendingDescriptor = job;
+                  if (!streaming.ready) {
+                     const descriptor = buildChunkDescriptors(terrain, chunkSize);
+                     integrate(descriptor);
+                     streaming.pendingDescriptor = job;
+                  }
                   job.then((result) => {
                      if (streaming.descriptorVersion !== version) return;
                      try {
