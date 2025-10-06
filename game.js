@@ -12465,6 +12465,7 @@
       setOutfit,
       setShoes,
       setAccessories,
+      resolveCosmeticAnchor: (kind, id, segments) => resolveCosmeticAnchor(kind, id, segments || RIG),
       getCosmeticAnchor: (kind, id) => getCosmeticAnchorSnapshot(kind, id),
       adjustCosmeticAnchor: (kind, id, delta, opts) => adjustCosmeticAnchor(kind, id, delta || {}, opts || {}),
       resetCosmeticAnchor: (kind, id, opts) => resetCosmeticAnchor(kind, id, opts || {}),
@@ -12570,6 +12571,7 @@ try {
     setOutfit,
     setShoes,
     setAccessories,
+    resolveCosmeticAnchor: (kind, id, segments) => resolveCosmeticAnchor(kind, id, segments || RIG),
     setRig: setRigParameters,
   });
   // share rig definitions for the editor if available
