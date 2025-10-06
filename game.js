@@ -10017,6 +10017,7 @@
       devHotkeyHandler = (event) => {
          if (event.code === "KeyD" && event.ctrlKey && event.shiftKey) {
             event.preventDefault();
+            hudApi?.setDevPanelOverride?.(true);
             hudApi?.toggleDevPanel?.();
          }
       };
