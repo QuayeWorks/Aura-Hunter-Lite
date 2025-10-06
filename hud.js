@@ -6144,19 +6144,55 @@
     headMesh.material = makeBodyMat(0.8);
     headMesh.isPickable = false;
 
+    const faceAnchor = new BABYLON.TransformNode("creator-face-anchor", scene);
+    faceAnchor.parent = headPivot;
+    faceAnchor.rotationQuaternion = null;
+
     const facePlane = BABYLON.MeshBuilder.CreatePlane("creator-face", { width: headSize.w * 0.92, height: headSize.h * 0.92 }, scene);
-    facePlane.parent = headPivot;
-    facePlane.position.y = headSize.h * 0.1;
-    facePlane.position.z = (headSize.d * 0.5) + 0.01;
+    facePlane.parent = faceAnchor;
+    facePlane.position.set(0, 0, 0);
     facePlane.isPickable = false;
 
     const hairRoot = new BABYLON.TransformNode("creator-hair-root", scene);
     hairRoot.parent = headPivot;
-    hairRoot.position.y = headSize.h * 0.5;
+    hairRoot.rotationQuaternion = null;
 
     const accessoryRoot = new BABYLON.TransformNode("creator-accessory-root", scene);
     accessoryRoot.parent = headPivot;
     accessoryRoot.position.y = headSize.h * 0.1;
+
+    const previewSegments = { head: { w: headSize.w, h: headSize.h, d: headSize.d } };
+    const defaultFaceAnchor = {
+      position: { x: 0, y: headSize.h * 0.1, z: (headSize.d * 0.5) + 0.01 },
+      rotationDeg: { x: 0, y: 0, z: 0 },
+      scale: { x: 1, y: 1, z: 1 }
+    };
+    const defaultHairAnchor = {
+      position: { x: 0, y: headSize.h * 0.5, z: 0 },
+      rotationDeg: { x: 0, y: 0, z: 0 },
+      scale: { x: 1, y: 1, z: 1 }
+    };
+
+    function applyAnchorTransform(node, anchor, fallback) {
+      if (!node) return;
+      const resolved = (anchor && anchor.resolved) || fallback || {};
+      const position = resolved.position || { x: 0, y: 0, z: 0 };
+      const rotationDeg = resolved.rotationDeg || { x: 0, y: 0, z: 0 };
+      const scale = resolved.scale || { x: 1, y: 1, z: 1 };
+      node.position.set(position.x || 0, position.y || 0, position.z || 0);
+      node.rotationQuaternion = null;
+      node.rotation.x = (rotationDeg.x || 0) * DEG2RAD;
+      node.rotation.y = (rotationDeg.y || 0) * DEG2RAD;
+      node.rotation.z = (rotationDeg.z || 0) * DEG2RAD;
+      if (node.scaling && typeof node.scaling.set === "function") {
+        node.scaling.set(scale.x || 1, scale.y || 1, scale.z || 1);
+      } else {
+        node.scaling = new BABYLON.Vector3(scale.x || 1, scale.y || 1, scale.z || 1);
+      }
+    }
+
+    applyAnchorTransform(faceAnchor, null, defaultFaceAnchor);
+    applyAnchorTransform(hairRoot, null, defaultHairAnchor);
 
     const shoulderL = register("shoulderL", new BABYLON.TransformNode("creator-shoulderL", scene));
     shoulderL.parent = torsoUpper.pivot;
@@ -6607,11 +6643,38 @@
 
     const cosmeticState = normalizeSelection(selection, baseSelection, specMaps);
 
+    function resolvePreviewAnchor(kind, id) {
+      const resolver = window.HXH && typeof window.HXH.resolveCosmeticAnchor === "function"
+        ? window.HXH.resolveCosmeticAnchor
+        : null;
+      if (!resolver) return null;
+      try {
+        return resolver(kind, id, previewSegments);
+      } catch (err) {
+        return null;
+      }
+    }
+
+    function refreshFaceAnchor(id) {
+      const target = FACE_SPEC_MAP.has(id) ? id : DEFAULT_FACE_ID;
+      const anchor = resolvePreviewAnchor("face", target);
+      applyAnchorTransform(faceAnchor, anchor, defaultFaceAnchor);
+      return anchor;
+    }
+
+    function refreshHairAnchor(id) {
+      const target = HAIR_SPEC_MAP.has(id) ? id : DEFAULT_HAIR_ID;
+      const anchor = resolvePreviewAnchor("hair", target);
+      applyAnchorTransform(hairRoot, anchor, defaultHairAnchor);
+      return anchor;
+    }
+
     const hairState = { id: null, nodes: [] };
     const accessoryState = new Map();
 
     function applyFace(id) {
       const target = FACE_SPEC_MAP.has(id) ? id : DEFAULT_FACE_ID;
+      refreshFaceAnchor(target);
       facePlane.material = ensureFaceMaterial(target);
       cosmeticState.face = target;
       return cosmeticState.face;
@@ -6619,6 +6682,7 @@
 
     function applyHair(id) {
       const target = HAIR_SPEC_MAP.has(id) ? id : DEFAULT_HAIR_ID;
+      refreshHairAnchor(target);
       hairState.nodes.forEach(node => { try { node.dispose(); } catch (err) {}; });
       hairState.nodes = instantiateHair(HAIR_SPEC_MAP.get(target));
       hairState.id = target;
@@ -6661,6 +6725,8 @@
 
     function applyAccessories(ids) {
       const desired = Array.isArray(ids) ? ids.filter(id => ACCESSORY_SPEC_MAP.has(id)) : [];
+      refreshFaceAnchor(cosmeticState.face);
+      refreshHairAnchor(cosmeticState.hair);
       for (const [key, nodes] of accessoryState) {
         if (!desired.includes(key)) {
           nodes.forEach(node => { try { node.dispose(); } catch (err) {}; });
