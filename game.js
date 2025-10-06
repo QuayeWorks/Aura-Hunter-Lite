@@ -12415,9 +12415,14 @@
       } catch (e) {};
       scene = null;
       engine = null;
-      document.getElementById("screen--game").classList.remove("visible");
-      document.getElementById("screen--menu").classList.add("visible");
-      window.MenuBG?.start();
+      if (window.MenuScreen?.showMenu) {
+         window.MenuScreen.showMenu();
+      } else {
+         document.querySelectorAll(".screen").forEach((s) => s.classList.remove("visible"));
+         document.getElementById("screen--menu")?.classList.add("visible");
+         window.MenuBG?.start();
+      }
+      window.CharacterCreator?.close?.();
       const menuState = window.MenuBG?.getState?.();
       window.SceneAudit?.completeTransition?.("game->menu", {
          fromLabel: "In-Game Scene",
