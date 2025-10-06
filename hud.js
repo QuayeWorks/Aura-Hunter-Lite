@@ -1061,6 +1061,19 @@
   let logOverlayCache = null;
   let devPanelCache = null;
   let devPanelVisible = false;
+  const DEV_PANEL_OVERRIDE_STORAGE_KEY = "__HXH_QA_OVERRIDE__";
+  let devPanelOverrideEnabled = (() => {
+    if (typeof window === "undefined") return false;
+    if (window.__HXH_DEV_PANEL_OVERRIDE__ === true) return true;
+    try {
+      const stored = window.localStorage?.getItem(DEV_PANEL_OVERRIDE_STORAGE_KEY);
+      if (stored === "1" || stored === "true" || stored === "enabled") {
+        window.__HXH_DEV_PANEL_OVERRIDE__ = true;
+        return true;
+      }
+    } catch (err) {}
+    return false;
+  })();
   let devPanelHandlers = {
     toggleAura: () => {},
     setEnRadius: () => {},
@@ -1111,6 +1124,35 @@
 
     return false;
   })();
+
+  function isDevPanelOverrideEnabled() {
+    if (devPanelOverrideEnabled) return true;
+    if (typeof window !== "undefined" && window.__HXH_DEV_PANEL_OVERRIDE__ === true) return true;
+    return false;
+  }
+
+  function setDevPanelOverrideEnabled(enabled) {
+    const next = !!enabled;
+    devPanelOverrideEnabled = next;
+    if (typeof window !== "undefined") {
+      window.__HXH_DEV_PANEL_OVERRIDE__ = next;
+      try {
+        const storage = window.localStorage;
+        if (storage) {
+          if (next) {
+            storage.setItem(DEV_PANEL_OVERRIDE_STORAGE_KEY, "enabled");
+          } else {
+            storage.removeItem(DEV_PANEL_OVERRIDE_STORAGE_KEY);
+          }
+        }
+      } catch (err) {}
+    }
+    return next;
+  }
+
+  function isDevPanelAllowed() {
+    return DEV_BUILD || isDevPanelOverrideEnabled();
+  }
 
   let profilerOverlayCache = null;
   let profilerOverlayVisible = false;
@@ -2058,7 +2100,7 @@
   ];
 
   function ensureDevPanel() {
-    if (!DEV_BUILD) return null;
+    if (!isDevPanelAllowed()) return null;
     const root = ensureHudRoot();
     if (!root) return null;
     if (devPanelCache?.root?.isConnected && root.contains(devPanelCache.root)) {
@@ -2894,7 +2936,7 @@
   }
 
   function setDevPanelVisible(visible) {
-    if (!DEV_BUILD) return false;
+    if (!isDevPanelAllowed()) return false;
     const cache = ensureDevPanel();
     if (!cache) return false;
     devPanelVisible = !!visible;
@@ -2903,19 +2945,19 @@
   }
 
   function toggleDevPanel() {
-    if (!DEV_BUILD) return false;
+    if (!isDevPanelAllowed()) return false;
     setDevPanelVisible(!devPanelVisible);
     return devPanelVisible;
   }
 
   function configureDevPanel(handlers = {}) {
     devPanelHandlers = { ...devPanelHandlers, ...handlers };
-    if (!DEV_BUILD) return;
+    if (!isDevPanelAllowed()) return;
     ensureDevPanel();
   }
 
   function updateDevPanelState(aura = {}) {
-    if (!DEV_BUILD) return;
+    if (!isDevPanelAllowed()) return;
     const cache = devPanelCache || ensureDevPanel();
     if (!cache) return;
     DEV_TOGGLES.forEach(spec => {
@@ -2988,19 +3030,19 @@
   }
 
   function ensureDebugVisualCache() {
-    if (!DEV_BUILD) return null;
+    if (!isDevPanelAllowed()) return null;
     if (!devPanelCache) ensureDevPanel();
     return devPanelCache?.debugVisuals || null;
   }
 
   function ensureSingleCamPerfCache() {
-    if (!DEV_BUILD) return null;
+    if (!isDevPanelAllowed()) return null;
     if (!devPanelCache) ensureDevPanel();
     return devPanelCache?.singleCamPerf || null;
   }
 
   function setCullingOverlayState(state = {}) {
-    if (!DEV_BUILD) return;
+    if (!isDevPanelAllowed()) return;
     const cache = ensureDebugVisualCache();
     if (!cache) return;
     if (cache.cullingToggle) cache.cullingToggle.checked = !!state.enabled;
@@ -3012,14 +3054,14 @@
   }
 
   function setRearProxyState(state = {}) {
-    if (!DEV_BUILD) return;
+    if (!isDevPanelAllowed()) return;
     const cache = ensureDebugVisualCache();
     if (!cache) return;
     if (cache.rearProxyToggle) cache.rearProxyToggle.checked = !!state.enabled;
   }
 
   function setSingleCamPerfState(state = {}) {
-    if (!DEV_BUILD) return;
+    if (!isDevPanelAllowed()) return;
     const cache = ensureSingleCamPerfCache();
     if (!cache) return;
     if (cache.toggle) cache.toggle.checked = !!state.enabled;
@@ -3027,7 +3069,7 @@
   }
 
   function setSingleCamPerfMetrics(metrics = null) {
-    if (!DEV_BUILD) return;
+    if (!isDevPanelAllowed()) return;
     const cache = ensureSingleCamPerfCache();
     if (!cache) return;
     const avg = Number.isFinite(metrics?.avgFps) ? metrics.avgFps : metrics?.avg;
@@ -3041,7 +3083,7 @@
   }
 
   function ensureDepthHud() {
-    if (!DEV_BUILD) return null;
+    if (!isDevPanelAllowed()) return null;
     const root = ensureHudRoot();
     if (!root) return null;
     if (depthHudCache?.root?.isConnected && root.contains(depthHudCache.root)) {
@@ -5079,6 +5121,8 @@
     },
     toggleDevPanel,
     setDevPanelVisible,
+    setDevPanelOverride: (enabled = true) => setDevPanelOverrideEnabled(enabled),
+    isDevPanelOverrideEnabled: () => isDevPanelOverrideEnabled(),
     setTerrainBrushState,
     setTerrainBrushMetrics,
     setCullingOverlayState,
