@@ -4375,14 +4375,22 @@
       return mesh;
    }
 
-   function handleTerrainChunkJobResult(streaming, chunk, geometry) {
-      if (!streaming || !chunk || !geometry) return geometry;
-      const terrain = streaming.terrain;
-      if (!terrain || !scene) return geometry;
-      chunk.workerResult = geometry;
-      applyTerrainChunkGeometry(terrain, chunk, geometry);
-      return geometry;
-   }
+    function handleTerrainChunkJobResult(streaming, chunk, geometry) {
+       if (!streaming || !chunk || !geometry) return geometry;
+       const terrain = streaming.terrain;
+       if (!terrain || !scene) return geometry;
+       const currentTerrain = environment.terrain;
+       if (!currentTerrain || currentTerrain !== terrain || currentTerrain.streaming !== streaming) {
+          return geometry;
+       }
+       const root = terrain.root;
+       if (!root || root.isDisposed?.()) {
+          return geometry;
+       }
+       chunk.workerResult = geometry;
+       applyTerrainChunkGeometry(terrain, chunk, geometry);
+       return geometry;
+    }
 
    function queueChunkVoxelJob(streaming, chunk, terrain) {
       if (!streaming || !chunk || !terrain) return null;
