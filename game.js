@@ -3868,6 +3868,13 @@
                 try { terrain.root.dispose(false); } catch (e) { /* ignore */ }
          }
 
+         if (terrain.chunkMeshes?.clear) {
+                terrain.chunkMeshes.clear();
+         }
+         if (terrain.chunkGeometryCache?.clear) {
+                terrain.chunkGeometryCache.clear();
+         }
+
          if (terrain.streaming) {
                 if (Array.isArray(terrain.streaming.queue)) terrain.streaming.queue.length = 0;
                 if (terrain.streaming.queueMap?.clear) terrain.streaming.queueMap.clear();
@@ -4031,7 +4038,7 @@
           // as the source of all instances. They are hidden and disabled, parented to 'root',
           // so when 'root' is disposed in disposeTerrain(), they'll be cleaned up correctly.
 
-          environment.terrain = {
+         environment.terrain = {
                 root,
                 columns,
                 heights,
@@ -4053,7 +4060,9 @@
                 streamAccumulator: 0,
                 streamInterval: DEFAULT_STREAM_INTERVAL,
                 bounds: { minX: -halfX, maxX: halfX, minZ: -halfZ, maxZ: halfZ },
-                layerTemplates // keep a reference if other systems need access
+                layerTemplates, // keep a reference if other systems need access
+                chunkMeshes: new Map(),
+                chunkGeometryCache: new Map()
           };
           const terrainApi = getTerrainApi();
           const useUnified = !!terrainApi && isUnifiedTerrainEnabled();
@@ -4266,6 +4275,115 @@
       return new Uint32Array(0);
    }
 
+   function ensureTerrainChunkStores(terrain) {
+      if (!terrain) return null;
+      if (!terrain.chunkMeshes || typeof terrain.chunkMeshes.get !== "function") {
+         terrain.chunkMeshes = new Map();
+      }
+      if (!terrain.chunkGeometryCache || typeof terrain.chunkGeometryCache.get !== "function") {
+         terrain.chunkGeometryCache = new Map();
+      }
+      return terrain.chunkMeshes;
+   }
+
+   function ensureTerrainChunkMesh(terrain, chunk) {
+      if (!terrain || !chunk || !scene) return null;
+      ensureTerrainChunkStores(terrain);
+      const index = chunk.index;
+      let mesh = chunk.mesh;
+      if (!mesh && terrain.chunkMeshes) {
+         mesh = terrain.chunkMeshes.get(index) || null;
+      }
+      const disposed = mesh?.isDisposed?.() === true;
+      if (disposed) {
+         if (terrain.chunkMeshes) terrain.chunkMeshes.delete(index);
+         mesh = null;
+      }
+      if (!mesh) {
+         const name = `terrainChunk_${index}`;
+         mesh = new BABYLON.Mesh(name, scene);
+         mesh.isPickable = true;
+         mesh.checkCollisions = true;
+         mesh.alwaysSelectAsActiveMesh = false;
+         mesh.receiveShadows = true;
+         if (terrain.root) mesh.parent = terrain.root;
+         if (terrain.material) mesh.material = terrain.material;
+         mesh.metadata = mesh.metadata || {};
+         mesh.metadata.terrainChunk = { index };
+         if (terrain.chunkMeshes) terrain.chunkMeshes.set(index, mesh);
+      } else {
+         if (terrain.root && mesh.parent !== terrain.root) mesh.parent = terrain.root;
+         if (terrain.material && mesh.material !== terrain.material) mesh.material = terrain.material;
+      }
+      chunk.mesh = mesh;
+      return mesh;
+   }
+
+   function updateChunkMeshVisibility(terrain, chunk) {
+      if (!terrain || !chunk) return;
+      const mesh = chunk.mesh
+         || (terrain.chunkMeshes && typeof terrain.chunkMeshes.get === "function"
+            ? terrain.chunkMeshes.get(chunk.index)
+            : null);
+      if (!mesh || mesh.isDisposed?.()) return;
+      const hasGeometry = !!(chunk.geometry?.vertexCount || (chunk.geometry?.positions?.length));
+      const shouldBeVisible = hasGeometry
+         && (chunk.state === STREAMING_STATES.LOADED || chunk.state === STREAMING_STATES.LOADING);
+      mesh.setEnabled(shouldBeVisible);
+      setMeshVisibilitySafely(mesh, shouldBeVisible ? 1 : 0);
+      mesh.isVisible = shouldBeVisible;
+   }
+
+   function applyTerrainChunkGeometry(terrain, chunk, geometry, { cache = true } = {}) {
+      if (!terrain || !chunk || !geometry) return null;
+      const positions = geometry.positions;
+      const normals = geometry.normals;
+      const uvs = geometry.uvs;
+      const indices = geometry.indices;
+      if (!ArrayBuffer.isView(positions) || !ArrayBuffer.isView(indices)) {
+         return null;
+      }
+      const mesh = ensureTerrainChunkMesh(terrain, chunk);
+      if (!mesh) return null;
+      const updatable = true;
+      mesh.setVerticesData(BABYLON.VertexBuffer.PositionKind, positions, updatable);
+      if (ArrayBuffer.isView(normals)) {
+         mesh.setVerticesData(BABYLON.VertexBuffer.NormalKind, normals, updatable);
+      }
+      if (ArrayBuffer.isView(uvs)) {
+         mesh.setVerticesData(BABYLON.VertexBuffer.UVKind, uvs, updatable);
+      }
+      if (ArrayBuffer.isView(indices) && indices.length === 0) {
+         mesh.setIndices([]);
+      } else {
+         mesh.setIndices(indices);
+      }
+      const bounds = chunk.bounds || {};
+      const baseY = Number.isFinite(terrain.baseY) ? terrain.baseY : 0;
+      mesh.position.set(
+         Number.isFinite(bounds.minX) ? bounds.minX : 0,
+         baseY,
+         Number.isFinite(bounds.minZ) ? bounds.minZ : 0
+      );
+      mesh.refreshBoundingInfo();
+      chunk.geometry = geometry;
+      chunk.mesh = mesh;
+      if (cache !== false && terrain.chunkGeometryCache) {
+         terrain.chunkGeometryCache.set(chunk.index, geometry);
+      }
+      updateChunkMeshVisibility(terrain, chunk);
+      return mesh;
+   }
+
+   function handleTerrainChunkJobResult(streaming, chunk, geometry) {
+      if (!streaming || !chunk || !geometry) return geometry;
+      const terrain = streaming.terrain;
+      if (!terrain || !scene) return geometry;
+      chunk.workerResult = geometry;
+      applyTerrainChunkGeometry(terrain, chunk, geometry);
+      return geometry;
+   }
+
    function queueChunkVoxelJob(streaming, chunk, terrain) {
       if (!streaming || !chunk || !terrain) return null;
       if (!chunk.columnIndices || chunk.columnIndices.length === 0) return null;
@@ -4296,8 +4414,7 @@
       const job = pool.postJob(payload, transferables);
       if (job && typeof job.then === "function") {
          chunk.workerJob = job.then((result) => {
-            chunk.workerResult = result;
-            return result;
+            return handleTerrainChunkJobResult(streaming, chunk, result);
          }).catch((err) => {
             console.warn(`[Terrain] Worker job failed for chunk ${chunk.index}`, err);
             return null;
@@ -4340,8 +4457,21 @@
                maxZ: src.bounds?.maxZ ?? src.maxZ ?? 0
             },
             state: STREAMING_STATES.UNLOADED,
-            pendingKey: null
+            pendingKey: null,
+            mesh: src.mesh || null,
+            geometry: src.geometry || null,
+            workerResult: src.workerResult || null
          };
+         if (!chunk.geometry && terrain.chunkGeometryCache?.has?.(chunk.index)) {
+            const cached = terrain.chunkGeometryCache.get(chunk.index);
+            if (cached) {
+               chunk.geometry = cached;
+               chunk.workerResult = cached;
+               applyTerrainChunkGeometry(terrain, chunk, cached, { cache: false });
+            }
+         } else if (chunk.geometry) {
+            applyTerrainChunkGeometry(terrain, chunk, chunk.geometry, { cache: false });
+         }
          const states = terrain.columnStates;
          if (Array.isArray(states)) {
             for (let k = 0; k < indices.length; k++) {
@@ -4666,6 +4796,7 @@
             if (done) {
                chunk.state = mode === "load" ? STREAMING_STATES.LOADED : STREAMING_STATES.UNLOADED;
                chunk.pendingKey = null;
+               updateChunkMeshVisibility(terrain, chunk);
             }
             return { done, opsUsed: Math.max(1, limit - start) };
          }
@@ -4688,6 +4819,7 @@
       chunk.state = STREAMING_STATES.LOADING;
       chunk.pendingKey = task.key;
       insertStreamingTask(streaming, task);
+      updateChunkMeshVisibility(streaming.terrain, chunk);
    }
 
    function queueChunkUnload(streaming, chunk) {
