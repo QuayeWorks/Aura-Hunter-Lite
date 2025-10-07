@@ -1458,8 +1458,13 @@
       if (!isTerrainAtlasReady()) return;
       if (environment.terrain) return;
       if (terrainTextureState.retryScheduled) return;
+      if (scene.isDisposed?.()) {
+         terrainTextureState.pendingScene = null;
+         return;
+      }
       terrainTextureState.pendingScene = null;
       Promise.resolve().then(() => {
+         if (!scene || scene.isDisposed?.()) return;
          createTerrain(scene, { allowRetry: false });
       });
    }
@@ -1488,7 +1493,7 @@
    }
 
    function ensureDynamicTerrainAtlas(scene) {
-      if (!scene) return;
+      if (!scene || scene.isDisposed?.()) return;
       if (terrainTextureState.dynamicReady && terrainTextureState.dynamicTexture) {
          if (!terrainTextureState.compressedReady && terrainTextureState.activeSource !== "compressed") {
             setActiveTerrainTexture(terrainTextureState.dynamicTexture, "uncompressed", terrainTextureState.sourceUrl || "[generated]");
@@ -1551,7 +1556,9 @@
          .catch((err) => {
             console.debug("[HXH] Terrain atlas uncompressed load failed", err);
             terrainTextureState.uncompressedErrored = true;
-            ensureDynamicTerrainAtlas(scene);
+            if (scene && !scene.isDisposed?.()) {
+               ensureDynamicTerrainAtlas(scene);
+            }
          })
          .finally(() => {
             terrainTextureState.uncompressedLoading = false;
