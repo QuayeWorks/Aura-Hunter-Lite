@@ -29,6 +29,14 @@
     caster: { chance: 0.22, duration: 7200, dot: 6, slow: 0.1, maxStacks: 4 }
   };
 
+  const isInstancedMesh = (mesh) =>
+    !!mesh && typeof mesh.getClassName === "function" && mesh.getClassName() === "InstancedMesh";
+
+  const setMeshVisibilitySafely = (mesh, value) => {
+    if (!mesh || isInstancedMesh(mesh)) return;
+    mesh.visibility = value;
+  };
+
   function getWorkerJobs() {
     const utils = window.WorldUtils;
     if (!utils || !utils.WorkerJobs) return null;
@@ -239,7 +247,7 @@
     if (!enemy?.root?.getChildMeshes) return;
     const clamped = Math.max(0.05, Math.min(1, value));
     enemy.root.getChildMeshes().forEach(mesh => {
-      mesh.visibility = clamped;
+      setMeshVisibilitySafely(mesh, clamped);
     });
   }
 
