@@ -13,6 +13,11 @@
     FLAGS.USE_UNIFIED_TERRAIN = true;
   }
 
+  const CONFIG = (H.CONFIG ||= {});
+  if (!Object.prototype.hasOwnProperty.call(CONFIG, "useTerrainWorker")) {
+    CONFIG.useTerrainWorker = true;
+  }
+
   const WorkerJobs = (() => {
     if (typeof window === "undefined") return null;
 
@@ -21,6 +26,59 @@
     const pending = new Map();
     const queue = [];
     let scheduled = false;
+
+    function hasWorkerSupport() {
+      return typeof Worker !== "undefined";
+    }
+
+    function disposeWorker(reason) {
+      if (worker) {
+        try { worker.terminate(); } catch (_) {}
+        worker = null;
+      }
+      if (pending.size) {
+        const message = typeof reason === "string" && reason ? reason : "Terrain worker disabled";
+        const error = new Error(message);
+        for (const [, entry] of pending.entries()) {
+          try {
+            entry.reject(error);
+          } catch (_) {}
+        }
+        pending.clear();
+      }
+      queue.length = 0;
+      scheduled = false;
+      if (typeof window !== "undefined" && window.HXH && typeof window.HXH.setChunkWorkerEnabled === "function") {
+        if (reason !== "Terrain worker disabled") {
+          try { window.HXH.setChunkWorkerEnabled(false); } catch (_) {}
+        }
+      }
+    }
+
+    function getUseTerrainWorker() {
+      if (!hasWorkerSupport()) {
+        if (CONFIG.useTerrainWorker !== false) CONFIG.useTerrainWorker = false;
+        if (worker) disposeWorker("Web Workers unavailable");
+        return false;
+      }
+      return CONFIG.useTerrainWorker !== false;
+    }
+
+    function setUseTerrainWorker(enabled) {
+      if (!hasWorkerSupport()) {
+        if (CONFIG.useTerrainWorker !== false) CONFIG.useTerrainWorker = false;
+        if (worker) disposeWorker("Web Workers unavailable");
+        return false;
+      }
+      const desired = enabled !== false;
+      if (!desired) {
+        if (CONFIG.useTerrainWorker !== false) CONFIG.useTerrainWorker = false;
+        if (worker) disposeWorker("Terrain worker disabled");
+        return false;
+      }
+      CONFIG.useTerrainWorker = true;
+      return true;
+    }
 
     function scheduleFlush() {
       if (scheduled) return;
@@ -672,7 +730,8 @@
     }
 
     function ensureWorker() {
-      if (worker || typeof Worker === "undefined") return worker;
+      if (!getUseTerrainWorker()) return null;
+      if (worker) return worker;
       try {
         const blob = new Blob([createWorkerScript()], { type: "application/javascript" });
         const url = URL.createObjectURL(blob);
@@ -687,12 +746,14 @@
         };
       } catch (err) {
         console.warn("[WorldUtils] Failed to create worker", err);
-        worker = null;
+        disposeWorker("Failed to create worker");
+        CONFIG.useTerrainWorker = false;
       }
       return worker;
     }
 
     function postJob(type, payload, transfer = []) {
+      if (!getUseTerrainWorker()) return null;
       const target = ensureWorker();
       if (!target) return null;
       const id = ++jobId;
@@ -805,7 +866,9 @@
       requestChunkMesh,
       requestTerrainChunks,
       requestPathGrid,
-      cloneToUint32
+      cloneToUint32,
+      setUseTerrainWorker,
+      getUseTerrainWorker
     };
   })();
 
@@ -2565,6 +2628,7 @@
     WorkerJobs,
     Terrain,
     FLAGS,
+    config: CONFIG,
     isUnifiedTerrainEnabled: () => FLAGS.USE_UNIFIED_TERRAIN !== false,
     isUnifiedTerrainActive: () => {
       if (FLAGS.USE_UNIFIED_TERRAIN === false) return false;
@@ -2574,6 +2638,40 @@
       return true;
     },
     getUnifiedTerrainMesh: () => (typeof Terrain.getMesh === "function" ? Terrain.getMesh() : null),
+    getUseTerrainWorker: () => (WorkerJobs && typeof WorkerJobs.getUseTerrainWorker === "function"
+      ? WorkerJobs.getUseTerrainWorker()
+      : CONFIG.useTerrainWorker !== false && typeof Worker !== "undefined"),
+    setUseTerrainWorker: (enabled) => {
+      if (WorkerJobs && typeof WorkerJobs.setUseTerrainWorker === "function") {
+        return WorkerJobs.setUseTerrainWorker(enabled);
+      }
+      const desired = enabled !== false;
+      if (typeof Worker === "undefined") {
+        CONFIG.useTerrainWorker = false;
+        return false;
+      }
+      CONFIG.useTerrainWorker = desired;
+      return CONFIG.useTerrainWorker !== false;
+    },
+    forceTerrainWorkerFallback: (force = true) => {
+      const disable = force !== false;
+      if (disable) {
+        if (WorkerJobs && typeof WorkerJobs.setUseTerrainWorker === "function") {
+          return WorkerJobs.setUseTerrainWorker(false);
+        }
+        CONFIG.useTerrainWorker = false;
+        return false;
+      }
+      if (WorkerJobs && typeof WorkerJobs.setUseTerrainWorker === "function") {
+        return WorkerJobs.setUseTerrainWorker(true);
+      }
+      if (typeof Worker === "undefined") {
+        CONFIG.useTerrainWorker = false;
+        return false;
+      }
+      CONFIG.useTerrainWorker = true;
+      return true;
+    },
     GameSettings: window.GameSettings || H.GameSettings
   };
   window.WorldUtils = WorldUtils;

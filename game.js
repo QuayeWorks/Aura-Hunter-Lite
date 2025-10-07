@@ -567,7 +567,22 @@
    }
 
    let perfSettings = loadPerfSettings();
-   let chunkWorkerEnabled = perfSettings.workerEnabled !== false;
+   const workerJobsApi = window.WorldUtils?.WorkerJobs || null;
+   const workerSupported = typeof Worker !== "undefined";
+   const desiredWorkerUsage = perfSettings.workerEnabled !== false && workerSupported;
+   let chunkWorkerEnabled = desiredWorkerUsage;
+   if (workerJobsApi && typeof workerJobsApi.setUseTerrainWorker === "function") {
+      workerJobsApi.setUseTerrainWorker(desiredWorkerUsage);
+      if (typeof workerJobsApi.getUseTerrainWorker === "function") {
+         chunkWorkerEnabled = workerJobsApi.getUseTerrainWorker();
+      }
+   } else if (!workerSupported) {
+      chunkWorkerEnabled = false;
+   }
+   chunkWorkerEnabled = isChunkWorkerEnabled();
+   if (window.WorldUtils?.config) {
+      window.WorldUtils.config.useTerrainWorker = chunkWorkerEnabled;
+   }
 
    function persistPerfSettings() {
       if (typeof localStorage === "undefined") return;
@@ -865,7 +880,7 @@
    }
 
    function ensureTerrainWorkerPool() {
-      if (!chunkWorkerEnabled) return null;
+      if (!isChunkWorkerEnabled()) return null;
       if (!terrainWorkerPool) {
          terrainWorkerPool = createTerrainWorkerPool();
       }
@@ -4226,30 +4241,61 @@
    }
 
    function getWorkerJobs() {
-      if (!chunkWorkerEnabled) return null;
+      if (!isChunkWorkerEnabled()) return null;
       const utils = window.WorldUtils;
       if (!utils || !utils.WorkerJobs) return null;
       return instrumentWorkerJobs(utils.WorkerJobs);
    }
 
    function setChunkWorkerEnabled(enabled) {
-      const value = enabled !== false;
-      if (chunkWorkerEnabled === value) {
-         updatePerfSettings({ workerEnabled: chunkWorkerEnabled });
-         return chunkWorkerEnabled;
+      const currentState = isChunkWorkerEnabled();
+      const requested = enabled !== false;
+      chunkWorkerEnabled = currentState;
+      if (currentState === requested) {
+         updatePerfSettings({ workerEnabled: currentState });
+         return currentState;
       }
-      chunkWorkerEnabled = value;
+      let nextState;
+      const jobs = window.WorldUtils?.WorkerJobs || null;
+      if (jobs && typeof jobs.setUseTerrainWorker === "function") {
+         jobs.setUseTerrainWorker(requested);
+         if (typeof jobs.getUseTerrainWorker === "function") {
+            nextState = jobs.getUseTerrainWorker();
+         } else {
+            nextState = requested;
+         }
+      } else {
+         nextState = requested && typeof Worker !== "undefined";
+         if (window.WorldUtils?.config) {
+            window.WorldUtils.config.useTerrainWorker = nextState;
+         }
+      }
+      chunkWorkerEnabled = nextState;
       if (!chunkWorkerEnabled) {
          disposeTerrainWorkerPool();
       } else {
          ensureTerrainWorkerPool();
+      }
+      if (window.WorldUtils?.config) {
+         window.WorldUtils.config.useTerrainWorker = chunkWorkerEnabled;
       }
       updatePerfSettings({ workerEnabled: chunkWorkerEnabled });
       return chunkWorkerEnabled;
    }
 
    function isChunkWorkerEnabled() {
+      const jobs = window.WorldUtils?.WorkerJobs;
+      if (jobs && typeof jobs.getUseTerrainWorker === "function") {
+         return jobs.getUseTerrainWorker();
+      }
+      if (window.WorldUtils?.config && window.WorldUtils.config.useTerrainWorker === false) {
+         return false;
+      }
       return chunkWorkerEnabled;
+   }
+
+   function forceTerrainWorkerFallback(force = true) {
+      return setChunkWorkerEnabled(force ? false : true);
    }
 
    function toUint32Array(source) {
@@ -13023,6 +13069,7 @@
       spawnPhysicsProp,
       setChunkWorkerEnabled,
       isChunkWorkerEnabled,
+      forceTerrainWorkerFallback,
       enableRearDebugCamera,
       disableRearDebugCamera,
       isRearDebugCameraActive,
@@ -13060,6 +13107,15 @@
       finalizeRigEditorSession,
       cancelRigEditorSession
    };
+
+   if (window.WorldUtils) {
+      window.WorldUtils.forceTerrainWorkerFallback = forceTerrainWorkerFallback;
+      window.WorldUtils.setUseTerrainWorker = (enabled) => setChunkWorkerEnabled(enabled);
+      window.WorldUtils.getUseTerrainWorker = () => isChunkWorkerEnabled();
+      if (window.WorldUtils.config) {
+         window.WorldUtils.config.useTerrainWorker = isChunkWorkerEnabled();
+      }
+   }
 // === Added: expose subsystems so auxiliary files can reuse them ===
 try {
   Object.assign(window.HXH, {
@@ -13075,7 +13131,7 @@ try {
     // terrain & environment
     createTerrain, disposeTerrain, getTerrainHeight, updateTerrainStreaming, removeTerrainCubeAtPoint,
     getTerrainStreamingRadius, setTerrainStreamingRadius, setTerrainStreamingBudget, getTerrainStreamingStats,
-    setChunkWorkerEnabled, isChunkWorkerEnabled,
+    setChunkWorkerEnabled, isChunkWorkerEnabled, forceTerrainWorkerFallback,
     scatterVegetation, clearTrees, createCloudLayer, advanceEnvironment, updateEnvironment,
     getFallbackTreeMaterials, createFallbackTree,
     applyTreeLOD, refreshAllTreeLods, setEnvironmentLodProfile, setEnvironmentLodEnabled,
