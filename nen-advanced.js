@@ -98,6 +98,13 @@
     exorciseUnsub: null
   };
 
+  const isInstancedMesh = (mesh) =>
+    !!mesh && typeof mesh.getClassName === "function" && mesh.getClassName() === "InstancedMesh";
+
+  const setMeshVisibilitySafely = (mesh, value) => {
+    if (!mesh || isInstancedMesh(mesh)) return;
+    mesh.visibility = value;
+  };
   const IN_UPFRONT_COST = 8;
   const IN_UPKEEP_PER_SEC = 1;
   const VOLLEY_WINDOW = 0.16;
@@ -2226,16 +2233,16 @@
     if (show) {
       mesh.isVisible = true;
       if (typeof record.meta.originalVisibility === "number") {
-        mesh.visibility = record.meta.originalVisibility;
+        setMeshVisibilitySafely(mesh, record.meta.originalVisibility);
       } else {
-        mesh.visibility = 1;
+        setMeshVisibilitySafely(mesh, 1);
       }
       if (mesh.material) {
         if (typeof record.meta.originalAlpha === "number") {
           mesh.material.alpha = record.meta.originalAlpha;
         }
         if (mesh.material.emissiveColor?.copyFrom) {
-          const color = record.visibleEmissive || (record.visibleEmissive = COLORS.concealGlow.clone ? COLORS.concealGlow.clone() : COLORS.concealGlow);
+                    const color = record.visibleEmissive || (record.visibleEmissive = COLORS.concealGlow.clone ? COLORS.concealGlow.clone() : COLORS.concealGlow);
           mesh.material.emissiveColor.copyFrom(color);
         }
       }
@@ -2250,7 +2257,7 @@
       mesh.outlineWidth = 0.038;
     } else {
       mesh.renderOutline = false;
-      mesh.visibility = 0;
+      setMeshVisibilitySafely(mesh, 0);
       mesh.isVisible = false;
       if (mesh.material && typeof mesh.material.alpha === "number") {
         if (record.meta.originalAlpha === undefined) record.meta.originalAlpha = mesh.material.alpha;
