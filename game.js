@@ -722,6 +722,162 @@
       qualityLabel: perfSettings.qualityLabel
    });
    const workerMetrics = { pending: 0 };
+   let terrainWorkerPool = null;
+
+   function createTerrainWorkerPool() {
+      if (typeof Worker === "undefined") return null;
+
+      const hardware = typeof navigator !== "undefined" && typeof navigator.hardwareConcurrency === "number"
+         ? navigator.hardwareConcurrency
+         : 2;
+      const maxWorkers = Math.max(1, Math.min(4, Math.ceil(hardware / 2)));
+      const state = {
+         jobId: 0,
+         queue: [],
+         workers: [],
+         pending: new Map(),
+         disposed: false
+      };
+
+      const workerUrl = "workers/terrain-worker.js";
+
+      const flushQueue = () => {
+         if (state.disposed) return;
+         while (state.queue.length) {
+            let target = null;
+            for (const worker of state.workers) {
+               if (!worker.busy) {
+                  target = worker;
+                  break;
+               }
+            }
+            if (!target) {
+               if (state.workers.length >= maxWorkers) break;
+               try {
+                  const instance = new Worker(workerUrl);
+                  const wrapper = { worker: instance, busy: false };
+                  instance.onmessage = (event) => handleMessage(wrapper, event);
+                  instance.onerror = (err) => handleError(wrapper, err);
+                  state.workers.push(wrapper);
+                  target = wrapper;
+               } catch (err) {
+                  const failure = err instanceof Error ? err : new Error(String(err));
+                  while (state.queue.length) {
+                     const job = state.queue.shift();
+                     job.reject(failure);
+                  }
+                  return;
+               }
+            }
+            if (!target) break;
+            const job = state.queue.shift();
+            if (!job) break;
+            target.busy = true;
+            workerMetrics.pending = Math.max(0, workerMetrics.pending);
+            workerMetrics.pending += 1;
+            state.pending.set(job.jobId, { resolve: job.resolve, reject: job.reject, worker: target });
+            try {
+               target.worker.postMessage({ jobId: job.jobId, payload: job.payload }, job.transferables);
+            } catch (err) {
+               state.pending.delete(job.jobId);
+               workerMetrics.pending = Math.max(0, workerMetrics.pending - 1);
+               target.busy = false;
+               const failure = err instanceof Error ? err : new Error(String(err));
+               job.reject(failure);
+               handleError(target, failure);
+               if (state.disposed) return;
+            }
+         }
+      };
+
+      const handleMessage = (wrapper, event) => {
+         if (state.disposed) return;
+         const data = event?.data || {};
+         const { jobId, result, error } = data;
+         if (typeof jobId !== "number") return;
+         const entry = state.pending.get(jobId);
+         if (!entry) return;
+         state.pending.delete(jobId);
+         wrapper.busy = false;
+         workerMetrics.pending = Math.max(0, workerMetrics.pending - 1);
+         if (error != null) {
+            const failure = error instanceof Error ? error : new Error(String(error));
+            entry.reject(failure);
+         } else {
+            entry.resolve(result);
+         }
+         flushQueue();
+      };
+
+      const handleError = (wrapper, err) => {
+         if (state.disposed) return;
+         const index = state.workers.indexOf(wrapper);
+         if (index >= 0) {
+            state.workers.splice(index, 1);
+         }
+         try {
+            wrapper.worker.terminate();
+         } catch (terminateErr) {
+            console.warn("[Terrain] Failed to terminate worker", terminateErr);
+         }
+         const message = err && typeof err === "object" && err.message ? err.message : String(err || "Worker error");
+         for (const [jobId, entry] of state.pending.entries()) {
+            if (entry.worker !== wrapper) continue;
+            state.pending.delete(jobId);
+            workerMetrics.pending = Math.max(0, workerMetrics.pending - 1);
+            entry.reject(new Error(message));
+         }
+         wrapper.busy = false;
+         flushQueue();
+      };
+
+      return {
+         postJob(payload, transferables = []) {
+            if (!payload || state.disposed) {
+               return Promise.reject(new Error("Terrain worker pool unavailable"));
+            }
+            const jobId = ++state.jobId;
+            return new Promise((resolve, reject) => {
+               state.queue.push({ jobId, payload, transferables, resolve, reject });
+               flushQueue();
+            });
+         },
+         dispose() {
+            if (state.disposed) return;
+            state.disposed = true;
+            while (state.queue.length) {
+               const job = state.queue.shift();
+               job.reject(new Error("Terrain worker pool disposed"));
+            }
+            for (const [, entry] of state.pending.entries()) {
+               workerMetrics.pending = Math.max(0, workerMetrics.pending - 1);
+               entry.reject(new Error("Terrain worker pool disposed"));
+            }
+            state.pending.clear();
+            for (const wrapper of state.workers) {
+               try {
+                  wrapper.worker.terminate();
+               } catch (err) {}
+            }
+            state.workers.length = 0;
+         }
+      };
+   }
+
+   function ensureTerrainWorkerPool() {
+      if (!chunkWorkerEnabled) return null;
+      if (!terrainWorkerPool) {
+         terrainWorkerPool = createTerrainWorkerPool();
+      }
+      return terrainWorkerPool;
+   }
+
+   function disposeTerrainWorkerPool() {
+      if (terrainWorkerPool && typeof terrainWorkerPool.dispose === "function") {
+         terrainWorkerPool.dispose();
+      }
+      terrainWorkerPool = null;
+   }
    let engineInstrumentation = null;
    let sceneInstrumentation = null;
    const profilerState = {
@@ -4074,6 +4230,11 @@
          return chunkWorkerEnabled;
       }
       chunkWorkerEnabled = value;
+      if (!chunkWorkerEnabled) {
+         disposeTerrainWorkerPool();
+      } else {
+         ensureTerrainWorkerPool();
+      }
       updatePerfSettings({ workerEnabled: chunkWorkerEnabled });
       return chunkWorkerEnabled;
    }
@@ -4103,6 +4264,46 @@
          if (cloned) return cloned;
       }
       return new Uint32Array(0);
+   }
+
+   function queueChunkVoxelJob(streaming, chunk, terrain) {
+      if (!streaming || !chunk || !terrain) return null;
+      if (!chunk.columnIndices || chunk.columnIndices.length === 0) return null;
+      const pool = ensureTerrainWorkerPool();
+      if (!pool || typeof pool.postJob !== "function") return null;
+      let indicesCopy;
+      try {
+         indicesCopy = chunk.columnIndices.slice();
+      } catch (err) {
+         return null;
+      }
+      if (!indicesCopy || indicesCopy.length === 0) return null;
+      const atlasRects = Array.isArray(terrain.atlasRects) && terrain.atlasRects.length
+         ? terrain.atlasRects
+         : (terrainTextureState.atlasRects || []);
+      const payload = {
+         chunkVoxels: indicesCopy,
+         chunkSize: streaming.chunkSize,
+         scale: terrain.cubeSize,
+         atlasRects,
+         flags: {
+            chunkIndex: chunk.index,
+            chunkX: chunk.chunkX,
+            chunkZ: chunk.chunkZ
+         }
+      };
+      const transferables = indicesCopy?.buffer ? [indicesCopy.buffer] : [];
+      const job = pool.postJob(payload, transferables);
+      if (job && typeof job.then === "function") {
+         chunk.workerJob = job.then((result) => {
+            chunk.workerResult = result;
+            return result;
+         }).catch((err) => {
+            console.warn(`[Terrain] Worker job failed for chunk ${chunk.index}`, err);
+            return null;
+         });
+      }
+      return job;
    }
 
    function applyChunkDescriptor(streaming, descriptor, terrain) {
@@ -4150,6 +4351,7 @@
                }
             }
          }
+         queueChunkVoxelJob(streaming, chunk, terrain);
          normalized[i] = chunk;
       }
       streaming.chunkSize = chunkSize;
