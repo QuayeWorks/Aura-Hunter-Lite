@@ -1181,7 +1181,7 @@
 
    const TERRAIN_ATLAS_SOURCES = (() => {
       if (typeof window === "undefined") {
-         return { compressed: null, tileSize: 256, padding: 4 };
+         return { compressed: null, uncompressed: null, tileSize: 256, padding: 4 };
       }
       const atlasConfig = window.HXH_TEXTURES?.terrainAtlas || {};
       const compressed = typeof atlasConfig.compressed === "string" && atlasConfig.compressed.trim()
@@ -1189,13 +1189,18 @@
          : (typeof window.__HXH_TERRAIN_ATLAS_KTX2__ === "string" && window.__HXH_TERRAIN_ATLAS_KTX2__.trim()
             ? window.__HXH_TERRAIN_ATLAS_KTX2__.trim()
             : null);
+      const uncompressed = typeof atlasConfig.uncompressed === "string" && atlasConfig.uncompressed.trim()
+         ? atlasConfig.uncompressed.trim()
+         : (typeof window.__HXH_TERRAIN_ATLAS__ === "string" && window.__HXH_TERRAIN_ATLAS__.trim()
+            ? window.__HXH_TERRAIN_ATLAS__.trim()
+            : null);
       const tileSize = Number.isFinite(atlasConfig.tileSize) && atlasConfig.tileSize > 0
          ? Math.max(32, Math.min(1024, Math.round(atlasConfig.tileSize)))
          : 256;
       const padding = Number.isFinite(atlasConfig.padding)
          ? Math.max(0, Math.min(Math.round(atlasConfig.padding), Math.floor(tileSize / 3)))
          : 4;
-      return { compressed, tileSize, padding };
+      return { compressed, uncompressed, tileSize, padding };
    })();
 
    const terrainTextureState = {
@@ -1203,10 +1208,26 @@
       diffuseTexture: null,
       atlasRects: [],
       compressedUrl: TERRAIN_ATLAS_SOURCES.compressed,
+      uncompressedUrl: TERRAIN_ATLAS_SOURCES.uncompressed,
       tileSize: TERRAIN_ATLAS_SOURCES.tileSize,
       padding: TERRAIN_ATLAS_SOURCES.padding,
       compressedLoading: false,
-      compressedReady: false
+      compressedReady: false,
+      compressedErrored: false,
+      compressionSupported: null,
+      uncompressedLoading: false,
+      uncompressedReady: false,
+      uncompressedErrored: false,
+      uncompressedTexture: null,
+      compressedTexture: null,
+      dynamicTexture: null,
+      dynamicReady: false,
+      activeSource: null,
+      sourceUrl: null,
+      choiceLogged: false,
+      notReadyWarned: false,
+      retryScheduled: false,
+      pendingScene: null
    };
 
    const terrainKtx2State = {
@@ -1335,6 +1356,38 @@
       };
    };
 
+   function computeTerrainAtlasRects() {
+      const tileSize = terrainTextureState.tileSize;
+      const padding = terrainTextureState.padding;
+      const layers = TERRAIN_LAYER_DEFS.length;
+      const width = tileSize * layers;
+      const height = tileSize;
+      const rects = new Array(layers);
+      for (let i = 0; i < layers; i += 1) {
+         const x = i * tileSize;
+         const innerX = x + padding;
+         const innerY = padding;
+         const innerWidth = Math.max(1, tileSize - padding * 2);
+         const innerHeight = Math.max(1, height - padding * 2);
+         rects[i] = {
+            u0: innerX / width,
+            v0: innerY / height,
+            u1: (innerX + innerWidth) / width,
+            v1: (innerY + innerHeight) / height
+         };
+      }
+      return rects;
+   }
+
+   function ensureTerrainAtlasRects() {
+      if (Array.isArray(terrainTextureState.atlasRects) && terrainTextureState.atlasRects.length === TERRAIN_LAYER_DEFS.length) {
+         return terrainTextureState.atlasRects;
+      }
+      const rects = computeTerrainAtlasRects();
+      terrainTextureState.atlasRects = rects;
+      return rects;
+   }
+
    function createDynamicTerrainAtlas(scene) {
       const tileSize = terrainTextureState.tileSize;
       const padding = terrainTextureState.padding;
@@ -1387,6 +1440,7 @@
          rects[i] = { u0, v0, u1, v1 };
       }
       dynamicTexture.update(false);
+      terrainTextureState.atlasRects = rects;
       return { texture: dynamicTexture, rects };
    }
 
@@ -1396,6 +1450,57 @@
       texture.wrapU = BABYLON.Texture.CLAMP_ADDRESSMODE;
       texture.wrapV = BABYLON.Texture.CLAMP_ADDRESSMODE;
       texture.anisotropicFilteringLevel = 1;
+   }
+
+   function maybeTriggerPendingTerrainBuild() {
+      const scene = terrainTextureState.pendingScene;
+      if (!scene) return;
+      if (!isTerrainAtlasReady()) return;
+      if (environment.terrain) return;
+      if (terrainTextureState.retryScheduled) return;
+      terrainTextureState.pendingScene = null;
+      Promise.resolve().then(() => {
+         createTerrain(scene, { allowRetry: false });
+      });
+   }
+
+   function setActiveTerrainTexture(texture, source, url) {
+      if (!texture) return;
+      const material = terrainTextureState.material;
+      if (material) {
+         material.diffuseTexture = texture;
+         material.ambientTexture = null;
+      }
+      terrainTextureState.diffuseTexture = texture;
+      terrainTextureState.activeSource = source;
+      terrainTextureState.sourceUrl = url || null;
+      maybeTriggerPendingTerrainBuild();
+   }
+
+   function isTerrainAtlasReady() {
+      if (!terrainTextureState.material) return false;
+      const texture = terrainTextureState.diffuseTexture;
+      if (!texture) return false;
+      if (typeof texture.isReady === "function" && !texture.isReady()) return false;
+      const rects = terrainTextureState.atlasRects;
+      if (!Array.isArray(rects) || rects.length < TERRAIN_LAYER_DEFS.length) return false;
+      return true;
+   }
+
+   function ensureDynamicTerrainAtlas(scene) {
+      if (!scene) return;
+      if (terrainTextureState.dynamicReady && terrainTextureState.dynamicTexture) {
+         if (!terrainTextureState.compressedReady && terrainTextureState.activeSource !== "compressed") {
+            setActiveTerrainTexture(terrainTextureState.dynamicTexture, "uncompressed", terrainTextureState.sourceUrl || "[generated]");
+         }
+         return;
+      }
+      const atlas = createDynamicTerrainAtlas(scene);
+      configureAtlasTexture(atlas.texture);
+      terrainTextureState.dynamicTexture = atlas.texture;
+      terrainTextureState.dynamicReady = true;
+      terrainTextureState.uncompressedReady = true;
+      setActiveTerrainTexture(atlas.texture, "uncompressed", "[generated]");
    }
 
    function loadTextureAsync(url, scene, options = {}) {
@@ -1418,6 +1523,39 @@
          );
          configureAtlasTexture(texture);
       });
+   }
+
+   function maybeLoadUncompressedTerrainAtlas(scene) {
+      if (!scene || !terrainTextureState.material) return;
+      if (terrainTextureState.uncompressedReady) return;
+      if (terrainTextureState.uncompressedErrored) {
+         ensureDynamicTerrainAtlas(scene);
+         return;
+      }
+      const url = terrainTextureState.uncompressedUrl;
+      if (!url) {
+         ensureDynamicTerrainAtlas(scene);
+         return;
+      }
+      if (terrainTextureState.uncompressedLoading) return;
+      terrainTextureState.uncompressedLoading = true;
+      loadTextureAsync(url, scene, { invertY: false })
+         .then((texture) => {
+            configureAtlasTexture(texture);
+            terrainTextureState.uncompressedTexture = texture;
+            terrainTextureState.uncompressedReady = true;
+            if (!terrainTextureState.compressedReady) {
+               setActiveTerrainTexture(texture, "uncompressed", url);
+            }
+         })
+         .catch((err) => {
+            console.debug("[HXH] Terrain atlas uncompressed load failed", err);
+            terrainTextureState.uncompressedErrored = true;
+            ensureDynamicTerrainAtlas(scene);
+         })
+         .finally(() => {
+            terrainTextureState.uncompressedLoading = false;
+         });
    }
 
    function ensureKtx2Support(engine) {
@@ -1443,47 +1581,48 @@
          terrainKtx2State.promise = BABYLON.KTX2DecodeManager.IsTranscoderAvailableAsync(engine)
             .then((supported) => {
                terrainKtx2State.supported = !!supported;
+               terrainTextureState.compressionSupported = terrainKtx2State.supported;
                return terrainKtx2State.supported;
             })
             .catch((err) => {
                console.debug("[HXH] KTX2 transcoder unavailable", err);
+               terrainTextureState.compressionSupported = false;
                return false;
             });
       } else {
          const fallbackSupport = !!BABYLON?.KhronosTextureContainer2;
          terrainKtx2State.promise = Promise.resolve(fallbackSupport);
          terrainKtx2State.supported = fallbackSupport;
+         terrainTextureState.compressionSupported = fallbackSupport;
       }
 
       return terrainKtx2State.promise;
    }
 
    function maybeLoadCompressedTerrainAtlas(scene) {
-      if (!terrainTextureState.compressedUrl || terrainTextureState.compressedLoading || terrainTextureState.compressedReady || !terrainTextureState.material) return;
+      if (!scene || !terrainTextureState.material) return;
+      if (!terrainTextureState.compressedUrl) return;
+      if (terrainTextureState.compressedReady || terrainTextureState.compressedLoading || terrainTextureState.compressedErrored) return;
       terrainTextureState.compressedLoading = true;
       ensureKtx2Support(scene.getEngine())
          .then((supported) => {
+            terrainTextureState.compressionSupported = supported;
             if (!supported) return null;
             return loadTextureAsync(terrainTextureState.compressedUrl, scene, { invertY: false })
                .then((texture) => {
                   configureAtlasTexture(texture);
-                  const material = terrainTextureState.material;
-                  if (material) {
-                     material.diffuseTexture = texture;
-                     material.ambientTexture = null;
-                  }
-                  if (terrainTextureState.diffuseTexture && terrainTextureState.diffuseTexture !== texture) {
-                     try { terrainTextureState.diffuseTexture.dispose(); } catch (err) {}
-                  }
-                  terrainTextureState.diffuseTexture = texture;
+                  terrainTextureState.compressedTexture = texture;
                   terrainTextureState.compressedReady = true;
+                  setActiveTerrainTexture(texture, "compressed", terrainTextureState.compressedUrl);
                })
                .catch((err) => {
                   console.debug("[HXH] Terrain atlas KTX2 load failed", err);
+                  terrainTextureState.compressedErrored = true;
                });
          })
          .catch((err) => {
             console.debug("[HXH] Terrain atlas compression probe failed", err);
+            terrainTextureState.compressionSupported = false;
          })
          .finally(() => {
             terrainTextureState.compressedLoading = false;
@@ -3464,37 +3603,67 @@
          : existingMaterial?.isDisposed;
 
       if (existingMaterial && !isExistingDisposed) {
-         environment.terrainMaterial = terrainTextureState.material;
+         environment.terrainMaterial = existingMaterial;
+         ensureTerrainAtlasRects();
+         maybeLoadUncompressedTerrainAtlas(scene);
          if (!terrainTextureState.compressedReady && !terrainTextureState.compressedLoading) {
             maybeLoadCompressedTerrainAtlas(scene);
          }
+         const ready = isTerrainAtlasReady();
          return {
-            material: terrainTextureState.material,
-            rects: terrainTextureState.atlasRects
+            material: existingMaterial,
+            rects: terrainTextureState.atlasRects,
+            ready,
+            source: terrainTextureState.activeSource,
+            sourceUrl: terrainTextureState.sourceUrl
          };
       }
 
-      const atlas = createDynamicTerrainAtlas(scene);
-      terrainTextureState.diffuseTexture = atlas.texture;
-      terrainTextureState.atlasRects = atlas.rects;
+      ensureTerrainAtlasRects();
 
       const sharedMaterial = new BABYLON.StandardMaterial("terrainSharedMat", scene);
-      sharedMaterial.diffuseTexture = atlas.texture;
       sharedMaterial.specularColor = BABYLON.Color3.Black();
       sharedMaterial.ambientColor = new BABYLON.Color3(0.3, 0.3, 0.32);
       sharedMaterial.useGlossinessFromSpecularMapAlpha = false;
-      configureAtlasTexture(atlas.texture);
 
       terrainTextureState.material = sharedMaterial;
       environment.terrainMaterial = sharedMaterial;
       environment.terrainAtlas = terrainTextureState;
 
+      if (terrainTextureState.diffuseTexture) {
+         const source = terrainTextureState.activeSource || "uncompressed";
+         const urlHint = terrainTextureState.sourceUrl
+            || (source === "compressed" ? terrainTextureState.compressedUrl : terrainTextureState.uncompressedUrl)
+            || "[generated]";
+         setActiveTerrainTexture(terrainTextureState.diffuseTexture, source, urlHint);
+      }
+
+      maybeLoadUncompressedTerrainAtlas(scene);
+      if (!terrainTextureState.uncompressedUrl) {
+         ensureDynamicTerrainAtlas(scene);
+      }
       maybeLoadCompressedTerrainAtlas(scene);
 
+      const ready = isTerrainAtlasReady();
       return {
          material: sharedMaterial,
-         rects: terrainTextureState.atlasRects
+         rects: terrainTextureState.atlasRects,
+         ready,
+         source: terrainTextureState.activeSource,
+         sourceUrl: terrainTextureState.sourceUrl
       };
+   }
+
+   function logTerrainAtlasChoiceForBuild() {
+      if (terrainTextureState.choiceLogged) return;
+      const source = terrainTextureState.activeSource;
+      if (!source) return;
+      const label = source === "compressed" ? "compressed" : "uncompressed";
+      const path = terrainTextureState.sourceUrl
+         || (source === "compressed" ? terrainTextureState.compressedUrl : terrainTextureState.uncompressedUrl)
+         || "[generated]";
+      console.info(`[Terrain] Using ${label} terrain atlas: ${path}`);
+      terrainTextureState.choiceLogged = true;
    }
 	// Precompile terrain layer materials for smooth startup.
 	// Call: await precompileTerrainMaterials(scene) after createTerrain(scene) and before mass instancing (trees, etc).
@@ -3556,23 +3725,51 @@
          }
 
          // 4) Clear references
+         terrainTextureState.notReadyWarned = false;
+         terrainTextureState.retryScheduled = false;
+         terrainTextureState.choiceLogged = false;
+         terrainTextureState.pendingScene = null;
          environment.terrain = null;
          world.ground = null;
        }
 
 
-	function createTerrain(scene) {
-	  disposeTerrain();
+       function createTerrain(scene, options = {}) {
+         const { allowRetry = true } = options;
 
-          const settings = environment.terrainSettings = normalizeTerrainSettings(environment.terrainSettings);
-          saveTerrainSettings({ ...settings, depthThresholds: { ...settings.depthThresholds } });
+         const materialInfo = ensureTerrainMaterial(scene);
+         if (!materialInfo.ready) {
+            if (!terrainTextureState.notReadyWarned) {
+               console.warn("[Terrain] Terrain material/atlas not ready; deferring build.");
+               terrainTextureState.notReadyWarned = true;
+            }
+            terrainTextureState.pendingScene = scene;
+            if (allowRetry && !terrainTextureState.retryScheduled) {
+               terrainTextureState.retryScheduled = true;
+               Promise.resolve().then(() => {
+                  terrainTextureState.retryScheduled = false;
+                  createTerrain(scene, { allowRetry: false });
+               });
+            }
+            return;
+         }
 
-          const {
-             length: rawLength,
-             width: rawWidth,
-             cubeSize,
-             layers
-          } = settings;
+         terrainTextureState.notReadyWarned = false;
+         terrainTextureState.retryScheduled = false;
+         terrainTextureState.pendingScene = null;
+         logTerrainAtlasChoiceForBuild();
+
+         disposeTerrain();
+
+         const settings = environment.terrainSettings = normalizeTerrainSettings(environment.terrainSettings);
+         saveTerrainSettings({ ...settings, depthThresholds: { ...settings.depthThresholds } });
+
+         const {
+            length: rawLength,
+            width: rawWidth,
+            cubeSize,
+            layers
+         } = settings;
           const length = Number.isFinite(rawLength) ? Math.max(1, Math.round(rawLength)) : defaultTerrainSettings.length;
           const width = Number.isFinite(rawWidth) ? Math.max(1, Math.round(rawWidth)) : defaultTerrainSettings.width;
 
@@ -3601,10 +3798,13 @@
           const columns = new Array(length * width);
           const heights = new Float32Array(length * width);
           const columnStates = new Array(length * width).fill(false);
-          const centers = new Array(length * width);
+         const centers = new Array(length * width);
 
-          const { material: terrainMaterial, rects: atlasRects } = ensureTerrainMaterial(scene);
-          const defaultRect = atlasRects && atlasRects.length ? atlasRects[0] : { u0: 0, v0: 0, u1: 1, v1: 1 };
+         const terrainMaterial = materialInfo.material;
+         const atlasRects = (materialInfo.rects && materialInfo.rects.length)
+            ? materialInfo.rects
+            : terrainTextureState.atlasRects;
+         const defaultRect = atlasRects && atlasRects.length ? atlasRects[0] : { u0: 0, v0: 0, u1: 1, v1: 1 };
 
           const layerTemplates = [];
           for (let layer = 0; layer < layers; layer++) {
