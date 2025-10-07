@@ -106,6 +106,15 @@
       shuEfficiency: "Shu rock test"
    };
 
+	const isInstancedMesh = (mesh) =>
+      !!mesh && typeof mesh.getClassName === "function" && mesh.getClassName() === "InstancedMesh";
+
+   const setMeshVisibilitySafely = (mesh, value) => {
+      if (!mesh || isInstancedMesh(mesh)) return;
+      mesh.visibility = value;
+   };
+
+	
    function makeDefaultTrainingProgress() {
       return {
          renHold: 0,
@@ -738,6 +747,10 @@
    let vowInitAttempts = 0;
 
    let engine, scene, camera;
+   const handleEngineResize = () => {
+      if (!engine || typeof engine.resize !== "function") return;
+      engine.resize();
+   };
    let rearDebugCamera = null;
    const TMP_DEBUG_POS = new BABYLON.Vector3();
    const TMP_DEBUG_FORWARD = new BABYLON.Vector3();
@@ -3775,12 +3788,12 @@
          if (meta && meta.destroyed) continue;
          if (hideLegacy) {
             block.isVisible = false;
-            block.visibility = 0;
+			setMeshVisibilitySafely(block, 0);
             block.isPickable = false;
             block.checkCollisions = false;
             block.setEnabled(false);
          } else {
-            block.visibility = 1;
+			setMeshVisibilitySafely(block, 1);
             block.isVisible = true;
             block.setEnabled(true);
             block.isPickable = true;
@@ -3793,7 +3806,7 @@
       for (const block of column) {
          if (!block) continue;
          block.isVisible = false;
-         block.visibility = 0;
+		 setMeshVisibilitySafely(block, 0);
          block.setEnabled(false);
          block.isPickable = false;
          block.checkCollisions = false;
@@ -5972,7 +5985,7 @@
             }, scene);
             capsule.position.copyFrom(box.centerWorld);
             capsule.isPickable = false;
-            capsule.checkCollisions = true;
+            setMeshVisibilitySafely(capsule, 0);
             capsule.visibility = 0;
             capsule.isVisible = false;
             capsule.setParent(root, true);
@@ -6010,7 +6023,7 @@
             box.position.copyFrom(center);
             box.isPickable = false;
             box.checkCollisions = true;
-            box.visibility = 0;
+            setMeshVisibilitySafely(box, 0);
             box.isVisible = false;
             box.setParent(root, true);
             box.metadata = { treeCollider: true, treePart: "canopy", impostor: true, treeEntry: entry };
@@ -9892,7 +9905,8 @@
          inputOnce = {};
          inputUp = {};
       });
-      window.addEventListener("resize", () => engine.resize());
+	  window.removeEventListener("resize", handleEngineResize);
+      window.addEventListener("resize", handleEngineResize);
    }
 
    function togglePause() {
@@ -12409,6 +12423,7 @@
          scene,
          engine
       });
+	  window.removeEventListener("resize", handleEngineResize);
       try {
          engine.stopRenderLoop();
          engine.dispose();
