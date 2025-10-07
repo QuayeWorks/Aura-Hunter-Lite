@@ -3883,6 +3883,13 @@
                 try { terrain.root.dispose(false); } catch (e) { /* ignore */ }
          }
 
+         if (terrain.streaming) {
+                releaseStreamingChunks(terrain.streaming, { disposeMeshes: true });
+                if (Array.isArray(terrain.streaming.queue)) terrain.streaming.queue.length = 0;
+                if (terrain.streaming.queueMap?.clear) terrain.streaming.queueMap.clear();
+                terrain.streaming.chunks = [];
+         }
+
          if (terrain.chunkMeshes?.clear) {
                 terrain.chunkMeshes.clear();
          }
@@ -3890,10 +3897,7 @@
                 terrain.chunkGeometryCache.clear();
          }
 
-         if (terrain.streaming) {
-                if (Array.isArray(terrain.streaming.queue)) terrain.streaming.queue.length = 0;
-                if (terrain.streaming.queueMap?.clear) terrain.streaming.queueMap.clear();
-         }
+         drainTerrainChunkMeshPool({ dispose: true });
 
          const terrainApi = getTerrainApi();
          if (terrainApi && typeof terrainApi.dispose === "function") {
@@ -3907,6 +3911,7 @@
          terrainTextureState.retryScheduled = false;
          terrainTextureState.choiceLogged = false;
          terrainTextureState.pendingScene = null;
+         if (terrain.streaming) terrain.streaming = null;
          environment.terrain = null;
          world.ground = null;
        }
@@ -4298,6 +4303,118 @@
       return setChunkWorkerEnabled(force ? false : true);
    }
 
+   const TERRAIN_CHUNK_META_TAG = Symbol("TerrainChunkMeta");
+
+   // Terrain chunk pooling lifecycle:
+   // 1. Chunk descriptors request chunk meta objects via acquireChunkMeta(). The meta contains
+   //    reusable references for column buffers, bounds, and mesh handles so descriptors and
+   //    streaming rebuilds avoid re-allocating every cycle.
+   // 2. When a chunk unloads its mesh is stripped of GPU buffers and returned to the mesh pool
+   //    (recycleTerrainChunkMesh). Geometry data is released while the shell is retained for reuse.
+   // 3. When a streaming descriptor is replaced or the terrain is disposed we call
+   //    releaseStreamingChunks(), returning meta objects and buffers to the pool so the next
+   //    rebuild can reuse them without new allocations.
+   const terrainChunkResourcePool = {
+      chunks: [],
+      columnArrays: [],
+      meshes: []
+   };
+
+   function createPooledChunkMeta() {
+      return {
+         [TERRAIN_CHUNK_META_TAG]: true,
+         index: 0,
+         chunkX: 0,
+         chunkZ: 0,
+         startX: 0,
+         startZ: 0,
+         spanX: 0,
+         spanZ: 0,
+         columnIndices: null,
+         columnCount: 0,
+         center: { x: 0, z: 0 },
+         bounds: { minX: 0, maxX: 0, minZ: 0, maxZ: 0 },
+         state: STREAMING_STATES.UNLOADED,
+         pendingKey: null,
+         mesh: null,
+         geometry: null,
+         workerResult: null,
+         workerJob: null
+      };
+   }
+
+   function acquireChunkMeta() {
+      const chunk = terrainChunkResourcePool.chunks.pop() || createPooledChunkMeta();
+      chunk[TERRAIN_CHUNK_META_TAG] = true;
+      chunk.index = 0;
+      chunk.chunkX = 0;
+      chunk.chunkZ = 0;
+      chunk.startX = 0;
+      chunk.startZ = 0;
+      chunk.spanX = 0;
+      chunk.spanZ = 0;
+      chunk.columnIndices = null;
+      chunk.columnCount = 0;
+      chunk.state = STREAMING_STATES.UNLOADED;
+      chunk.pendingKey = null;
+      chunk.mesh = null;
+      chunk.geometry = null;
+      chunk.workerResult = null;
+      chunk.workerJob = null;
+      return chunk;
+   }
+
+   function releaseChunkColumnIndices(chunk) {
+      if (!chunk) return;
+      if (chunk.columnIndices) {
+         terrainChunkResourcePool.columnArrays.push(chunk.columnIndices);
+         chunk.columnIndices = null;
+      }
+      chunk.columnCount = 0;
+   }
+
+   function recycleChunkMeta(terrain, chunk, { disposeMesh = false } = {}) {
+      if (!chunk || chunk[TERRAIN_CHUNK_META_TAG] !== true) return;
+      recycleTerrainChunkMesh(terrain, chunk, { dispose: disposeMesh });
+      releaseChunkColumnIndices(chunk);
+      chunk.geometry = null;
+      chunk.workerResult = null;
+      chunk.workerJob = null;
+      chunk.pendingKey = null;
+      chunk.state = STREAMING_STATES.UNLOADED;
+      chunk.index = 0;
+      chunk.chunkX = 0;
+      chunk.chunkZ = 0;
+      chunk.startX = 0;
+      chunk.startZ = 0;
+      chunk.spanX = 0;
+      chunk.spanZ = 0;
+      if (chunk.center) {
+         chunk.center.x = 0;
+         chunk.center.z = 0;
+      }
+      if (chunk.bounds) {
+         chunk.bounds.minX = 0;
+         chunk.bounds.maxX = 0;
+         chunk.bounds.minZ = 0;
+         chunk.bounds.maxZ = 0;
+      }
+      terrainChunkResourcePool.chunks.push(chunk);
+   }
+
+   function acquireColumnArray(length) {
+      if (!Number.isFinite(length) || length <= 0) return null;
+      const pool = terrainChunkResourcePool.columnArrays;
+      for (let i = pool.length - 1; i >= 0; i--) {
+         const candidate = pool[i];
+         if (candidate && candidate.length >= length) {
+            pool.splice(i, 1);
+            return candidate;
+         }
+      }
+      return new Uint32Array(length);
+   }
+
    function toUint32Array(source) {
       if (!source) return new Uint32Array(0);
       if (ArrayBuffer.isView(source)) {
@@ -4321,6 +4438,31 @@
       return new Uint32Array(0);
    }
 
+   function acquireColumnArrayFromSource(source, fallbackLength = 0) {
+      if (source && source instanceof Uint32Array) {
+         return { array: source, count: source.length };
+      }
+      if (source && Array.isArray(source)) {
+         const arr = acquireColumnArray(source.length);
+         if (!arr) return { array: null, count: 0 };
+         for (let i = 0; i < source.length; i++) arr[i] = source[i] | 0;
+         return { array: arr, count: source.length };
+      }
+      if (source && ArrayBuffer.isView(source)) {
+         const arr = acquireColumnArray(source.length);
+         if (!arr) return { array: null, count: 0 };
+         for (let i = 0; i < source.length; i++) arr[i] = source[i];
+         return { array: arr, count: source.length };
+      }
+      const length = Number.isFinite(fallbackLength) && fallbackLength > 0 ? fallbackLength : 0;
+      if (!length) return { array: null, count: 0 };
+      const arr = acquireColumnArray(length);
+      if (arr) {
+         for (let i = 0; i < length; i++) arr[i] = 0;
+      }
+      return { array: arr, count: length };
+   }
+
    function ensureTerrainChunkStores(terrain) {
       if (!terrain) return null;
       if (!terrain.chunkMeshes || typeof terrain.chunkMeshes.get !== "function") {
@@ -4330,6 +4472,105 @@
          terrain.chunkGeometryCache = new Map();
       }
       return terrain.chunkMeshes;
+   }
+
+   function acquireTerrainChunkMeshFromPool(terrain, index) {
+      let mesh = null;
+      while (terrainChunkResourcePool.meshes.length > 0 && !mesh) {
+         const candidate = terrainChunkResourcePool.meshes.pop();
+         if (candidate && candidate.isDisposed?.() !== true) {
+            const meta = candidate.metadata = candidate.metadata || {};
+            const tag = meta.terrainChunk = meta.terrainChunk || {};
+            tag.pooled = false;
+            mesh = candidate;
+         } else if (candidate?.dispose) {
+            try { candidate.dispose(false, true); } catch (err) { /* ignore */ }
+         }
+      }
+      if (!mesh) {
+         mesh = new BABYLON.Mesh(`terrainChunk_${index}`, scene);
+      }
+      mesh.name = `terrainChunk_${index}`;
+      mesh.id = mesh.name;
+      mesh.isPickable = true;
+      mesh.checkCollisions = true;
+      mesh.alwaysSelectAsActiveMesh = false;
+      mesh.receiveShadows = true;
+      if (terrain.root) mesh.parent = terrain.root;
+      if (terrain.material) mesh.material = terrain.material;
+      mesh.setEnabled(false);
+      setMeshVisibilitySafely(mesh, 0);
+      mesh.isVisible = false;
+      mesh.visibility = 0;
+      const meta = mesh.metadata = mesh.metadata || {};
+      const tag = meta.terrainChunk = meta.terrainChunk || {};
+      tag.index = index;
+      tag.pooled = false;
+      return mesh;
+   }
+
+   function recycleTerrainChunkMesh(terrain, chunk, { dispose = false } = {}) {
+      const mesh = chunk?.mesh;
+      if (!mesh) return;
+      if (terrain?.chunkMeshes?.delete) terrain.chunkMeshes.delete(chunk.index);
+      chunk.mesh = null;
+      if (mesh.isDisposed?.()) return;
+      const meta = mesh.metadata = mesh.metadata || {};
+      const tag = meta.terrainChunk = meta.terrainChunk || {};
+      if (dispose) {
+         try { mesh.dispose(false, true); } catch (err) { /* ignore */ }
+         tag.pooled = false;
+         return;
+      }
+      if (tag.pooled) return;
+      mesh.setEnabled(false);
+      setMeshVisibilitySafely(mesh, 0);
+      mesh.isVisible = false;
+      mesh.visibility = 0;
+      mesh.parent = null;
+      mesh.material = null;
+      try { mesh.geometry?.dispose(); } catch (err) { /* ignore */ }
+      if (typeof mesh.releaseVertexData === "function") {
+         try { mesh.releaseVertexData(); } catch (err) { /* ignore */ }
+      }
+      tag.index = -1;
+      tag.pooled = true;
+      terrainChunkResourcePool.meshes.push(mesh);
+   }
+
+   // Called when a streaming task finishes unloading a chunk. We release GPU buffers but retain
+   // the pooled mesh shell so future loads can reuse it without constructing a brand-new mesh.
+   function recycleChunkAfterUnload(terrain, chunk) {
+      if (!chunk || chunk[TERRAIN_CHUNK_META_TAG] !== true) return;
+      chunk.workerJob = null;
+      chunk.workerResult = null;
+      chunk.geometry = null;
+      recycleTerrainChunkMesh(terrain, chunk);
+   }
+
+   // Used by streaming rebuilds/terrain teardown to return active chunk metadata and meshes back
+   // to the pool. disposeMeshes=true is reserved for full terrain disposal so Babylon resources
+   // are freed rather than pooled.
+   function releaseStreamingChunks(streaming, { disposeMeshes = false } = {}) {
+      if (!streaming || !Array.isArray(streaming.chunks)) return;
+      const terrain = streaming.terrain;
+      if (Array.isArray(streaming.queue)) streaming.queue.length = 0;
+      if (streaming.queueMap?.clear) streaming.queueMap.clear();
+      for (const chunk of streaming.chunks) {
+         if (!chunk) continue;
+         recycleChunkMeta(terrain, chunk, { disposeMesh: disposeMeshes });
+      }
+      streaming.chunks.length = 0;
+   }
+
+   function drainTerrainChunkMeshPool({ dispose = false } = {}) {
+      if (!dispose) return;
+      while (terrainChunkResourcePool.meshes.length > 0) {
+         const mesh = terrainChunkResourcePool.meshes.pop();
+         if (!mesh || mesh.isDisposed?.()) continue;
+         try { mesh.dispose(false, true); } catch (err) { /* ignore */ }
+      }
+      terrainChunkResourcePool.meshes.length = 0;
    }
 
    function ensureTerrainChunkMesh(terrain, chunk) {
@@ -4346,21 +4587,16 @@
          mesh = null;
       }
       if (!mesh) {
-         const name = `terrainChunk_${index}`;
-         mesh = new BABYLON.Mesh(name, scene);
-         mesh.isPickable = true;
-         mesh.checkCollisions = true;
-         mesh.alwaysSelectAsActiveMesh = false;
-         mesh.receiveShadows = true;
-         if (terrain.root) mesh.parent = terrain.root;
-         if (terrain.material) mesh.material = terrain.material;
-         mesh.metadata = mesh.metadata || {};
-         mesh.metadata.terrainChunk = { index };
-         if (terrain.chunkMeshes) terrain.chunkMeshes.set(index, mesh);
+         mesh = acquireTerrainChunkMeshFromPool(terrain, index);
       } else {
          if (terrain.root && mesh.parent !== terrain.root) mesh.parent = terrain.root;
          if (terrain.material && mesh.material !== terrain.material) mesh.material = terrain.material;
+         const meta = mesh.metadata = mesh.metadata || {};
+         const tag = meta.terrainChunk = meta.terrainChunk || {};
+         tag.index = index;
+         tag.pooled = false;
       }
+      if (terrain.chunkMeshes) terrain.chunkMeshes.set(index, mesh);
       chunk.mesh = mesh;
       return mesh;
    }
@@ -4432,14 +4668,20 @@
 
    function queueChunkVoxelJob(streaming, chunk, terrain) {
       if (!streaming || !chunk || !terrain) return null;
-      if (!chunk.columnIndices || chunk.columnIndices.length === 0) return null;
+      const indices = chunk.columnIndices;
+      const count = Number.isFinite(chunk.columnCount) ? chunk.columnCount : (indices?.length ?? 0);
+      if (!indices || count === 0) return null;
       const pool = ensureTerrainWorkerPool();
       if (!pool || typeof pool.postJob !== "function") return null;
       let indicesCopy;
       try {
-         indicesCopy = chunk.columnIndices.slice();
+         indicesCopy = typeof indices.slice === "function" ? indices.slice(0, count) : null;
       } catch (err) {
-         return null;
+         indicesCopy = null;
+      }
+      if (!indicesCopy) {
+         indicesCopy = new Uint32Array(count);
+         for (let i = 0; i < count; i++) indicesCopy[i] = indices[i];
       }
       if (!indicesCopy || indicesCopy.length === 0) return null;
       const atlasRects = Array.isArray(terrain.atlasRects) && terrain.atlasRects.length
@@ -4475,6 +4717,7 @@
       const chunkCountX = Math.max(1, descriptor.chunkCountX | 0 || 1);
       const chunkCountZ = Math.max(1, descriptor.chunkCountZ | 0 || 1);
       const list = Array.isArray(descriptor.chunks) ? descriptor.chunks : [];
+      releaseStreamingChunks(streaming);
       const normalized = new Array(list.length);
       for (let i = 0; i < list.length; i++) {
          const src = list[i];
@@ -4482,32 +4725,47 @@
             normalized[i] = null;
             continue;
          }
-         const indices = toUint32Array(src.columnIndices);
-         const chunk = {
-            index: Number.isFinite(src.index) ? src.index : i,
-            chunkX: Number.isFinite(src.chunkX) ? src.chunkX : Math.floor((src.startX ?? 0) / chunkSize),
-            chunkZ: Number.isFinite(src.chunkZ) ? src.chunkZ : Math.floor((src.startZ ?? 0) / chunkSize),
-            startX: src.startX ?? 0,
-            startZ: src.startZ ?? 0,
-            spanX: src.spanX ?? chunkSize,
-            spanZ: src.spanZ ?? chunkSize,
-            columnIndices: indices,
-            center: {
-               x: src.center?.x ?? src.centerX ?? 0,
-               z: src.center?.z ?? src.centerZ ?? 0
-            },
-            bounds: {
-               minX: src.bounds?.minX ?? src.minX ?? 0,
-               maxX: src.bounds?.maxX ?? src.maxX ?? 0,
-               minZ: src.bounds?.minZ ?? src.minZ ?? 0,
-               maxZ: src.bounds?.maxZ ?? src.maxZ ?? 0
-            },
-            state: STREAMING_STATES.UNLOADED,
-            pendingKey: null,
-            mesh: src.mesh || null,
-            geometry: src.geometry || null,
-            workerResult: src.workerResult || null
-         };
+         const isChunkMeta = src[TERRAIN_CHUNK_META_TAG] === true;
+         const chunk = isChunkMeta ? src : acquireChunkMeta();
+         chunk.index = Number.isFinite(src.index) ? src.index : i;
+         chunk.chunkX = Number.isFinite(src.chunkX) ? src.chunkX : Math.floor((src.startX ?? 0) / chunkSize);
+         chunk.chunkZ = Number.isFinite(src.chunkZ) ? src.chunkZ : Math.floor((src.startZ ?? 0) / chunkSize);
+         chunk.startX = Number.isFinite(src.startX) ? src.startX : chunk.chunkX * chunkSize;
+         chunk.startZ = Number.isFinite(src.startZ) ? src.startZ : chunk.chunkZ * chunkSize;
+         chunk.spanX = Number.isFinite(src.spanX) ? src.spanX : chunkSize;
+         chunk.spanZ = Number.isFinite(src.spanZ) ? src.spanZ : chunkSize;
+         let columnArray = null;
+         let columnCount = 0;
+         if (isChunkMeta) {
+            columnArray = chunk.columnIndices || null;
+            columnCount = Number.isFinite(chunk.columnCount) ? chunk.columnCount : (columnArray?.length ?? 0);
+         } else {
+            const acquired = acquireColumnArrayFromSource(src.columnIndices, chunk.spanX * chunk.spanZ);
+            columnArray = acquired.array;
+            columnCount = acquired.count;
+         }
+         chunk.columnIndices = columnArray;
+         chunk.columnCount = columnCount;
+         const center = chunk.center || (chunk.center = { x: 0, z: 0 });
+         center.x = src.center?.x ?? src.centerX ?? center.x ?? 0;
+         center.z = src.center?.z ?? src.centerZ ?? center.z ?? 0;
+         const bounds = chunk.bounds || (chunk.bounds = { minX: 0, maxX: 0, minZ: 0, maxZ: 0 });
+         bounds.minX = src.bounds?.minX ?? src.minX ?? bounds.minX ?? 0;
+         bounds.maxX = src.bounds?.maxX ?? src.maxX ?? bounds.maxX ?? 0;
+         bounds.minZ = src.bounds?.minZ ?? src.minZ ?? bounds.minZ ?? 0;
+         bounds.maxZ = src.bounds?.maxZ ?? src.maxZ ?? bounds.maxZ ?? 0;
+         chunk.state = STREAMING_STATES.UNLOADED;
+         chunk.pendingKey = null;
+         chunk.workerJob = null;
+         const mesh = src.mesh && src.mesh.isDisposed?.() !== true ? src.mesh : null;
+         if (mesh) {
+            chunk.mesh = mesh;
+            if (terrain.chunkMeshes) terrain.chunkMeshes.set(chunk.index, mesh);
+         } else if (!isChunkMeta) {
+            chunk.mesh = null;
+         }
+         chunk.geometry = src.geometry || null;
+         chunk.workerResult = src.workerResult || null;
          if (!chunk.geometry && terrain.chunkGeometryCache?.has?.(chunk.index)) {
             const cached = terrain.chunkGeometryCache.get(chunk.index);
             if (cached) {
@@ -4519,9 +4777,10 @@
             applyTerrainChunkGeometry(terrain, chunk, chunk.geometry, { cache: false });
          }
          const states = terrain.columnStates;
-         if (Array.isArray(states)) {
-            for (let k = 0; k < indices.length; k++) {
-               if (states[indices[k]]) {
+         if (Array.isArray(states) && columnArray) {
+            for (let k = 0; k < columnCount; k++) {
+               const idx = columnArray[k];
+               if (states[idx]) {
                   chunk.state = STREAMING_STATES.LOADED;
                   break;
                }
@@ -4579,12 +4838,14 @@
             const startZ = cz * chunkSize;
             const spanX = Math.min(chunkSize, colsX - startX);
             const spanZ = Math.min(chunkSize, colsZ - startZ);
-            const columnIndices = [];
+            const columnCount = spanX * spanZ;
+            const columnIndices = acquireColumnArray(columnCount) || new Uint32Array(columnCount);
+            let cursor = 0;
             for (let dz = 0; dz < spanZ; dz++) {
                for (let dx = 0; dx < spanX; dx++) {
                   const gridX = startX + dx;
                   const gridZ = startZ + dz;
-                  columnIndices.push((startZ + dz) * colsX + (startX + dx));
+                  columnIndices[cursor++] = (startZ + dz) * colsX + (startX + dx);
                }
             }
             const index = cz * chunkCountX + cx;
@@ -4594,20 +4855,31 @@
             const maxZ = minZ + spanZ * cubeSize;
             const centerX = minX + (maxX - minX) * 0.5;
             const centerZ = minZ + (maxZ - minZ) * 0.5;
-            chunks[index] = {
-               index,
-               chunkX: cx,
-               chunkZ: cz,
-               startX,
-               startZ,
-               spanX,
-               spanZ,
-               columnIndices,
-               center: { x: centerX, z: centerZ },
-               bounds: { minX, maxX, minZ, maxZ },
-               state: STREAMING_STATES.UNLOADED,
-               pendingKey: null
-            };
+            const chunk = acquireChunkMeta();
+            chunk.index = index;
+            chunk.chunkX = cx;
+            chunk.chunkZ = cz;
+            chunk.startX = startX;
+            chunk.startZ = startZ;
+            chunk.spanX = spanX;
+            chunk.spanZ = spanZ;
+            chunk.columnIndices = columnIndices;
+            chunk.columnCount = columnCount;
+            const center = chunk.center || (chunk.center = { x: 0, z: 0 });
+            center.x = centerX;
+            center.z = centerZ;
+            const bounds = chunk.bounds || (chunk.bounds = { minX: 0, maxX: 0, minZ: 0, maxZ: 0 });
+            bounds.minX = minX;
+            bounds.maxX = maxX;
+            bounds.minZ = minZ;
+            bounds.maxZ = maxZ;
+            chunk.state = STREAMING_STATES.UNLOADED;
+            chunk.pendingKey = null;
+            chunk.mesh = null;
+            chunk.geometry = null;
+            chunk.workerResult = null;
+            chunk.workerJob = null;
+            chunks[index] = chunk;
          }
       }
       return { chunks, chunkCountX, chunkCountZ };
@@ -4813,14 +5085,16 @@
          priority,
          cursor: 0,
          step() {
-            const indices = chunk.columnIndices || [];
-            if (!indices.length) {
+            const indices = chunk.columnIndices;
+            const total = Number.isFinite(chunk.columnCount) ? chunk.columnCount : (indices?.length ?? 0);
+            if (!indices || total <= 0) {
                chunk.state = mode === "load" ? STREAMING_STATES.LOADED : STREAMING_STATES.UNLOADED;
                chunk.pendingKey = null;
+               if (mode === "unload") recycleChunkAfterUnload(terrain, chunk);
                return { done: true, opsUsed: 1 };
             }
             const start = this.cursor;
-            const limit = Math.min(indices.length, start + batchSize);
+            const limit = Math.min(total, start + batchSize);
             for (let i = start; i < limit; i++) {
                const columnIndex = indices[i];
                const column = columns[columnIndex];
@@ -4838,10 +5112,11 @@
                }
             }
             this.cursor = limit;
-            const done = this.cursor >= indices.length;
+            const done = this.cursor >= total;
             if (done) {
                chunk.state = mode === "load" ? STREAMING_STATES.LOADED : STREAMING_STATES.UNLOADED;
                chunk.pendingKey = null;
+               if (mode === "unload") recycleChunkAfterUnload(terrain, chunk);
                updateChunkMeshVisibility(terrain, chunk);
             }
             return { done, opsUsed: Math.max(1, limit - start) };
