@@ -4619,10 +4619,31 @@
    function applyTerrainChunkGeometry(terrain, chunk, geometry, { cache = true } = {}) {
       if (!terrain || !chunk || !geometry) return null;
       const positions = geometry.positions;
-      const normals = geometry.normals;
-      const uvs = geometry.uvs;
-      const indices = geometry.indices;
-      if (!ArrayBuffer.isView(positions) || !ArrayBuffer.isView(indices)) {
+      const normals   = geometry.normals;
+      const uvs       = geometry.uvs;
+      const indices   = geometry.indices;
+
+      // If there’s nothing to render, don’t feed empty arrays to Babylon.
+      const hasVerts   = ArrayBuffer.isView(positions) && positions.length >= 9;
+      const hasIndices = ArrayBuffer.isView(indices)   && indices.length   >= 3;
+      if (!hasVerts || !hasIndices) {
+         // disable/recycle mesh if it exists
+         const mesh = chunk.mesh || (terrain.chunkMeshes?.get?.(chunk.index) ?? null);
+         if (mesh && !mesh.isDisposed?.()) {
+            try {
+               mesh.setEnabled(false);
+               setMeshVisibilitySafely(mesh, 0);
+               mesh.isVisible = false;
+               // Clear indices so Babylon doesn’t keep stale buffers
+               mesh.setIndices([]);
+            } catch (_) {}
+         }
+         chunk.geometry = { positions: new Float32Array(0), normals: new Float32Array(0),
+                            uvs: new Float32Array(0), indices: new Uint32Array(0), vertexCount: 0 };
+         if (cache !== false && terrain.chunkGeometryCache) {
+            terrain.chunkGeometryCache.set(chunk.index, chunk.geometry);
+         }
+         updateChunkMeshVisibility(terrain, chunk);
          return null;
       }
       const mesh = ensureTerrainChunkMesh(terrain, chunk);
