@@ -4668,9 +4668,7 @@
 
    function queueChunkVoxelJob(streaming, chunk, terrain) {
       if (!streaming || !chunk || !terrain) return null;
-      const indices = chunk.columnIndices;
-      const count = Number.isFinite(chunk.columnCount) ? chunk.columnCount : (indices?.length ?? 0);
-      if (!indices || count === 0) return null;
+	  if (!chunk.columnIndices || chunk.columnIndices.length === 0) return null;
       const pool = ensureTerrainWorkerPool();
       if (!pool || typeof pool.postJob !== "function") return null;
       let indicesCopy;
@@ -4687,9 +4685,30 @@
       const atlasRects = Array.isArray(terrain.atlasRects) && terrain.atlasRects.length
          ? terrain.atlasRects
          : (terrainTextureState.atlasRects || []);
+     // Build a compact heights buffer for this chunk (spanX*spanZ).
+      const spanX = Number(chunk.spanX) | 0;
+      const spanZ = Number(chunk.spanZ) | 0;
+      const count = indicesCopy.length;
+      const heightsSrc = terrain.heights || [];
+      const heights = new Float32Array(count);
+      for (let i = 0; i < count; i++) {
+        const ci = indicesCopy[i] >>> 0;
+        heights[i] = Number.isFinite(heightsSrc[ci]) ? heightsSrc[ci] : 0;
+      }
+      // Layer info (used to voxelize in the worker)
+      const layerOffsets = Array.isArray(terrain.layerOffsets) ? terrain.layerOffsets : [];
+      const layerThicknesses = Array.isArray(terrain.layerThicknesses) ? terrain.layerThicknesses : [];
+      const layers = layerThicknesses.length | 0;
       const payload = {
-         chunkVoxels: indicesCopy,
-         chunkSize: streaming.chunkSize,
+		  // Not a full voxel array; we voxelize in the worker from heights+layers.
+         indices: indicesCopy,
+         spanX,
+         spanZ,
+         layers,
+         layerOffsets,
+         layerThicknesses,
+         heights,
+        // kept for world scaling & UVs
          scale: terrain.cubeSize,
          atlasRects,
          flags: {
@@ -4698,7 +4717,9 @@
             chunkZ: chunk.chunkZ
          }
       };
-      const transferables = indicesCopy?.buffer ? [indicesCopy.buffer] : [];
+      const transferables = [];
+      if (indicesCopy?.buffer) transferables.push(indicesCopy.buffer);
+      if (heights?.buffer)     transferables.push(heights.buffer);
       const job = pool.postJob(payload, transferables);
       if (job && typeof job.then === "function") {
          chunk.workerJob = job.then((result) => {
