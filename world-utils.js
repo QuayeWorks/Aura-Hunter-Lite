@@ -894,12 +894,12 @@
       return unsupported;
     }
 
-    const DEFAULT_COLOR = new BABYLON.Color4(0.34, 0.52, 0.26, 1);
+    const DEFAULT_COLOR = new BABYLON.Color4(0.45, 0.72, 0.38, 1);
     const DEFAULT_LAYER_COLORS = {
-      grass: new BABYLON.Color4(0.34, 0.52, 0.26, 1),
-      dirt: new BABYLON.Color4(0.45, 0.33, 0.19, 1),
-      clay: new BABYLON.Color4(0.58, 0.4, 0.26, 1),
-      bedrock: new BABYLON.Color4(0.32, 0.33, 0.38, 1)
+      grass: new BABYLON.Color4(0.45, 0.72, 0.38, 1),
+      dirt: new BABYLON.Color4(0.55, 0.4, 0.24, 1),
+      clay: new BABYLON.Color4(0.62, 0.46, 0.3, 1),
+      bedrock: new BABYLON.Color4(0.36, 0.38, 0.44, 1)
     };
     const DEFAULT_DEPTH_THRESHOLDS = { dirt: 0.45, clay: 1.35, bedrock: 2.8 };
     const COLOR_WRITE_EPS = 1e-4;
@@ -1630,11 +1630,11 @@
           const topRight = topLeft + 1;
           const bottomRight = bottomLeft + 1;
           indices[ii++] = topLeft;
-          indices[ii++] = bottomLeft;
-          indices[ii++] = topRight;
           indices[ii++] = topRight;
           indices[ii++] = bottomLeft;
+          indices[ii++] = topRight;
           indices[ii++] = bottomRight;
+          indices[ii++] = bottomLeft;
         }
       }
 
