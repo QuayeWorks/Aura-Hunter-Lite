@@ -24,6 +24,15 @@ function toFloat32Array(source, fallbackLength = 0) {
   return new Float32Array(fallbackLength);
 }
 
+function toFloat32Array(source, fallbackLength = 0) {
+  if (!source) return new Float32Array(fallbackLength);
+  if (source instanceof Float32Array) return source;
+  if (Array.isArray(source)) return Float32Array.from(source.map(Number));
+  if (ArrayBuffer.isView(source)) return new Float32Array(source.buffer.slice(0));
+  if (source instanceof ArrayBuffer) return new Float32Array(source.slice(0));
+  return new Float32Array(fallbackLength);
+}
+
 function resolveDimensions(size, voxelCount) {
   if (Array.isArray(size) && size.length >= 3) {
     const [x = 0, y = 0, z = 0] = size;
@@ -240,8 +249,13 @@ function greedyMesh(voxels, dims, scale, atlasRects) {
           const normal = [0, 0, 0];
           normal[d] = sign;
 
-          const uSpan = (rect.u1 - rect.u0) * width;
-          const vSpan = (rect.v1 - rect.v0) * height;
+          // Keep UVs within atlas rect (do NOT scale by quad w/h). With CLAMP,
+          // scaling beyond the rect turns the whole quad into the edge color (often black).
+          // Add a tiny inset to avoid bleeding across tiles.
+          const padU = (rect.u1 - rect.u0) * 0.001;
+          const padV = (rect.v1 - rect.v0) * 0.001;
+          const u0 = rect.u0 + padU, v0 = rect.v0 + padV;
+          const u1 = rect.u1 - padU, v1 = rect.v1 - padV;
 
           const corners = [
             [base[0], base[1], base[2]],
@@ -251,23 +265,28 @@ function greedyMesh(voxels, dims, scale, atlasRects) {
           ];
 
           const uvCorners = [
-            [rect.u0, rect.v0],
-            [rect.u0 + uSpan, rect.v0],
-            [rect.u0 + uSpan, rect.v0 + vSpan],
-            [rect.u0, rect.v0 + vSpan]
+            [u0, v0],
+            [u1, v0],
+            [u1, v1],
+            [u0, v1]
           ];
-
-          const order = sign > 0 ? [0, 1, 2, 3] : [0, 3, 2, 1];
+          
+          //const order = sign > 0 ? [0, 1, 2, 3] : [0, 3, 2, 1];
           const baseIndex = (positions.length / 3) | 0;
-
-          for (let idx = 0; idx < 4; idx++) {
+          // Optional: skip faces on +X/+Z borders to avoid duplicate border faces when neighboring chunk also draws them.
+          if ((d === 0 || d === 2) && sign > 0 && x[d] === dimensions[d] - 1) {
+            // we’re at +X or +Z outer edge; let the neighbor draw this face
+            // (world-edge will have no neighbor but remains closed by -X/-Z faces)
+            continue;
+          }
+          /*for (let idx = 0; idx < 4; idx++) {
             const cornerIndex = order[idx];
             const corner = corners[cornerIndex];
             const uv = uvCorners[cornerIndex];
             positions.push3(corner[0] * scale, corner[1] * scale, corner[2] * scale);
             normals.push3(normal[0], normal[1], normal[2]);
             uvs.push2(uv[0], uv[1]);
-          }
+          }*/
 
           indices.pushIndexQuad(baseIndex);
           quadCount++;
@@ -299,47 +318,53 @@ ctx.addEventListener('message', (event) => {
   }
 
   try {
-    const {
-      // indices: spanX*spanZ list of column indices (not used directly here, but kept for compatibility)
-      indices,
-      spanX = 0,
-      spanZ = 0,
-      layers = 0,
-      layerOffsets = [],
-      layerThicknesses = [],
-      heights: heightsInput,
-      scale = 1,
-      atlasRects = [],
-      flags = {}
-    } = payload || {};
-    const w = spanX | 0, d = spanZ | 0, h = layers | 0;
-    if (!w || !d || !h) throw new Error('Invalid span/layer dims');
-    const heights = toFloat32Array(heightsInput, w * d);
-    // Build a compact voxel field (w × h × d) from column heights + layer info.
-    const voxels = new Uint32Array(w * h * d);
-    const strideX = 1, strideY = w, strideZ = w * h;
-    const offs = Array.from(layerOffsets || []);
-    const thick = Array.from(layerThicknesses || []);
-    // We treat each layer as "present" if its top (offset+thickness) is <= column height.
-    for (let z = 0; z < d; z++) {
-      for (let x = 0; x < w; x++) {
-        const hi = z * w + x;
-        const columnH = heights[hi] || 0;
-        for (let y = 0; y < h; y++) {
-          const base = (offs[y] || 0);
-          const top  = base + (thick[y] || 0);
-          const solid = columnH >= top ? (y + 1) : 0; // y+1 lets us pick an atlas rect per layer
-          if (solid) {
-            const idx = x * strideX + y * strideY + z * strideZ;
-            voxels[idx] = solid;
+    const p = payload || {};
+    const atlasRects = p.atlasRects || [];
+    const scale = Number.isFinite(p.scale) && p.scale > 0 ? p.scale : 1;
+
+    let geometry = null;
+
+    if (p.indices && (p.spanX|0) && (p.spanZ|0)) {
+      // NEW SCHEMA: indices/spanX/spanZ/layers/offsets/thicknesses/heights
+      const w = p.spanX | 0, d = p.spanZ | 0;
+      let layers = p.layers | 0;
+      let offs = Array.isArray(p.layerOffsets) ? p.layerOffsets : [];
+      let thick = Array.isArray(p.layerThicknesses) ? p.layerThicknesses : [];
+      if (!layers) {
+        layers = Math.max(offs.length, thick.length) || 1;
+      }
+      if (offs.length < layers) offs = [...offs, ...new Array(layers - offs.length).fill(0)];
+      if (thick.length < layers) thick = [...thick, ...new Array(layers - thick.length).fill(1)];
+      if (!w || !d || !layers) throw new Error('Invalid span/layer dims');
+
+      const heights = toFloat32Array(p.heights, w * d);
+      const voxels = new Uint32Array(w * layers * d);
+      const strideX = 1, strideY = w, strideZ = w * layers;
+      for (let z = 0; z < d; z++) {
+        for (let x = 0; x < w; x++) {
+          const hi = z * w + x;
+          const columnH = heights[hi] || 0;
+          for (let y = 0; y < layers; y++) {
+            const base = (offs[y] || 0);
+            const top  = base + (thick[y] || 0);
+            const solid = columnH >= top ? (y + 1) : 0;
+            if (solid) {
+              const idx = x * strideX + y * strideY + z * strideZ;
+              voxels[idx] = solid;
+            }
           }
         }
       }
+      geometry = greedyMesh(voxels, [w, layers, d], scale, atlasRects);
+    } else {
+      // OLD SCHEMA: chunkVoxels + chunkSize
+      const voxels = toUint32Array(p.chunkVoxels) || new Uint32Array(0);
+      const dims = resolveDimensions(p.chunkSize || 0, voxels.length);
+      if (!dims[0] || !dims[1] || !dims[2]) {
+        throw new Error('Invalid chunk dimensions');
+      }
+      geometry = greedyMesh(voxels, dims, scale, atlasRects);
     }
-    const dims = [w, h, d];
-    const normalizedScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
-    const geometry = greedyMesh(voxels, dims, normalizedScale, atlasRects);
-
     const transfer = [
       geometry.positions.buffer,
       geometry.normals.buffer,
@@ -356,6 +381,8 @@ ctx.addEventListener('message', (event) => {
       ...geometry
     };
 
+    const result = { ...geometry }; // consumer only needs typed arrays + counts
+    
     ctx.postMessage({ jobId, result }, transfer);
   } catch (err) {
     const message = err && typeof err === 'object' && 'message' in err ? err.message : String(err);
