@@ -15,6 +15,15 @@ function toUint32Array(source) {
   return null;
 }
 
+function toFloat32Array(source, fallbackLength = 0) {
+  if (!source) return new Float32Array(fallbackLength);
+  if (source instanceof Float32Array) return source;
+  if (Array.isArray(source)) return Float32Array.from(source.map(Number));
+  if (ArrayBuffer.isView(source)) return new Float32Array(source.buffer.slice(0));
+  if (source instanceof ArrayBuffer) return new Float32Array(source.slice(0));
+  return new Float32Array(fallbackLength);
+}
+
 function resolveDimensions(size, voxelCount) {
   if (Array.isArray(size) && size.length >= 3) {
     const [x = 0, y = 0, z = 0] = size;
@@ -57,6 +66,7 @@ function createAccessor(voxels, dims) {
   };
 }
 
+// Use Uint32 for indices by default to avoid 16-bit overflow.
 function createDynamicBuffer(Type, initialCapacity = 1024) {
   let capacity = Math.max(1, initialCapacity | 0);
   let buffer = new Type(capacity);
@@ -141,7 +151,7 @@ function greedyMesh(voxels, dims, scale, atlasRects) {
   const positions = createDynamicBuffer(Float32Array, 1024);
   const normals = createDynamicBuffer(Float32Array, 1024);
   const uvs = createDynamicBuffer(Float32Array, 1024);
-  const indices = createDynamicBuffer(Uint16Array, 1024);
+  const indices = createDynamicBuffer(Uint32Array, 1024);
 
   let quadCount = 0;
   let triangleCount = 0;
@@ -248,10 +258,7 @@ function greedyMesh(voxels, dims, scale, atlasRects) {
           ];
 
           const order = sign > 0 ? [0, 1, 2, 3] : [0, 3, 2, 1];
-          const baseIndex = positions.length / 3;
-          if (baseIndex + 3 > 65535) {
-            throw new Error('Chunk vertex count exceeds Uint16 index limit');
-          }
+          const baseIndex = (positions.length / 3) | 0;
 
           for (let idx = 0; idx < 4; idx++) {
             const cornerIndex = order[idx];
@@ -292,13 +299,44 @@ ctx.addEventListener('message', (event) => {
   }
 
   try {
-    const { chunkVoxels, chunkSize = 0, scale = 1, atlasRects = [], flags = {} } = payload || {};
-    const voxels = toUint32Array(chunkVoxels) || new Uint32Array(0);
-    const dims = resolveDimensions(chunkSize, voxels.length);
-    if (!dims[0] || !dims[1] || !dims[2]) {
-      throw new Error('Invalid chunk dimensions');
+    const {
+      // indices: spanX*spanZ list of column indices (not used directly here, but kept for compatibility)
+      indices,
+      spanX = 0,
+      spanZ = 0,
+      layers = 0,
+      layerOffsets = [],
+      layerThicknesses = [],
+      heights: heightsInput,
+      scale = 1,
+      atlasRects = [],
+      flags = {}
+    } = payload || {};
+    const w = spanX | 0, d = spanZ | 0, h = layers | 0;
+    if (!w || !d || !h) throw new Error('Invalid span/layer dims');
+    const heights = toFloat32Array(heightsInput, w * d);
+    // Build a compact voxel field (w × h × d) from column heights + layer info.
+    const voxels = new Uint32Array(w * h * d);
+    const strideX = 1, strideY = w, strideZ = w * h;
+    const offs = Array.from(layerOffsets || []);
+    const thick = Array.from(layerThicknesses || []);
+    // We treat each layer as "present" if its top (offset+thickness) is <= column height.
+    for (let z = 0; z < d; z++) {
+      for (let x = 0; x < w; x++) {
+        const hi = z * w + x;
+        const columnH = heights[hi] || 0;
+        for (let y = 0; y < h; y++) {
+          const base = (offs[y] || 0);
+          const top  = base + (thick[y] || 0);
+          const solid = columnH >= top ? (y + 1) : 0; // y+1 lets us pick an atlas rect per layer
+          if (solid) {
+            const idx = x * strideX + y * strideY + z * strideZ;
+            voxels[idx] = solid;
+          }
+        }
+      }
     }
-
+    const dims = [w, h, d];
     const normalizedScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
     const geometry = greedyMesh(voxels, dims, normalizedScale, atlasRects);
 
@@ -310,7 +348,7 @@ ctx.addEventListener('message', (event) => {
     ];
 
     const result = {
-      chunkSize: { x: dims[0], y: dims[1], z: dims[2] },
+      chunkSize: { x: w, y: h, z: d },
       scale: normalizedScale,
       atlasRects,
       flags,
