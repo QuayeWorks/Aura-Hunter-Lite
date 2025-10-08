@@ -344,15 +344,24 @@ ctx.addEventListener('message', (event) => {
       for (let z = 0; z < d; z++) {
         for (let x = 0; x < w; x++) {
           const hi = z * w + x;
-          const h = heights[hi] || 0;
-          for (let y = 0; y < layers; y++) {
+        const hWorld = heights[hi] || 0;
+        // Fallback: if thresholds aren’t meaningful, treat height as number of cubes.
+        const heightLayers = Math.max(0, Math.floor(hWorld / (scale || 1)));
+        for (let y = 0; y < layers; y++) {
+          let solid = 0;
+          if (offs.length && thick.length) {
             const base = offs[y] || 0;
             const top  = base + (thick[y] || 0);
-            if (h >= top) {
-              const idx = x * strideX + y * strideY + z * strideZ;
-              voxels[idx] = (y + 1);
-            }
+            // Fill the layer if our height reaches that layer's top.
+            solid = hWorld >= top ? (y + 1) : 0;
+          } else {
+            solid = (y < heightLayers) ? 1 : 0;
           }
+          if (solid) {
+            const idx = x * strideX + y * strideY + z * strideZ;
+            voxels[idx] = solid;
+          }
+         }
         }
       }
       geometry = greedyMesh(voxels, [w, layers, d], scale, atlasRects);
