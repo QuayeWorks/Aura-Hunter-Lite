@@ -4666,71 +4666,86 @@
       return geometry;
    }
 
-   function queueChunkVoxelJob(streaming, chunk, terrain) {
-      if (!streaming || !chunk || !terrain) return null;
-	  if (!chunk.columnIndices || chunk.columnIndices.length === 0) return null;
-      const pool = ensureTerrainWorkerPool();
-      if (!pool || typeof pool.postJob !== "function") return null;
-      let indicesCopy;
-      try {
-         indicesCopy = typeof indices.slice === "function" ? indices.slice(0, count) : null;
-      } catch (err) {
-         indicesCopy = null;
-      }
-      if (!indicesCopy) {
-         indicesCopy = new Uint32Array(count);
-         for (let i = 0; i < count; i++) indicesCopy[i] = indices[i];
-      }
-      if (!indicesCopy || indicesCopy.length === 0) return null;
-      const atlasRects = Array.isArray(terrain.atlasRects) && terrain.atlasRects.length
-         ? terrain.atlasRects
-         : (terrainTextureState.atlasRects || []);
-     // Build a compact heights buffer for this chunk (spanX*spanZ).
-      const spanX = Number(chunk.spanX) | 0;
-      const spanZ = Number(chunk.spanZ) | 0;
-      const count = indicesCopy.length;
-      const heightsSrc = terrain.heights || [];
-      const heights = new Float32Array(count);
-      for (let i = 0; i < count; i++) {
-        const ci = indicesCopy[i] >>> 0;
-        heights[i] = Number.isFinite(heightsSrc[ci]) ? heightsSrc[ci] : 0;
-      }
-      // Layer info (used to voxelize in the worker)
-      const layerOffsets = Array.isArray(terrain.layerOffsets) ? terrain.layerOffsets : [];
-      const layerThicknesses = Array.isArray(terrain.layerThicknesses) ? terrain.layerThicknesses : [];
-      const layers = layerThicknesses.length | 0;
-      const payload = {
-		  // Not a full voxel array; we voxelize in the worker from heights+layers.
-         indices: indicesCopy,
-         spanX,
-         spanZ,
-         layers,
-         layerOffsets,
-         layerThicknesses,
-         heights,
-        // kept for world scaling & UVs
-         scale: terrain.cubeSize,
-         atlasRects,
-         flags: {
-            chunkIndex: chunk.index,
-            chunkX: chunk.chunkX,
-            chunkZ: chunk.chunkZ
-         }
-      };
-      const transferables = [];
-      if (indicesCopy?.buffer) transferables.push(indicesCopy.buffer);
-      if (heights?.buffer)     transferables.push(heights.buffer);
-      const job = pool.postJob(payload, transferables);
-      if (job && typeof job.then === "function") {
-         chunk.workerJob = job.then((result) => {
-            return handleTerrainChunkJobResult(streaming, chunk, result);
-         }).catch((err) => {
-            console.warn(`[Terrain] Worker job failed for chunk ${chunk.index}`, err);
-            return null;
-         });
-      }
-      return job;
-   }
+function queueChunkVoxelJob(streaming, chunk, terrain) {
+  if (!streaming || !chunk || !terrain) return null;
+
+  // Column indices in this chunk (spanX * spanZ)
+  const indices = chunk.columnIndices;
+  const count = Number.isFinite(chunk.columnCount) ? chunk.columnCount : (indices?.length ?? 0);
+  if (!indices || count === 0) return null;
+
+  const pool = ensureTerrainWorkerPool();
+  if (!pool || typeof pool.postJob !== "function") return null;
+
+  // Make a transferable copy of the column indices
+  let indicesCopy;
+  try {
+    indicesCopy = typeof indices.slice === "function" ? indices.slice(0, count) : null;
+  } catch (_) {
+    indicesCopy = null;
+  }
+  if (!indicesCopy) {
+    indicesCopy = new Uint32Array(count);
+    for (let i = 0; i < count; i++) indicesCopy[i] = indices[i] >>> 0;
+  }
+
+  // Build heights array mapping each column index → height
+  const heightsSrc = terrain.heights || [];
+  const heights = new Float32Array(count);
+  for (let i = 0; i < count; i++) {
+    const ci = indicesCopy[i] >>> 0;
+    const h = heightsSrc[ci];
+    heights[i] = Number.isFinite(h) ? h : 0;
+  }
+
+  // Biome/layer info so the worker can voxelize per-layer before greedy meshing
+  const layerOffsets = Array.isArray(terrain.layerOffsets) ? terrain.layerOffsets : [];
+  const layerThicknesses = Array.isArray(terrain.layerThicknesses) ? terrain.layerThicknesses : [];
+  const layers = layerThicknesses.length | 0;
+
+  // UV atlas rects for the worker to pick per-layer UVs
+  const atlasRects = Array.isArray(terrain.atlasRects) && terrain.atlasRects.length
+    ? terrain.atlasRects
+    : (terrainTextureState.atlasRects || []);
+
+  const spanX = Number(chunk.spanX) | 0;
+  const spanZ = Number(chunk.spanZ) | 0;
+
+  const payload = {
+    // column grid → worker will voxelize to (spanX × layers × spanZ)
+    indices: indicesCopy,
+    spanX,
+    spanZ,
+    layers,
+    layerOffsets,
+    layerThicknesses,
+    heights,
+
+    // render info
+    scale: terrain.cubeSize,
+    atlasRects,
+    flags: {
+      chunkIndex: chunk.index,
+      chunkX: chunk.chunkX,
+      chunkZ: chunk.chunkZ
+    }
+  };
+
+  const transferables = [];
+  if (indicesCopy?.buffer) transferables.push(indicesCopy.buffer);
+  if (heights?.buffer) transferables.push(heights.buffer);
+
+  const job = pool.postJob(payload, transferables);
+  if (job && typeof job.then === "function") {
+    chunk.workerJob = job
+      .then((result) => handleTerrainChunkJobResult(streaming, chunk, result))
+      .catch((err) => {
+        console.warn(`[Terrain] Worker job failed for chunk ${chunk.index}`, err);
+        return null;
+      });
+  }
+  return job;
+}
 
    function applyChunkDescriptor(streaming, descriptor, terrain) {
       if (!streaming || !descriptor || !terrain) return false;
