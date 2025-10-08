@@ -310,12 +310,12 @@ function greedyMesh(voxels, dims, scale, atlasRects) {
   };
 }
 
+// workers/terrain-worker.js  — replace ONLY the onmessage block with this:
+
 ctx.addEventListener('message', (event) => {
   const data = event?.data || {};
   const { jobId, payload } = data;
-  if (typeof jobId !== 'number') {
-    return;
-  }
+  if (typeof jobId !== 'number') return;
 
   try {
     const p = payload || {};
@@ -324,47 +324,47 @@ ctx.addEventListener('message', (event) => {
 
     let geometry = null;
 
-    if (p.indices && (p.spanX|0) && (p.spanZ|0)) {
+    if (p.indices && (p.spanX | 0) && (p.spanZ | 0)) {
       // NEW SCHEMA: indices/spanX/spanZ/layers/offsets/thicknesses/heights
-      const w = p.spanX | 0, d = p.spanZ | 0;
+      const w = p.spanX | 0;
+      const d = p.spanZ | 0;
       let layers = p.layers | 0;
       let offs = Array.isArray(p.layerOffsets) ? p.layerOffsets : [];
       let thick = Array.isArray(p.layerThicknesses) ? p.layerThicknesses : [];
-      if (!layers) {
-        layers = Math.max(offs.length, thick.length) || 1;
-      }
-      if (offs.length < layers) offs = [...offs, ...new Array(layers - offs.length).fill(0)];
-      if (thick.length < layers) thick = [...thick, ...new Array(layers - thick.length).fill(1)];
+      if (!layers) layers = Math.max(offs.length, thick.length) || 1;
+      if (offs.length < layers) offs = offs.concat(new Array(layers - offs.length).fill(0));
+      if (thick.length < layers) thick = thick.concat(new Array(layers - thick.length).fill(1));
       if (!w || !d || !layers) throw new Error('Invalid span/layer dims');
 
       const heights = toFloat32Array(p.heights, w * d);
+
+      // Build column → voxel volume (w × layers × d)
       const voxels = new Uint32Array(w * layers * d);
       const strideX = 1, strideY = w, strideZ = w * layers;
       for (let z = 0; z < d; z++) {
         for (let x = 0; x < w; x++) {
           const hi = z * w + x;
-          const columnH = heights[hi] || 0;
+          const h = heights[hi] || 0;
           for (let y = 0; y < layers; y++) {
-            const base = (offs[y] || 0);
+            const base = offs[y] || 0;
             const top  = base + (thick[y] || 0);
-            const solid = columnH >= top ? (y + 1) : 0;
-            if (solid) {
+            if (h >= top) {
               const idx = x * strideX + y * strideY + z * strideZ;
-              voxels[idx] = solid;
+              voxels[idx] = (y + 1);
             }
           }
         }
       }
       geometry = greedyMesh(voxels, [w, layers, d], scale, atlasRects);
+
     } else {
       // OLD SCHEMA: chunkVoxels + chunkSize
       const voxels = toUint32Array(p.chunkVoxels) || new Uint32Array(0);
       const dims = resolveDimensions(p.chunkSize || 0, voxels.length);
-      if (!dims[0] || !dims[1] || !dims[2]) {
-        throw new Error('Invalid chunk dimensions');
-      }
+      if (!dims[0] || !dims[1] || !dims[2]) throw new Error('Invalid chunk dimensions');
       geometry = greedyMesh(voxels, dims, scale, atlasRects);
     }
+
     const transfer = [
       geometry.positions.buffer,
       geometry.normals.buffer,
@@ -372,18 +372,10 @@ ctx.addEventListener('message', (event) => {
       geometry.indices.buffer
     ];
 
-    const result = {
-      chunkSize: { x: w, y: h, z: d },
-      scale: normalizedScale,
-      atlasRects,
-      flags,
-      voxelCount: voxels.length,
-      ...geometry
-    };
+    // <-- use a different variable name to avoid any duplicate const
+    const out = { ...geometry };
+    ctx.postMessage({ jobId, result: out }, transfer);
 
-    const result = { ...geometry }; // consumer only needs typed arrays + counts
-    
-    ctx.postMessage({ jobId, result }, transfer);
   } catch (err) {
     const message = err && typeof err === 'object' && 'message' in err ? err.message : String(err);
     ctx.postMessage({ jobId, error: message });
