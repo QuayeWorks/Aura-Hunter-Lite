@@ -4666,85 +4666,86 @@
       return geometry;
    }
 
-  function queueChunkVoxelJob(streaming, chunk, terrain) {
-  	if (!streaming || !chunk || !terrain) return null;
-  	// Column indices in this chunk (spanX * spanZ)
-  	const indices = chunk.columnIndices;
-  	const count = Number.isFinite(chunk.columnCount) ? chunk.columnCount : (indices?.length ?? 0);
-  	if (!indices || count === 0) return null;
-
-  	const pool = ensureTerrainWorkerPool();
- 	 if (!pool || typeof pool.postJob !== "function") return null;
-
-  	// Make a transferable copy of the column indices
-  	// Safe copy of column indices (spanX*spanZ)
-      const indices = chunk.columnIndices;
-      const count = Number.isFinite(chunk.columnCount) ? chunk.columnCount : (indices?.length ?? 0);
-      if (!indices || count === 0) return null;
-      let indicesCopy = null;
-      try { indicesCopy = typeof indices.slice === "function" ? indices.slice(0, count) : null; } catch {}
-      if (!indicesCopy) {
-         indicesCopy = new Uint32Array(count);
-         for (let i = 0; i < count; i++) indicesCopy[i] = indices[i] >>> 0;
-      }
-
-      // Dimensions (never 0)
-      const spanX = (chunk.spanX | 0) || streaming.chunkSize || 1;
-      const spanZ = (chunk.spanZ | 0) || streaming.chunkSize || 1;
-
-      // Layer info; guarantee at least one layer so worker never sees 0
-      let layerOffsets = Array.isArray(terrain.layerOffsets) ? terrain.layerOffsets.slice() : [];
-      let layerThicknesses = Array.isArray(terrain.layerThicknesses) ? terrain.layerThicknesses.slice() : [];
-      let layers = Math.max(layerOffsets.length, layerThicknesses.length);
-      if (!layers) {
-         layerOffsets = [0];
-         layerThicknesses = [terrain.cubeSize || 1];
-         layers = 1;
-      }
-      // Heights per column (spanX*spanZ)
-      const heightsSrc = terrain.heights || [];
-      const heights = new Float32Array(count);
-      for (let i = 0; i < count; i++) {
-         const ci = indicesCopy[i] >>> 0;
-         const h = heightsSrc[ci];
-         heights[i] = Number.isFinite(h) ? h : 0;
-      }
-
-      const atlasRects = Array.isArray(terrain.atlasRects) && terrain.atlasRects.length
-         ? terrain.atlasRects : (terrainTextureState.atlasRects || []);
-
-      // Send BOTH schemas so the worker stays backward/forward compatible.
-      const payload = {
-         // new schema (voxelize-in-worker):
-         indices: indicesCopy,
-         spanX, spanZ, layers,
-         layerOffsets, layerThicknesses,
-         heights,
-         // old schema (pre-voxelize):
-         chunkVoxels: indicesCopy,
-         chunkSize: streaming.chunkSize,
-         // common
-         scale: terrain.cubeSize,
-         atlasRects,
-         flags: { chunkIndex: chunk.index, chunkX: chunk.chunkX, chunkZ: chunk.chunkZ }
-      };
-      const transferables = [];
-      if (indicesCopy?.buffer) transferables.push(indicesCopy.buffer);
-      if (heights?.buffer) transferables.push(heights.buffer);
-  	const job = pool.postJob(payload, transferables);
-	if (job && typeof job.then === "function") {
-    	chunk.workerJob = job
-      	.then((result) => handleTerrainChunkJobResult(streaming, chunk, result))
-      	.catch((err) => {
-         chunk.workerJob = job.then((result) => handleTerrainChunkJobResult(streaming, chunk, result))
-         .catch((err) => {
-        	console.warn(`[Terrain] Worker job failed for chunk ${chunk.index}`, err);
-        	return null;
-      	});
-  	}
-  	return job;
-}
-
+	function queueChunkVoxelJob(streaming, chunk, terrain) {
+	  if (!streaming || !chunk || !terrain) return null;
+	
+	  // columns in this chunk (spanX * spanZ)
+	  const indicesSrc = chunk.columnIndices;
+	  const count = Number.isFinite(chunk.columnCount) ? chunk.columnCount : (indicesSrc?.length ?? 0);
+	  if (!indicesSrc || count === 0) return null;
+	
+	  const pool = ensureTerrainWorkerPool();
+	  if (!pool || typeof pool.postJob !== "function") return null;
+	
+	  // transferable copy of indices
+	  let indicesCopy = null;
+	  try {
+	    indicesCopy = typeof indicesSrc.slice === "function" ? indicesSrc.slice(0, count) : null;
+	  } catch {}
+	  if (!indicesCopy) {
+	    indicesCopy = new Uint32Array(count);
+	    for (let i = 0; i < count; i++) indicesCopy[i] = indicesSrc[i] >>> 0;
+	  }
+	
+	  // dimensions (never 0)
+	  const spanX = (chunk.spanX | 0) || streaming.chunkSize || 1;
+	  const spanZ = (chunk.spanZ | 0) || streaming.chunkSize || 1;
+	
+	  // layer info (guarantee at least one layer)
+	  let layerOffsets = Array.isArray(terrain.layerOffsets) ? terrain.layerOffsets.slice() : [];
+	  let layerThicknesses = Array.isArray(terrain.layerThicknesses) ? terrain.layerThicknesses.slice() : [];
+	  let layers = Math.max(layerOffsets.length, layerThicknesses.length);
+	  if (!layers) {
+	    layerOffsets = [0];
+	    layerThicknesses = [terrain.cubeSize || 1];
+	    layers = 1;
+	  }
+	
+	  // heights per column (spanX*spanZ)
+	  const heightsSrc = terrain.heights || [];
+	  const heights = new Float32Array(count);
+	  for (let i = 0; i < count; i++) {
+	    const ci = indicesCopy[i] >>> 0;
+	    const h = heightsSrc[ci];
+	    heights[i] = Number.isFinite(h) ? h : 0;
+	  }
+	
+	  const atlasRects =
+	    (Array.isArray(terrain.atlasRects) && terrain.atlasRects.length)
+	      ? terrain.atlasRects
+	      : (terrainTextureState.atlasRects || []);
+	
+	  // send BOTH schemas (new + old) so the worker can handle either
+	  const payload = {
+	    // new schema (voxelize in worker)
+	    indices: indicesCopy,
+	    spanX, spanZ, layers,
+	    layerOffsets, layerThicknesses,
+	    heights,
+	    // old schema (pre-voxelized)
+	    chunkVoxels: indicesCopy,
+	    chunkSize: streaming.chunkSize,
+	    // common
+	    scale: terrain.cubeSize,
+	    atlasRects,
+	    flags: { chunkIndex: chunk.index, chunkX: chunk.chunkX, chunkZ: chunk.chunkZ }
+	  };
+	
+	  const transferables = [];
+	  if (indicesCopy?.buffer) transferables.push(indicesCopy.buffer);
+	  if (heights?.buffer) transferables.push(heights.buffer);
+	
+	  const job = pool.postJob(payload, transferables);
+	  if (job && typeof job.then === "function") {
+	    chunk.workerJob = job
+	      .then((result) => handleTerrainChunkJobResult(streaming, chunk, result))
+	      .catch((err) => {
+	        console.warn(`[Terrain] Worker job failed for chunk ${chunk.index}`, err);
+	        return null;
+	      });
+	  }
+	  return job;
+	}
 
    function applyChunkDescriptor(streaming, descriptor, terrain) {
       if (!streaming || !descriptor || !terrain) return false;
