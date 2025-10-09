@@ -47,12 +47,14 @@
   const VOXEL_IDS = {
     AIR: 0,
     BEDROCK: 1,
-    MOUNTAIN_ROCK: 2,
-    MOUNTAIN_DIRT: 3,
-    JUNGLE_GRASS: 4,
-    JUNGLE_SOIL: 5,
-    DESERT_SAND: 6,
-    DESERT_ROCK: 7
+    DIRT: 2,
+    GRASS: 3,
+    MOUNTAIN_ROCK: 4,
+    MOUNTAIN_DIRT: 5,
+    JUNGLE_GRASS: 6,
+    JUNGLE_SOIL: 7,
+    DESERT_SAND: 8,
+    DESERT_ROCK: 9
   };
 
   const EXTRA_ATLAS_SWATCHES = [
