@@ -1630,11 +1630,11 @@
           const topRight = topLeft + 1;
           const bottomRight = bottomLeft + 1;
           indices[ii++] = topLeft;
-          indices[ii++] = topRight;
           indices[ii++] = bottomLeft;
           indices[ii++] = topRight;
+          indices[ii++] = bottomLeft;
           indices[ii++] = bottomRight;
-          indices[ii++] = bottomLeft;
+          indices[ii++] = topRight;
         }
       }
 
