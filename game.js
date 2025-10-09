@@ -4339,7 +4339,8 @@
          mesh: null,
          geometry: null,
          workerResult: null,
-         workerJob: null
+         workerJob: null,
+         workerJobToken: null
       };
    }
 
@@ -4361,6 +4362,7 @@
       chunk.geometry = null;
       chunk.workerResult = null;
       chunk.workerJob = null;
+      chunk.workerJobToken = null;
       return chunk;
    }
 
@@ -4380,6 +4382,7 @@
       chunk.geometry = null;
       chunk.workerResult = null;
       chunk.workerJob = null;
+      chunk.workerJobToken = null;
       chunk.pendingKey = null;
       chunk.state = STREAMING_STATES.UNLOADED;
       chunk.index = 0;
@@ -4543,6 +4546,7 @@
    function recycleChunkAfterUnload(terrain, chunk) {
       if (!chunk || chunk[TERRAIN_CHUNK_META_TAG] !== true) return;
       chunk.workerJob = null;
+      chunk.workerJobToken = null;
       chunk.workerResult = null;
       chunk.geometry = null;
       recycleTerrainChunkMesh(terrain, chunk);
@@ -4701,7 +4705,10 @@
       const transferables = indicesCopy?.buffer ? [indicesCopy.buffer] : [];
       const job = pool.postJob(payload, transferables);
       if (job && typeof job.then === "function") {
+         const token = {};
+         chunk.workerJobToken = token;
          chunk.workerJob = job.then((result) => {
+            if (chunk.workerJobToken !== token) return null;
             return handleTerrainChunkJobResult(streaming, chunk, result);
          }).catch((err) => {
             console.warn(`[Terrain] Worker job failed for chunk ${chunk.index}`, err);
@@ -4757,6 +4764,7 @@
          chunk.state = STREAMING_STATES.UNLOADED;
          chunk.pendingKey = null;
          chunk.workerJob = null;
+         chunk.workerJobToken = null;
          const mesh = src.mesh && src.mesh.isDisposed?.() !== true ? src.mesh : null;
          if (mesh) {
             chunk.mesh = mesh;
