@@ -1412,6 +1412,26 @@
    const DEFAULT_STREAM_BUDGET_OPS = 96;
    const DEFAULT_STREAM_BATCH = 12;
 
+   const STREAMING_PERF_DEFAULTS = Object.freeze({
+      innerRadius: 256,
+      outerRadius: 768,
+      hysteresis: 64,
+      budgetMs: 4,
+      budgetOps: 200
+   });
+
+   function getPerfStreamingConfig() {
+      const config = (typeof window !== "undefined" && window.HXH && window.HXH.CONFIG && window.HXH.CONFIG.streaming) || null;
+      const normalize = (value, fallback) => (Number.isFinite(value) ? value : fallback);
+      const inner = normalize(config?.innerRadius, STREAMING_PERF_DEFAULTS.innerRadius);
+      const hysteresis = Math.max(0, normalize(config?.hysteresis, STREAMING_PERF_DEFAULTS.hysteresis));
+      const outerCandidate = normalize(config?.outerRadius, STREAMING_PERF_DEFAULTS.outerRadius);
+      const outer = Math.max(inner + hysteresis, outerCandidate);
+      const budgetMs = Math.max(0, normalize(config?.budgetMs, STREAMING_PERF_DEFAULTS.budgetMs));
+      const budgetOps = Math.max(1, Math.round(normalize(config?.budgetOps, STREAMING_PERF_DEFAULTS.budgetOps)));
+      return { innerRadius: inner, outerRadius: outer, hysteresis, budgetMs, budgetOps };
+   }
+
    const defaultTerrainSettings = {
       length: 32,
       width: 32,
@@ -4868,13 +4888,23 @@
 
    function applyStreamingRadius(streaming) {
       if (!streaming) return 0;
-      const base = clampStreamingRadius(streaming, Number.isFinite(streaming.baseRadius) ? streaming.baseRadius : streaming.defaultBaseRadius);
+      const perfConfig = getPerfStreamingConfig();
+      const base = clampStreamingRadius(streaming, Number.isFinite(streaming.baseRadius) ? streaming.baseRadius : perfConfig.innerRadius);
       streaming.baseRadius = base;
       const override = Number.isFinite(streaming.radiusOverride) ? clampStreamingRadius(streaming, streaming.radiusOverride) : null;
       const target = override ?? base;
+      const hysteresis = Math.max(0, Number.isFinite(streaming.hysteresis) ? streaming.hysteresis : perfConfig.hysteresis);
+      const padding = Math.max(0, Number.isFinite(streaming.padding) ? streaming.padding : 0);
+      const outerPref = Number.isFinite(streaming.outerRadiusBase) ? streaming.outerRadiusBase : perfConfig.outerRadius;
+      const outerOverride = Number.isFinite(streaming.outerRadiusOverride) ? clampStreamingRadius(streaming, streaming.outerRadiusOverride) : null;
+      const preferredOuter = Math.max(target + hysteresis, target + padding, outerOverride ?? outerPref);
+      let outer = clampStreamingRadius(streaming, preferredOuter);
+      if (outer < target) outer = target;
       streaming.loadedRadius = target;
-      const unload = target + streaming.padding;
-      streaming.unloadRadius = unload > target ? unload : target + (streaming.innerMargin || 1);
+      streaming.innerRadius = target;
+      streaming.outerRadius = outer;
+      streaming.unloadRadius = outer;
+      streaming.hysteresis = hysteresis;
       scheduleProfilerHudSync();
       return streaming.loadedRadius;
    }
@@ -4982,6 +5012,8 @@
       const chunkSize = Math.max(1, Math.min(desiredChunk, Math.max(terrain.colsX, terrain.colsZ)));
       const rebuild = !previous || previous.chunkSize !== chunkSize || opts.forceRebuild;
       const padding = Number.isFinite(settings?.streamingPadding) ? settings.streamingPadding : terrain.settings?.streamingPadding ?? defaultTerrainSettings.streamingPadding;
+      const perfConfig = getPerfStreamingConfig();
+      const defaultInnerRadius = Number.isFinite(settings?.activeRadius) ? settings.activeRadius : perfConfig.innerRadius;
       const streaming = {
          terrain,
          chunkSize,
@@ -4991,8 +5023,8 @@
          queue: [],
          queueMap: new Map(),
          batchSize: Math.max(1, Math.round(settings?.chunkBatchSize ?? previous?.batchSize ?? DEFAULT_STREAM_BATCH)),
-         budgetMs: Number.isFinite(settings?.chunkBudgetMs) ? clamp(settings.chunkBudgetMs, 0, 16) : (previous?.budgetMs ?? DEFAULT_STREAM_BUDGET_MS),
-         budgetOps: Number.isFinite(settings?.chunkBudgetOps) ? Math.max(1, Math.round(settings.chunkBudgetOps)) : (previous?.budgetOps ?? DEFAULT_STREAM_BUDGET_OPS),
+         budgetMs: Number.isFinite(settings?.chunkBudgetMs) ? clamp(settings.chunkBudgetMs, 0, 16) : (previous?.budgetMs ?? perfConfig.budgetMs),
+         budgetOps: Number.isFinite(settings?.chunkBudgetOps) ? Math.max(1, Math.round(settings.chunkBudgetOps)) : (previous?.budgetOps ?? perfConfig.budgetOps),
          interval: previous?.interval ?? DEFAULT_STREAM_INTERVAL,
          accumulator: 0,
          padding: Math.max(0, padding),
@@ -5000,14 +5032,17 @@
          chunkWorldSize: terrain.cubeSize * chunkSize,
          minRadius: 0,
          maxRadius: 0,
-         defaultBaseRadius: Number.isFinite(settings?.activeRadius) ? settings.activeRadius : defaultTerrainSettings.activeRadius,
-         baseRadius: Number.isFinite(settings?.activeRadius) ? settings.activeRadius : defaultTerrainSettings.activeRadius,
+         defaultBaseRadius: defaultInnerRadius,
+         baseRadius: defaultInnerRadius,
          radiusOverride: initialOverride,
+         outerRadiusBase: Number.isFinite(settings?.outerRadius) ? settings.outerRadius : perfConfig.outerRadius,
+         hysteresis: Math.max(0, Number.isFinite(settings?.streamingHysteresis) ? settings.streamingHysteresis : perfConfig.hysteresis),
          lastPlayerPosition: prevLastPos,
          stats: { lastOps: 0 },
          ready: false,
          pendingDescriptor: null,
-         descriptorVersion: (previous?.descriptorVersion || 0) + 1
+         descriptorVersion: (previous?.descriptorVersion || 0) + 1,
+         lastQueueMode: "unload"
       };
       streaming.minRadius = Math.max(6, streaming.chunkWorldSize * 0.75);
       const maxRadiusEstimate = Math.sqrt((terrain.halfX + streaming.padding) ** 2 + (terrain.halfZ + streaming.padding) ** 2);
@@ -5112,9 +5147,11 @@
       if (!Array.isArray(streaming.queue)) streaming.queue = [];
       if (!streaming.queueMap) streaming.queueMap = new Map();
       if (streaming.queueMap.has(task.key)) return streaming.queueMap.get(task.key);
-      let index = streaming.queue.length;
-      while (index > 0 && streaming.queue[index - 1].priority < task.priority) index--;
-      streaming.queue.splice(index, 0, task);
+      if (task.priority >= 4) {
+         streaming.queue.unshift(task);
+      } else {
+         streaming.queue.push(task);
+      }
       streaming.queueMap.set(task.key, task);
       return task;
    }
@@ -5126,7 +5163,11 @@
       const idx = streaming.queue.indexOf(task);
       if (idx >= 0) streaming.queue.splice(idx, 1);
       task.priority = priority;
-      insertStreamingTask(streaming, task);
+      if (priority >= 4) {
+         streaming.queue.unshift(task);
+      } else {
+         streaming.queue.push(task);
+      }
       return task;
    }
 
@@ -5216,8 +5257,9 @@
       if (!streaming?.ready || !Array.isArray(streaming.chunks)) return;
       const px = Number.isFinite(position.x) ? position.x : 0;
       const pz = Number.isFinite(position.z) ? position.z : 0;
-      const loadSq = streaming.loadedRadius * streaming.loadedRadius;
-      const unloadRadius = streaming.unloadRadius;
+      const loadRadius = Number.isFinite(streaming.innerRadius) ? streaming.innerRadius : streaming.loadedRadius;
+      const unloadRadius = Number.isFinite(streaming.outerRadius) ? streaming.outerRadius : streaming.unloadRadius;
+      const loadSq = loadRadius * loadRadius;
       const unloadSq = unloadRadius * unloadRadius;
       const margin = streaming.innerMargin || 0.5;
       for (const chunk of streaming.chunks) {
@@ -5246,8 +5288,9 @@
       }
       const queue = streaming.queue;
       const start = typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
-      const msBudget = force ? Infinity : Math.max(0, streaming.budgetMs ?? DEFAULT_STREAM_BUDGET_MS);
-      const opsBudget = force ? Infinity : Math.max(1, streaming.budgetOps ?? DEFAULT_STREAM_BUDGET_OPS);
+      const perfConfig = getPerfStreamingConfig();
+      const msBudget = force ? Infinity : Math.max(0, Number.isFinite(streaming.budgetMs) ? streaming.budgetMs : perfConfig.budgetMs);
+      const opsBudget = force ? Infinity : Math.max(1, Number.isFinite(streaming.budgetOps) ? streaming.budgetOps : perfConfig.budgetOps);
       let ops = 0;
       while (queue.length > 0) {
          if (opsBudget !== Infinity && ops >= opsBudget) break;
@@ -5255,16 +5298,19 @@
             const now = typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
             if (now - start >= msBudget) break;
          }
-         const task = queue[0];
+         const preferredMode = streaming.lastQueueMode === "load" ? "unload" : "load";
+         let taskIndex = queue.findIndex((entry) => entry?.mode === preferredMode);
+         if (taskIndex < 0) taskIndex = 0;
+         const task = queue.splice(taskIndex, 1)[0];
          const result = task.step();
          const usedOps = result && Number.isFinite(result.opsUsed) ? result.opsUsed : 1;
          ops += usedOps;
          if (result?.done) {
-            queue.shift();
             streaming.queueMap?.delete(task.key);
-         } else if (queue.length > 1) {
-            queue.push(queue.shift());
+         } else {
+            queue.push(task);
          }
+         streaming.lastQueueMode = task.mode;
       }
       streaming.stats.lastOps = ops;
    }
