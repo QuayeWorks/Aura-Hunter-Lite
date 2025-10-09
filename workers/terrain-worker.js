@@ -156,7 +156,8 @@ function getAtlasRect(atlasRects, value) {
   if (!Array.isArray(atlasRects) || atlasRects.length === 0) {
     return { u0: 0, v0: 0, u1: 1, v1: 1 };
   }
-  const index = value >= 0 ? value : 0;
+  const raw = Number.isFinite(value) ? value >>> 0 : 0;
+  const index = raw > 0 ? raw - 1 : 0;
   const rect = atlasRects[index] ?? atlasRects[0];
   return normalizeRect(rect);
 }
