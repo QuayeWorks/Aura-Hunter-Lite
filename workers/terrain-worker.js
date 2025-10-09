@@ -111,6 +111,18 @@ function createDynamicBuffer(Type, initialCapacity = 1024) {
   };
 }
 
+function createEmptyGeometry() {
+  return {
+    positions: new Float32Array(0),
+    normals: new Float32Array(0),
+    uvs: new Float32Array(0),
+    indices: new Uint16Array(0),
+    quadCount: 0,
+    triangleCount: 0,
+    vertexCount: 0
+  };
+}
+
 function normalizeRect(rect) {
   if (!rect || typeof rect !== 'object') {
     return { u0: 0, v0: 0, u1: 1, v1: 1 };
@@ -300,7 +312,15 @@ ctx.addEventListener('message', (event) => {
     }
 
     const normalizedScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
-    const geometry = greedyMesh(voxels, dims, normalizedScale, atlasRects);
+    const expectedLength = dims[0] * dims[1] * dims[2];
+    const canMesh = expectedLength > 0 && voxels.length === expectedLength;
+    const geometry = canMesh ? greedyMesh(voxels, dims, normalizedScale, atlasRects) : createEmptyGeometry();
+    const resultFlags = flags && typeof flags === 'object' ? { ...flags } : {};
+    if (!canMesh) {
+      resultFlags.meshingSkipped = true;
+      resultFlags.expectedVoxelCount = expectedLength;
+      resultFlags.receivedVoxelCount = voxels.length;
+    }
 
     const transfer = [
       geometry.positions.buffer,
@@ -313,7 +333,7 @@ ctx.addEventListener('message', (event) => {
       chunkSize: { x: dims[0], y: dims[1], z: dims[2] },
       scale: normalizedScale,
       atlasRects,
-      flags,
+      flags: resultFlags,
       voxelCount: voxels.length,
       ...geometry
     };
