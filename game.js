@@ -1350,6 +1350,9 @@
       { key: "grass", color: [0.32, 0.62, 0.3], emissive: [0.1, 0.22, 0.1], destructible: true, thickness: 0.25 }
    ];
 
+   const TerrainBiomesApi = typeof TerrainBiomes !== "undefined" ? TerrainBiomes : null;
+   const DEFAULT_BIOME_SEED = 1337;
+
    const TERRAIN_ATLAS_SOURCES = (() => {
       if (typeof window === "undefined") {
          return { compressed: null, uncompressed: null, tileSize: 256, padding: 4 };
@@ -1539,6 +1542,30 @@
       return `rgb(${r},${g},${b})`;
    };
 
+   function getTerrainAtlasSwatches() {
+      const swatches = TERRAIN_LAYER_DEFS.map((def) => ({
+         key: def.key || "layer",
+         color: def.color || [0.5, 0.5, 0.5],
+         highlight: def.highlight || null,
+         shadow: def.shadow || null
+      }));
+      if (TerrainBiomesApi?.getAtlasSwatches) {
+         const extras = TerrainBiomesApi.getAtlasSwatches();
+         if (Array.isArray(extras) && extras.length) {
+            for (const extra of extras) {
+               if (!extra) continue;
+               swatches.push({
+                  key: extra.key || "biome",
+                  color: extra.color || [0.5, 0.5, 0.5],
+                  highlight: extra.highlight || null,
+                  shadow: extra.shadow || null
+               });
+            }
+         }
+      }
+      return swatches;
+   }
+
    const makeSeededRandom = (seed) => {
       let state = seed >>> 0;
       return () => {
@@ -1550,7 +1577,7 @@
    function computeTerrainAtlasRects() {
       const tileSize = terrainTextureState.tileSize;
       const padding = terrainTextureState.padding;
-      const layers = TERRAIN_LAYER_DEFS.length;
+      const layers = getTerrainAtlasSwatches().length;
       const width = tileSize * layers;
       const height = tileSize;
       const rects = new Array(layers);
@@ -1571,7 +1598,8 @@
    }
 
    function ensureTerrainAtlasRects() {
-      if (Array.isArray(terrainTextureState.atlasRects) && terrainTextureState.atlasRects.length === TERRAIN_LAYER_DEFS.length) {
+      const expected = getTerrainAtlasSwatches().length;
+      if (Array.isArray(terrainTextureState.atlasRects) && terrainTextureState.atlasRects.length === expected) {
          return terrainTextureState.atlasRects;
       }
       const rects = computeTerrainAtlasRects();
@@ -1582,7 +1610,8 @@
    function createDynamicTerrainAtlas(scene) {
       const tileSize = terrainTextureState.tileSize;
       const padding = terrainTextureState.padding;
-      const layers = TERRAIN_LAYER_DEFS.length;
+      const swatches = getTerrainAtlasSwatches();
+      const layers = swatches.length;
       const width = tileSize * layers;
       const height = tileSize;
       const dynamicTexture = new BABYLON.DynamicTexture("terrainAtlasDynamic", { width, height }, scene, false, BABYLON.Texture.NEAREST_SAMPLINGMODE);
@@ -1593,10 +1622,10 @@
       ctx.clearRect(0, 0, width, height);
       const rects = new Array(layers);
       for (let i = 0; i < layers; i += 1) {
-         const def = TERRAIN_LAYER_DEFS[i] || {};
-         const baseColor = arrayToColor3(def.color || [0.5, 0.5, 0.5]);
-         const highlight = tintColor(baseColor, 0.22);
-         const shadow = tintColor(baseColor, -0.24);
+         const swatch = swatches[i] || {};
+         const baseColor = arrayToColor3(swatch.color || [0.5, 0.5, 0.5]);
+         const highlight = swatch.highlight ? arrayToColor3(swatch.highlight) : tintColor(baseColor, 0.22);
+         const shadow = swatch.shadow ? arrayToColor3(swatch.shadow) : tintColor(baseColor, -0.24);
          const x = i * tileSize;
          // Base fill with subtle shadow to reduce seams.
          ctx.fillStyle = color3ToCss(tintColor(baseColor, -0.05));
@@ -1674,7 +1703,8 @@
       if (!texture) return false;
       if (typeof texture.isReady === "function" && !texture.isReady()) return false;
       const rects = terrainTextureState.atlasRects;
-      if (!Array.isArray(rects) || rects.length < TERRAIN_LAYER_DEFS.length) return false;
+      const expected = getTerrainAtlasSwatches().length;
+      if (!Array.isArray(rects) || rects.length < expected) return false;
       return true;
    }
 
@@ -4004,10 +4034,20 @@
          const centers = new Array(length * width);
 
          const terrainMaterial = materialInfo.material;
-         const atlasRects = (materialInfo.rects && materialInfo.rects.length)
-            ? materialInfo.rects
+         const expectedAtlasCount = getTerrainAtlasSwatches().length;
+         let atlasRects = (materialInfo.rects && materialInfo.rects.length)
+            ? materialInfo.rects.slice()
             : terrainTextureState.atlasRects;
-         const defaultRect = atlasRects && atlasRects.length ? atlasRects[0] : { u0: 0, v0: 0, u1: 1, v1: 1 };
+         if (!Array.isArray(atlasRects) || atlasRects.length === 0) {
+            atlasRects = ensureTerrainAtlasRects().slice();
+         }
+         if (atlasRects.length < expectedAtlasCount) {
+            const filler = atlasRects.length ? atlasRects[atlasRects.length - 1] : { u0: 0, v0: 0, u1: 1, v1: 1 };
+            while (atlasRects.length < expectedAtlasCount) {
+               atlasRects.push({ ...filler });
+            }
+         }
+         const defaultRect = atlasRects.length ? atlasRects[0] : { u0: 0, v0: 0, u1: 1, v1: 1 };
 
           const layerTemplates = [];
           for (let layer = 0; layer < layers; layer++) {
@@ -4033,16 +4073,30 @@
 		layerTemplates[layer] = template;
 	  }
 
-	  // Build grid of columns
-	  for (let z = 0; z < width; z++) {
-		for (let x = 0; x < length; x++) {
+          const biomeSampler = TerrainBiomesApi?.createSampler?.({
+                seed: DEFAULT_BIOME_SEED,
+                worldSize: Math.max(totalWidth, totalDepth),
+                voxelSize: cubeSize,
+                maxHeight: totalLayerHeight
+          }) || null;
+          const biomeIds = biomeSampler ? new Uint8Array(length * width) : null;
+
+          // Build grid of columns
+          for (let z = 0; z < width; z++) {
+                for (let x = 0; x < length; x++) {
                   const idx = z * length + x;
                   const column = new Array(layers);
                   columns[idx] = column;
-                  heights[idx] = totalLayerHeight;
 
                   const worldX = -halfX + (x + 0.5) * cubeSize;
                   const worldZ = -halfZ + (z + 0.5) * cubeSize;
+                  if (biomeSampler) {
+                        const sample = biomeSampler.sampleColumn(worldX, worldZ);
+                        heights[idx] = sample.height;
+                        if (biomeIds) biomeIds[idx] = sample.biome & 0xff;
+                  } else {
+                        heights[idx] = totalLayerHeight;
+                  }
                   centers[idx] = { x: worldX, z: worldZ };
 
                   for (let layer = 0; layer < layers; layer++) {
@@ -4058,18 +4112,18 @@
 
                         block.metadata = {
                           terrainBlock: {
-				columnIndex: idx,
-				layer,
-				destructible: TERRAIN_LAYER_DEFS[layer]?.destructible ?? true,
-				destroyed: false
-			  }
-			};
+                                columnIndex: idx,
+                                layer,
+                                destructible: TERRAIN_LAYER_DEFS[layer]?.destructible ?? true,
+                                destroyed: false
+                          }
+                        };
 
-			block.isPickable = true;
-			block.checkCollisions = true;
-			block.setEnabled(false);
+                        block.isPickable = true;
+                        block.checkCollisions = true;
+                        block.setEnabled(false);
 
-			column[layer] = block;
+                        column[layer] = block;
                   }
                 }
           }
@@ -4102,7 +4156,11 @@
                 bounds: { minX: -halfX, maxX: halfX, minZ: -halfZ, maxZ: halfZ },
                 layerTemplates, // keep a reference if other systems need access
                 chunkMeshes: new Map(),
-                chunkGeometryCache: new Map()
+                chunkGeometryCache: new Map(),
+                biomeSampler,
+                biomeConfig: biomeSampler?.serialize?.() || null,
+                biomeIds,
+                biomeMaxHeight: biomeSampler?.maxHeight ?? totalLayerHeight
           };
           const terrainApi = getTerrainApi();
           const useUnified = !!terrainApi && isUnifiedTerrainEnabled();
@@ -4757,25 +4815,42 @@
 	      : (terrainTextureState.atlasRects || []);
 	
 	  // send BOTH schemas (new + old) so the worker can handle either
-	  const payload = {
-	    // new schema (voxelize in worker)
-	    indices: indicesCopy,
-	    spanX, spanZ, layers,
-	    layerOffsets, layerThicknesses,
-	    heights,
-	    // old schema (pre-voxelized)
-	    chunkVoxels: indicesCopy,
-	    chunkSize: streaming.chunkSize,
-	    // common
-	    scale: terrain.cubeSize,
-	    atlasRects,
-	    flags: { chunkIndex: chunk.index, chunkX: chunk.chunkX, chunkZ: chunk.chunkZ }
-	  };
-	
-	  const transferables = [];
-	  if (indicesCopy?.buffer) transferables.push(indicesCopy.buffer);
-	  if (heights?.buffer) transferables.push(heights.buffer);
-	
+          const payload = {
+            // new schema (voxelize in worker)
+            indices: indicesCopy,
+            spanX, spanZ, layers,
+            layerOffsets, layerThicknesses,
+            heights,
+            // old schema (pre-voxelized)
+            chunkVoxels: indicesCopy,
+            chunkSize: streaming.chunkSize,
+            // common
+            scale: terrain.cubeSize,
+            atlasRects,
+            flags: { chunkIndex: chunk.index, chunkX: chunk.chunkX, chunkZ: chunk.chunkZ }
+          };
+
+          const biomeConfig = terrain.biomeConfig;
+          if (biomeConfig && TerrainBiomesApi) {
+            const chunkHeight = Math.max(
+              4,
+              Math.ceil(((terrain.biomeMaxHeight ?? terrain.totalHeight ?? terrain.cubeSize) / Math.max(terrain.cubeSize || 1, 1e-3))) + 2
+            );
+            payload.biome = {
+              config: biomeConfig,
+              chunkHeight
+            };
+          }
+          payload.colsX = terrain.colsX;
+          payload.colsZ = terrain.colsZ;
+          payload.halfX = terrain.halfX;
+          payload.halfZ = terrain.halfZ;
+          payload.baseY = terrain.baseY || 0;
+
+          const transferables = [];
+          if (indicesCopy?.buffer) transferables.push(indicesCopy.buffer);
+          if (heights?.buffer) transferables.push(heights.buffer);
+
 	  const job = pool.postJob(payload, transferables);
 	  if (job && typeof job.then === "function") {
 	    chunk.workerJob = job

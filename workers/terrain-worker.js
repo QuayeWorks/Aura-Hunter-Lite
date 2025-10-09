@@ -1,4 +1,12 @@
 const ctx = self;
+try {
+  if (typeof importScripts === 'function') {
+    importScripts('../terrain/biomes.js');
+  }
+} catch (err) {
+  // ignore loading errors; fallback paths remain available
+}
+const TerrainBiomesWorker = typeof self !== 'undefined' ? (self.TerrainBiomes || null) : null;
 
 function toUint32Array(source) {
   if (!source) return null;
@@ -279,14 +287,15 @@ function greedyMesh(voxels, dims, scale, atlasRects) {
             // (world-edge will have no neighbor but remains closed by -X/-Z faces)
             continue;
           }
-          /*for (let idx = 0; idx < 4; idx++) {
+          const order = sign > 0 ? [0, 1, 2, 3] : [0, 3, 2, 1];
+          for (let idx = 0; idx < 4; idx++) {
             const cornerIndex = order[idx];
             const corner = corners[cornerIndex];
             const uv = uvCorners[cornerIndex];
             positions.push3(corner[0] * scale, corner[1] * scale, corner[2] * scale);
             normals.push3(normal[0], normal[1], normal[2]);
             uvs.push2(uv[0], uv[1]);
-          }*/
+          }
 
           indices.pushIndexQuad(baseIndex);
           quadCount++;
@@ -312,6 +321,45 @@ function greedyMesh(voxels, dims, scale, atlasRects) {
 
 // workers/terrain-worker.js  — replace ONLY the onmessage block with this:
 
+function buildBiomeChunk(payload, atlasRects, scale) {
+  if (!TerrainBiomesWorker?.createSampler) return null;
+  const config = payload?.biome?.config;
+  if (!config) return null;
+  const sampler = TerrainBiomesWorker.createSampler(config);
+  if (!sampler) return null;
+  const w = payload.spanX | 0;
+  const d = payload.spanZ | 0;
+  if (!w || !d) return null;
+  const chunkHeight = Math.max(1, payload.biome?.chunkHeight | 0);
+  const voxels = new Uint32Array(w * chunkHeight * d);
+  const indices = payload.indices || [];
+  const colsX = payload.colsX | 0;
+  const halfX = Number(payload.halfX) || 0;
+  const halfZ = Number(payload.halfZ) || 0;
+  let cursor = 0;
+  for (let z = 0; z < d; z++) {
+    for (let x = 0; x < w; x++) {
+      const rawIndex = indices[cursor];
+      const columnIndex = rawIndex != null ? (rawIndex >>> 0) : cursor;
+      const gridX = colsX > 0 ? (columnIndex % colsX) : x;
+      const gridZ = colsX > 0 ? Math.floor(columnIndex / colsX) : z;
+      const worldX = -halfX + (gridX + 0.5) * scale;
+      const worldZ = -halfZ + (gridZ + 0.5) * scale;
+      const column = sampler.sampleColumn(worldX, worldZ);
+      const columnBase = x + z * w * chunkHeight;
+      for (let y = 0; y < chunkHeight; y++) {
+        const worldY = y * scale;
+        const voxel = TerrainBiomesWorker.getVoxelForColumn(column, worldY, scale);
+        if (voxel) {
+          voxels[columnBase + y * w] = voxel >>> 0;
+        }
+      }
+      cursor++;
+    }
+  }
+  return greedyMesh(voxels, [w, chunkHeight, d], scale, atlasRects);
+}
+
 ctx.addEventListener('message', (event) => {
   const data = event?.data || {};
   const { jobId, payload } = data;
@@ -324,7 +372,11 @@ ctx.addEventListener('message', (event) => {
 
     let geometry = null;
 
-    if (p.indices && (p.spanX | 0) && (p.spanZ | 0)) {
+    if (TerrainBiomesWorker && p.biome && p.indices && (p.spanX | 0) && (p.spanZ | 0)) {
+      geometry = buildBiomeChunk(p, atlasRects, scale);
+    }
+
+    if (!geometry && p.indices && (p.spanX | 0) && (p.spanZ | 0)) {
       // NEW SCHEMA: indices/spanX/spanZ/layers/offsets/thicknesses/heights
       const w = p.spanX | 0;
       const d = p.spanZ | 0;
