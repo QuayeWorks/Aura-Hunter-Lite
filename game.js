@@ -1452,19 +1452,28 @@
       texture.anisotropicFilteringLevel = 1;
    }
 
+   function isDisposed(entity) {
+      if (!entity) return false;
+      const { isDisposed } = entity;
+      if (typeof isDisposed === "function") {
+         return isDisposed.call(entity);
+      }
+      return !!isDisposed;
+   }
+
    function maybeTriggerPendingTerrainBuild() {
       const scene = terrainTextureState.pendingScene;
       if (!scene) return;
       if (!isTerrainAtlasReady()) return;
       if (environment.terrain) return;
       if (terrainTextureState.retryScheduled) return;
-      if (scene.isDisposed?.()) {
+      if (isDisposed(scene)) {
          terrainTextureState.pendingScene = null;
          return;
       }
       terrainTextureState.pendingScene = null;
       Promise.resolve().then(() => {
-         if (!scene || scene.isDisposed?.()) return;
+         if (!scene || isDisposed(scene)) return;
          createTerrain(scene, { allowRetry: false });
       });
    }
@@ -1493,7 +1502,7 @@
    }
 
    function ensureDynamicTerrainAtlas(scene) {
-      if (!scene || scene.isDisposed?.()) return;
+      if (!scene || isDisposed(scene)) return;
       if (terrainTextureState.dynamicReady && terrainTextureState.dynamicTexture) {
          if (!terrainTextureState.compressedReady && terrainTextureState.activeSource !== "compressed") {
             setActiveTerrainTexture(terrainTextureState.dynamicTexture, "uncompressed", terrainTextureState.sourceUrl || "[generated]");
@@ -1556,7 +1565,7 @@
          .catch((err) => {
             console.debug("[HXH] Terrain atlas uncompressed load failed", err);
             terrainTextureState.uncompressedErrored = true;
-            if (scene && !scene.isDisposed?.()) {
+            if (scene && !isDisposed(scene)) {
                ensureDynamicTerrainAtlas(scene);
             }
          })
@@ -3715,7 +3724,7 @@
          }
 
          // 3) Dispose the terrain root (recursively) to catch any remaining children
-         if (terrain.root && !terrain.root.isDisposed?.()) {
+         if (terrain.root && !isDisposed(terrain.root)) {
                 try { terrain.root.dispose(false); } catch (e) { /* ignore */ }
          }
 
