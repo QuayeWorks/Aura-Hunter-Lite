@@ -591,7 +591,7 @@ ctx.addEventListener('message', (event) => {
 	};
 
 	// ---- single handler
-	self.addEventListener('message', (event) => {
+	ctx.addEventListener('message', (event) => {
 	  const data = event?.data || {};
 	  const { jobId, payload } = data;
 	  if (typeof jobId !== 'number') return;
