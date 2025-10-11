@@ -1,14 +1,13 @@
 /* terrain-worker.js — classic worker (not module) */
 const ctx = self;
 
-/* Optional: try to load biomes config if the file exists in the same folder.
-   Fails gracefully if it’s not there. */
 try {
-  if (typeof importScripts === 'function') {
-    try { importScripts('biomes.js'); } catch (_) {}
-    try { importScripts('./biomes.js'); } catch (_) {}
-  }
-} catch (_) {}
+  // workers and terrain are siblings -> go up one level, then into terrain
+  importScripts('../terrain/biomes.js');
+} catch (e) {
+  console.log('[Worker] biomes.js not loaded (ok if not present):', e && e.message);
+}
+
 const TerrainBiomesWorker = (self && self.TerrainBiomes) ? self.TerrainBiomes : null;
 
 /* ---------- small helpers ---------- */
