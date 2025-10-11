@@ -1656,10 +1656,10 @@
                 ...defaultTerrainSettings.depthThresholds
             }
         };
-        if (typeof next.length === "number") out.length = Math.round(clampSetting(next.length, 8, 256, defaultTerrainSettings.length));
-        if (typeof next.width === "number") out.width = Math.round(clampSetting(next.width, 8, 256, defaultTerrainSettings.width));
+        if (typeof next.length === "number") out.length = Math.round(clampSetting(next.length, 8, 4000, defaultTerrainSettings.length));
+        if (typeof next.width === "number") out.width = Math.round(clampSetting(next.width, 8, 4000, defaultTerrainSettings.width));
         if (typeof next.cubeSize === "number") out.cubeSize = clampSetting(next.cubeSize, 0.5, 4, defaultTerrainSettings.cubeSize);
-        if (typeof next.activeRadius === "number") out.activeRadius = clampSetting(next.activeRadius, 6, 300, defaultTerrainSettings.activeRadius);
+        if (typeof next.activeRadius === "number") out.activeRadius = clampSetting(next.activeRadius, 6, 4000, defaultTerrainSettings.activeRadius);
         if (typeof next.streamingPadding === "number") out.streamingPadding = clampSetting(next.streamingPadding, 2, 60, defaultTerrainSettings.streamingPadding);
         if (typeof next.maxTrees === "number") out.maxTrees = Math.round(clampSetting(next.maxTrees, 0, 400, defaultTerrainSettings.maxTrees));
         if (typeof next.chunkSize === "number") {
@@ -5198,6 +5198,17 @@
         streaming.chunks.length = 0;
     }
 
+	function getEffectiveStreamingRadii() {
+	  const cfg = getPerfStreamingConfig(); // reads CONFIG.streaming
+	  // UI override (only if the user explicitly set a value)
+	  const uiRadius = Number.isFinite(perfSettings.chunkRadius) ? perfSettings.chunkRadius : null;
+	  const inner = cfg.innerRadius;
+	  const outer = Math.max(cfg.outerRadius, inner + cfg.hysteresis);
+	  const outerFinal = uiRadius ? Math.min(outer, uiRadius) : outer;
+	  return { inner, outer: outerFinal, hysteresis: cfg.hysteresis, budgetMs: cfg.budgetMs, budgetOps: cfg.budgetOps };
+	}
+
+
     function drainTerrainChunkMeshPool({
         dispose = false
     } = {}) {
@@ -5547,6 +5558,14 @@
         return job;
     }
 
+	// Put near your terrain helpers (top of file or alongside queueChunkVoxelJob)
+	function computeChunkLod(distMeters) {
+	  if (!Number.isFinite(distMeters) || distMeters <= 15) return 0;
+	  // Quadratic ramp from 15 m to 4000 m → lod in [1..7]
+	  const far = 4000; // must match perf DEFAULTS.outerRadius
+	  const t = Math.min(1, (distMeters - 15) / (far - 15));
+	  return Math.min(7, Math.max(1, Math.floor(1 + 6 * (t * t))));
+	}
 
     function applyChunkDescriptor(streaming, descriptor, terrain) {
         if (!streaming || !descriptor || !terrain) return false;
@@ -5811,7 +5830,16 @@
         const padding = Number.isFinite(settings?.streamingPadding) ? settings.streamingPadding : terrain.settings?.streamingPadding ?? defaultTerrainSettings.streamingPadding;
         const perfConfig = getPerfStreamingConfig();
         const defaultInnerRadius = Number.isFinite(settings?.activeRadius) ? settings.activeRadius : perfConfig.innerRadius;
-        const streaming = {
+        const radii = getEffectiveStreamingRadii();
+		streaming.innerRadius  = radii.inner;
+		streaming.outerRadius  = radii.outer;
+		streaming.hysteresis   = radii.hysteresis;
+		streaming.budgetMs     = radii.budgetMs;
+		streaming.budgetOps    = radii.budgetOps;
+		// if you keep an 'activeRadius' or similar field, set it to radii.outer
+		streaming.activeRadius = radii.outer;
+
+		const streaming = {
             terrain,
             chunkSize,
             chunkCountX: 0,
