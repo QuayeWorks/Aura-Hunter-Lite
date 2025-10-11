@@ -5831,13 +5831,6 @@
         const perfConfig = getPerfStreamingConfig();
         const defaultInnerRadius = Number.isFinite(settings?.activeRadius) ? settings.activeRadius : perfConfig.innerRadius;
         const radii = getEffectiveStreamingRadii();
-		streaming.innerRadius  = radii.inner;
-		streaming.outerRadius  = radii.outer;
-		streaming.hysteresis   = radii.hysteresis;
-		streaming.budgetMs     = radii.budgetMs;
-		streaming.budgetOps    = radii.budgetOps;
-		// if you keep an 'activeRadius' or similar field, set it to radii.outer
-		streaming.activeRadius = radii.outer;
 
 		const streaming = {
             terrain,
@@ -5871,6 +5864,13 @@
             descriptorVersion: (previous?.descriptorVersion || 0) + 1,
             lastQueueMode: "unload"
         };
+		streaming.innerRadius  = radii.inner;
+		streaming.outerRadius  = radii.outer;
+		streaming.hysteresis   = radii.hysteresis;
+		streaming.budgetMs     = radii.budgetMs;
+		streaming.budgetOps    = radii.budgetOps;
+		// if you keep an 'activeRadius' or similar field, set it to radii.outer
+		streaming.activeRadius = radii.outer;
         streaming.minRadius = Math.max(6, streaming.chunkWorldSize * 0.75);
         const maxRadiusEstimate = Math.sqrt((terrain.halfX + streaming.padding) ** 2 + (terrain.halfZ + streaming.padding) ** 2);
         streaming.maxRadius = Math.max(streaming.minRadius, maxRadiusEstimate);
