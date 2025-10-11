@@ -5256,237 +5256,181 @@
         mesh.isVisible = shouldBeVisible;
     }
 
-    function applyTerrainChunkGeometry(terrain, chunk, geometry, {
-        cache = true
-    } = {}) {
-        // Guard: nothing to render
-        if (!geometry || !geometry.positions || geometry.positions.length < 9) { // < 3 verts
-            if (chunk.mesh) {
-                chunk.mesh.setEnabled(false);
-            }
-            chunk.geometry = null;
-            if (cache !== false && terrain.chunkGeometryCache) {
-                terrain.chunkGeometryCache.set(chunk.index, null);
-            }
-            return null;
-        }
+	function applyTerrainChunkGeometry(terrain, chunk, geometry, { cache = true } = {}) {
+	  // Empty / invalid geometry → hide chunk
+	  if (!geometry || !geometry.positions || geometry.positions.length < 9) {
+		if (chunk.mesh) {
+		  try {
+			chunk.mesh.setEnabled(false);
+			chunk.mesh.checkCollisions = false;
+			chunk.mesh.subMeshes = [];
+			chunk.mesh.setIndices([]);
+		  } catch (_) {}
+		}
+		chunk.geometry = null;
+		updateChunkMeshVisibility?.(terrain, chunk);
+		return null;
+	  }
 
-        const positions = geometry.positions;
-        const normals = geometry.normals;
-        const uvs = geometry.uvs;
-        const indices = geometry.indices;
+	  const positions = geometry.positions;
+	  const normals   = geometry.normals;
+	  const uvs       = geometry.uvs;
+	  let   indices   = geometry.indices;
 
-        const hasVerts = ArrayBuffer.isView(positions) && positions.length >= 9;
-        const hasIndices = ArrayBuffer.isView(indices) && indices.length >= 3;
+	  const hasVerts   = ArrayBuffer.isView(positions) && positions.length >= 9;
+	  const hasIndices = ArrayBuffer.isView(indices)   && indices.length   >= 3;
 
-        if (!hasVerts || !hasIndices) {
-            const mesh = chunk.mesh || (terrain.chunkMeshes?.get?.(chunk.index) ?? null);
-            if (mesh && !mesh.isDisposed?.()) {
-                try {
-                    mesh.setEnabled(false);
-                    setMeshVisibilitySafely(mesh, 0);
-                    mesh.isVisible = false;
-                    mesh.setIndices([]); // clear stale buffers
-                } catch (_) {}
-            }
-            chunk.geometry = {
-                positions: new Float32Array(0),
-                normals: new Float32Array(0),
-                uvs: new Float32Array(0),
-                indices: new Uint32Array(0),
-                vertexCount: 0
-            };
-            if (cache !== false && terrain.chunkGeometryCache) {
-                terrain.chunkGeometryCache.set(chunk.index, chunk.geometry);
-            }
-            updateChunkMeshVisibility(terrain, chunk);
-            return null;
-        }
-
-        // Ensure (or create) the mesh shell
-        const mesh = ensureTerrainChunkMesh(terrain, chunk);
-        if (!mesh) return null;
-
-        // Upload vertex streams
-        const updatable = true;
-        mesh.setVerticesData(BABYLON.VertexBuffer.PositionKind, positions, updatable);
-        if (ArrayBuffer.isView(normals)) {
-            mesh.setVerticesData(BABYLON.VertexBuffer.NormalKind, normals, updatable);
-        }
-        if (ArrayBuffer.isView(uvs)) {
-            mesh.setVerticesData(BABYLON.VertexBuffer.UVKind, uvs, updatable);
-        }
-        if (ArrayBuffer.isView(indices) && indices.length === 0) {
-            mesh.setIndices([]);
-        } else {
-            mesh.setIndices(indices);
-			// rebuild submeshes from worker-provided groups (material splits)
+	  if (!hasVerts || !hasIndices) {
+		const mesh = chunk.mesh || (terrain.chunkMeshes?.get?.(chunk.index) ?? null);
+		if (mesh && !mesh.isDisposed?.()) {
+		  try {
+			mesh.setEnabled(false);
+			mesh.checkCollisions = false;
 			mesh.subMeshes = [];
-			const groups = Array.isArray(geometry.groups) ? geometry.groups : [];
-			let runningStart = 0;
-			for (let i = 0; i < groups.length; i++) {
-			  const grp = groups[i];
-			  const start = runningStart;
-			  const count = (grp && Number.isFinite(grp.count)) ? (grp.count|0) : 0;
-			  if (count > 0) {
-				const matIndex = getMaterialIndexForTerrainId(grp.materialId); // your mapping
-				new BABYLON.SubMesh(
-				  matIndex,                        // material index in MultiMaterial
-				  0,                               // vertices start
-				  (geometry.positions.length/3)|0, // vertices count
-				  start,                           // index start
-				  count,                           // index count
-				  mesh, null, true
-				);
-				runningStart += count;
-			  }
-			}
+			mesh.setIndices([]);
+		  } catch (_) {}
+		}
+		chunk.geometry = {
+		  positions: new Float32Array(0),
+		  normals:   new Float32Array(0),
+		  uvs:       new Float32Array(0),
+		  indices:   new Uint32Array(0),
+		  vertexCount: 0
+		};
+		if (cache !== false && terrain.chunkGeometryCache) {
+		  terrain.chunkGeometryCache.set(chunk.index, chunk.geometry);
+		}
+		updateChunkMeshVisibility?.(terrain, chunk);
+		return null;
+	  }
 
-			// attach multi-material that matches your terrain material slots
-			if (!mesh.material || !(mesh.material instanceof BABYLON.MultiMaterial)) {
-			  mesh.material = getOrCreateTerrainMultiMaterial(terrain.scene || terrain._scene);
-			}
-        }
+	  // --- Safety: indices must be multiple of 3 and in range
+	  const triRema = indices.length % 3;
+	  if (triRema !== 0) {
+		console.warn('[Terrain] Truncating non-multiple-of-3 indices:', indices.length);
+		indices = indices.slice(0, indices.length - triRema);
+	  }
+	  const vertCount = (positions.length / 3) | 0;
+	  // Clamp any out-of-range indices
+	  let outOfRange = false;
+	  for (let i = 0; i < indices.length; i++) {
+		if (indices[i] >= vertCount) { indices[i] = vertCount ? (vertCount - 1) : 0; outOfRange = true; }
+	  }
+	  if (outOfRange) {
+		console.warn('[Terrain] Clamped out-of-range indices');
+	  }
+	  if (indices.length === 0) {
+		// nothing drawable; disable mesh
+		const mesh0 = chunk.mesh || (terrain.chunkMeshes?.get?.(chunk.index) ?? null);
+		if (mesh0) {
+		  try {
+			mesh0.setEnabled(false);
+			mesh0.checkCollisions = false;
+			mesh0.subMeshes = [];
+			mesh0.setIndices([]);
+		  } catch (_) {}
+		}
+		chunk.geometry = null;
+		updateChunkMeshVisibility?.(terrain, chunk);
+		return null;
+	  }
 
-        // --- NEW: submesh/material grouping by terrain material id (from worker)
-        // geometry.groups is expected as: [{ materialId, count }, ...] in index order
-        // We map materialId -> slot index in a MultiMaterial, then assign submeshes.
-        mesh.subMeshes = []; // clear any previous splits
+	  // --- Upload to (or create) the mesh
+	  const mesh = ensureTerrainChunkMesh(terrain, chunk);
+	  if (!mesh) return null;
 
-        const scene = mesh.getScene?.() || (typeof BABYLON !== "undefined" ? BABYLON.Engine.LastCreatedScene : null);
+	  const updatable = true;
+	  mesh.setVerticesData(BABYLON.VertexBuffer.PositionKind, positions, updatable);
+	  if (ArrayBuffer.isView(normals) && normals.length === positions.length) {
+		mesh.setVerticesData(BABYLON.VertexBuffer.NormalKind, normals, updatable);
+	  } else {
+		mesh.removeVerticesData?.(BABYLON.VertexBuffer.NormalKind);
+	  }
+	  if (ArrayBuffer.isView(uvs) && (uvs.length / 2 | 0) === vertCount) {
+		mesh.setVerticesData(BABYLON.VertexBuffer.UVKind, uvs, updatable);
+	  } else {
+		mesh.removeVerticesData?.(BABYLON.VertexBuffer.UVKind);
+	  }
 
-        // lazy setup (created once and stuck on terrain for reuse)
-        const multi = getOrCreateTerrainMultiMaterial(scene, terrain);
-        if (multi) {
-            mesh.material = multi;
-        } else if (terrain.material) {
-            // fallback: single material (no split)
-            mesh.material = terrain.material;
-        }
+	  mesh.setIndices(indices);
 
-        const groups = Array.isArray(geometry.groups) ? geometry.groups : [];
-        let offset = 0;
-        const vertexCount = (geometry.positions.length / 3) | 0;
+	  // --- Submeshes by material groups (robust)
+	  mesh.subMeshes = [];
+	  const totalIndices = indices.length;
+	  const totalVerts   = vertCount;
 
-        if (groups.length) {
-            for (let i = 0; i < groups.length; i++) {
-                const grp = groups[i] || {};
-                const start = offset;
-                const count = Math.max(0, grp.count | 0);
-                const matIndex = getMaterialIndexForTerrainId(grp.materialId);
+	  const groups = Array.isArray(geometry.groups) ? geometry.groups : [];
+	  let cursor = 0;
+	  if (groups.length) {
+		for (let i = 0; i < groups.length; i++) {
+		  const grp = groups[i] || {};
+		  const count = Math.max(0, grp.count | 0);
+		  if (count <= 0) continue;
 
-                // Clamp to safe ranges
-                const safeStart = Math.max(0, Math.min(start, indices.length));
-                const safeCount = Math.max(0, Math.min(count, Math.max(0, indices.length - safeStart)));
+		  const start = cursor;
+		  const end   = Math.min(totalIndices, start + count);
+		  const safeCount = Math.max(0, end - start);
+		  if (safeCount <= 0) break;
 
-                if (safeCount > 0) {
-                    new BABYLON.SubMesh(
-                        matIndex, // materialIndex (slot in MultiMaterial)
-                        0, // verticesStart (always 0; whole VBO)
-                        vertexCount, // verticesCount
-                        safeStart, // indexStart
-                        safeCount, // indexCount
-                        mesh,
-                        null,
-                        true // addToMeshGeometry (true so it updates bounding info)
-                    );
-                }
-                offset += count;
-            }
-        } else {
-            // No groups from worker—make a single submesh using default slot 0
-            new BABYLON.SubMesh(0, 0, vertexCount, 0, indices.length, mesh, null, true);
-        }
-
-        // Position & bounds
-        const bounds = chunk.bounds || {};
-        const baseY = Number.isFinite(terrain.baseY) ? terrain.baseY : 0;
-        mesh.position.set(
-            Number.isFinite(bounds.minX) ? bounds.minX : 0,
-            baseY,
-            Number.isFinite(bounds.minZ) ? bounds.minZ : 0
-        );
-        mesh.refreshBoundingInfo();
-
-        // Persist + visibility
-        chunk.geometry = geometry;
-        chunk.mesh = mesh;
-        if (cache !== false && terrain.chunkGeometryCache) {
-            terrain.chunkGeometryCache.set(chunk.index, geometry);
-        }
-        updateChunkMeshVisibility(terrain, chunk);
-        return mesh;
-
-        // ---------- helpers (scoped to this function; no new files needed) ----------
-
-		// Map worker material IDs -> MultiMaterial slot index
-		function getMaterialIndexForTerrainId(id) {
-		  switch (id | 0) {
-			case 4: // JUNGLE_GRASS
-			case 6: // DESERT_SAND
-			  return 0; // surface (grass/sand)
-
-			case 5: // JUNGLE_SOIL
-			case 3: // MOUNTAIN_DIRT
-			  return 1; // subsurface (soil/dirt)
-
-			case 2: // MOUNTAIN_ROCK
-			case 7: // DESERT_ROCK
-			case 1: // BEDROCK
-			  return 2; // rock/bedrock layer
-
-			default:
-			  return 0; // fallback → surface
+		  const matIndex = getMaterialIndexForTerrainId(grp.materialId);
+		  try {
+			// start/count are in *index* units
+			new BABYLON.SubMesh(matIndex, 0, totalVerts, start, safeCount, mesh, null, true);
+		  } catch (e) {
+			// Fallback: one full-range submesh if anything goes wrong
+			console.warn('[Terrain] SubMesh creation failed; falling back:', e?.message || e);
+			mesh.subMeshes = [];
+			BABYLON.SubMesh.CreateFromIndices(0, 0, totalIndices, mesh, true);
+			break;
 		  }
+		  cursor = end;
 		}
 
+		// If group counts didn't cover everything, create a final catch-all submesh
+		if (cursor < totalIndices && mesh.subMeshes.length > 0) {
+		  const remain = totalIndices - cursor;
+		  try {
+			new BABYLON.SubMesh( getMaterialIndexForTerrainId(groups[groups.length - 1]?.materialId ?? 0),
+								 0, totalVerts, cursor, remain, mesh, null, true );
+		  } catch (_) {
+			mesh.subMeshes = [];
+			BABYLON.SubMesh.CreateFromIndices(0, 0, totalIndices, mesh, true);
+		  }
+		}
+	  } else {
+		// Single submesh covering all indices
+		BABYLON.SubMesh.CreateFromIndices(0, 0, totalIndices, mesh, true);
+	  }
 
-        // Reuse or create a MultiMaterial with 3 slots (surface / subsurface / bedrock)
-        function getOrCreateTerrainMultiMaterial(scene, terrain) {
-            try {
-                if (!scene) return null;
+	  // Multi-material (materials array slots must match getMaterialIndexForTerrainId)
+	  mesh.material = getOrCreateTerrainMultiMaterial(terrain.scene || terrain._scene);
 
-                // If already multi, reuse it
-                if (terrain.material instanceof BABYLON.MultiMaterial) return terrain.material;
-                if (terrain.multiMaterial instanceof BABYLON.MultiMaterial) return terrain.multiMaterial;
+	  // Position the mesh by chunk bounds
+	  const bounds = chunk.bounds || {};
+	  const baseY = Number.isFinite(terrain.baseY) ? terrain.baseY : 0;
+	  mesh.position.set(
+		Number.isFinite(bounds.minX) ? bounds.minX : 0,
+		baseY,
+		Number.isFinite(bounds.minZ) ? bounds.minZ : 0
+	  );
 
-                // Base material to clone from—prefer the existing terrain material (keeps your atlas/texture)
-                const base = terrain.material instanceof BABYLON.Material ?
-                    terrain.material :
-                    null;
+	  // Bounding + transforms
+	  mesh.computeWorldMatrix(true);
+	  mesh.refreshBoundingInfo(true);
 
-                const mm = new BABYLON.MultiMaterial("TerrainMultiMat", scene);
+	  // COLLISIONS OFF for terrain (prevents Plane.copyFromPoints crash & lag)
+	  mesh.checkCollisions = false;
 
-                // Create 3 slots. If we don't have a base, make very small Standards as placeholders.
-                const ensureMat = (name) => {
-                    if (base) {
-                        // clone preserves textures (atlas) & params
-                        const m = base.clone(name);
-                        // optional: tweak roughness, color per layer if you like:
-                        // if (m instanceof BABYLON.PBRMaterial) { ... }
-                        return m;
-                    } else {
-                        const m = new BABYLON.StandardMaterial(name, scene);
-                        m.diffuseColor = new BABYLON.Color3(0.8, 0.8, 0.8);
-                        m.specularColor = new BABYLON.Color3(0, 0, 0);
-                        return m;
-                    }
-                };
+	  // Cache
+	  chunk.geometry = geometry;
+	  chunk.mesh = mesh;
+	  if (cache !== false && terrain.chunkGeometryCache) {
+		terrain.chunkGeometryCache.set(chunk.index, geometry);
+	  }
 
-                const matSurface = ensureMat("TerrainSurface"); // slot 0 (grass/sand)
-                const matMid = ensureMat("TerrainMid"); // slot 1 (soil/rock)
-                const matBedrock = ensureMat("TerrainBedrock"); // slot 2 (bedrock)
-
-                mm.subMaterials = [matSurface, matMid, matBedrock];
-
-                // Keep a handle for reuse
-                terrain.multiMaterial = mm;
-                return mm;
-            } catch (_) {
-                return null;
-            }
-        }
-    }
+	  updateChunkMeshVisibility?.(terrain, chunk);
+	  return mesh;
+	}
 
 
     function handleTerrainChunkJobResult(streaming, chunk, geometry) {
